@@ -2,11 +2,9 @@ FROM apache/hadoop:3
 
 USER root
 
-# Pass-through: each pod overrides CMD with the daemon to start,
-# e.g. CMD ["hdfs", "namenode"] or CMD ["yarn", "resourcemanager"].
-# Namenode formats storage on first boot before starting.
-RUN printf '#!/bin/bash\nset -e\nif [[ "$1 $2" == "hdfs namenode" ]] && [ ! -d /tmp/hadoop-root/dfs/name/current ]; then\n  hdfs namenode -format -nonInteractive\nfi\nexec "$@"\n' > /entrypoint.sh && chmod +x /entrypoint.sh
+# Start all four daemons in one container. Format NameNode on first boot.
+RUN printf '#!/bin/bash\nset -e\nif [ ! -d /tmp/hadoop-root/dfs/name/current ]; then\n  hdfs namenode -format -nonInteractive\nfi\nhdfs namenode &\nhdfs datanode &\nyarn resourcemanager &\nyarn nodemanager &\nwait -n\n' > /start.sh && chmod +x /start.sh
 
-EXPOSE 9870 9864 8088 8042
+EXPOSE 8088
 
-ENTRYPOINT ["/entrypoint.sh"]
+CMD ["/start.sh"]
