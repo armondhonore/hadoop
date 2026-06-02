@@ -1,21 +1,52 @@
 application:
   name: hadoop
   pods:
-    - name: hadoop
+    - name: namenode
       image: "# filled by pipeline"
-      path: /
+      path: /namenode
       servicePorts:
-        - 8088
+        - 9870
+      command: ["hdfs", "namenode"]
       vars:
         - key: HADOOP_CLUSTER_NAME
           value: nexlayer
         - key: HDFS_NAMENODE_USER
           value: root
+
+    - name: datanode
+      image: "# filled by pipeline"
+      servicePorts:
+        - 9864
+      command: ["hdfs", "datanode"]
+      vars:
+        - key: CORE_CONF_fs_defaultFS
+          value: hdfs://namenode:9000
         - key: HDFS_DATANODE_USER
           value: root
-        - key: HDFS_SECONDARYNAMENODE_USER
-          value: root
+
+    - name: resourcemanager
+      image: "# filled by pipeline"
+      path: /
+      servicePorts:
+        - 8088
+      command: ["yarn", "resourcemanager"]
+      vars:
+        - key: CORE_CONF_fs_defaultFS
+          value: hdfs://namenode:9000
+        - key: YARN_CONF_yarn_resourcemanager_hostname
+          value: resourcemanager
         - key: YARN_RESOURCEMANAGER_USER
           value: root
+
+    - name: nodemanager
+      image: "# filled by pipeline"
+      servicePorts:
+        - 8042
+      command: ["yarn", "nodemanager"]
+      vars:
+        - key: CORE_CONF_fs_defaultFS
+          value: hdfs://namenode:9000
+        - key: YARN_CONF_yarn_resourcemanager_hostname
+          value: resourcemanager
         - key: YARN_NODEMANAGER_USER
           value: root

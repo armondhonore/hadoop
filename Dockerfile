@@ -2,10 +2,11 @@ FROM apache/hadoop:3
 
 USER root
 
-# Single-node pseudo-distributed startup script.
-# Formats the NameNode on first boot, then starts all four daemons.
-RUN printf '#!/bin/bash\nset -e\nif [ ! -d /tmp/hadoop-root/dfs/name/current ]; then\n  hdfs namenode -format -nonInteractive\nfi\nhdfs namenode &\nhdfs datanode &\nyarn resourcemanager &\nyarn nodemanager &\nwait -n\n' > /start.sh && chmod +x /start.sh
+# Pass-through: each pod overrides CMD with the daemon to start,
+# e.g. CMD ["hdfs", "namenode"] or CMD ["yarn", "resourcemanager"].
+# Namenode formats storage on first boot before starting.
+RUN printf '#!/bin/bash\nset -e\nif [[ "$1 $2" == "hdfs namenode" ]] && [ ! -d /tmp/hadoop-root/dfs/name/current ]; then\n  hdfs namenode -format -nonInteractive\nfi\nexec "$@"\n' > /entrypoint.sh && chmod +x /entrypoint.sh
 
-EXPOSE 8088 9870
+EXPOSE 9870 9864 8088 8042
 
-CMD ["/start.sh"]
+ENTRYPOINT ["/entrypoint.sh"]
