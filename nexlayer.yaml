@@ -1,0 +1,21 @@
+application:
+  name: hadoop
+  pods:
+    - name: hadoop
+      image: "# filled by pipeline"
+      path: /
+      servicePorts:
+        - 8088
+      vars:
+        - key: HADOOP_CLUSTER_NAME
+          value: nexlayer
+        - key: HDFS_NAMENODE_USER
+          value: root
+        - key: HDFS_DATANODE_USER
+          value: root
+        - key: HDFS_SECONDARYNAMENODE_USER
+          value: root
+        - key: YARN_RESOURCEMANAGER_USER
+          value: root
+        - key: YARN_NODEMANAGER_USER
+          value: root
