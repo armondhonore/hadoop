@@ -29,8 +29,7 @@ import java.util.LinkedList;
 import java.util.TreeMap;
 import java.util.zip.CRC32;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSInputStream;
 import org.apache.hadoop.fs.FileStatus;
@@ -45,13 +44,16 @@ import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption;
 import org.apache.hadoop.hdfs.server.namenode.FSImage;
 import org.apache.hadoop.hdfs.server.namenode.FSImageFormat;
 import org.apache.hadoop.hdfs.server.namenode.FSImageTestUtil;
+import org.apache.hadoop.hdfs.server.namenode.IllegalReservedPathException;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.log4j.Logger;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.apache.hadoop.hdfs.inotify.Event.CreateEvent;
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * This tests data transfer protocol handling in the Datanode. It sends
@@ -65,8 +67,8 @@ import static org.junit.Assert.*;
  */
 public class TestDFSUpgradeFromImage {
   
-  private static final Log LOG = LogFactory
-      .getLog(TestDFSUpgradeFromImage.class);
+  private static final org.slf4j.Logger LOG = LoggerFactory
+      .getLogger(TestDFSUpgradeFromImage.class);
   private static final File TEST_ROOT_DIR =
                       new File(MiniDFSCluster.getBaseDirectory());
   private static final String HADOOP_DFS_DIR_TXT = "hadoop-dfs-dir.txt";
@@ -88,8 +90,10 @@ public class TestDFSUpgradeFromImage {
   static {
     upgradeConf = new HdfsConfiguration();
     upgradeConf.setInt(DFSConfigKeys.DFS_DATANODE_SCAN_PERIOD_HOURS_KEY, -1); // block scanning off
-    if (System.getProperty("test.build.data") == null) { // to allow test to be run outside of Maven
-      System.setProperty("test.build.data", "build/test/data");
+    if (System.getProperty(GenericTestUtils.SYSPROP_TEST_DATA_DIR) == null) {
+      // to allow test to be run outside of Maven
+      System.setProperty(GenericTestUtils.SYSPROP_TEST_DATA_DIR,
+          GenericTestUtils.DEFAULT_TEST_DATA_DIR);
     }
   }
   
@@ -104,19 +108,19 @@ public class TestDFSUpgradeFromImage {
   
   void unpackStorage(String tarFileName, String referenceName)
       throws IOException {
-    String tarFile = System.getProperty("test.cache.data", "build/test/cache")
+    String tarFile = System.getProperty("test.cache.data", "target/test/cache")
         + "/" + tarFileName;
-    String dataDir = System.getProperty("test.build.data", "build/test/data");
+    File dataDir = GenericTestUtils.getTestDir();
     File dfsDir = new File(dataDir, "dfs");
     if ( dfsDir.exists() && !FileUtil.fullyDelete(dfsDir) ) {
       throw new IOException("Could not delete dfs directory '" + dfsDir + "'");
     }
     LOG.info("Unpacking " + tarFile);
-    FileUtil.unTar(new File(tarFile), new File(dataDir));
+    FileUtil.unTar(new File(tarFile), dataDir);
     //Now read the reference info
     
     BufferedReader reader = new BufferedReader(new FileReader(
-        System.getProperty("test.cache.data", "build/test/cache")
+        System.getProperty("test.cache.data", "target/test/cache")
             + "/" + referenceName));
     String line;
     while ( (line = reader.readLine()) != null ) {
@@ -160,7 +164,7 @@ public class TestDFSUpgradeFromImage {
       // The paths are expected to be listed in the same order 
       // as they are traversed here.
       assertEquals(info.path, path);
-      assertEquals("Checking checksum for " + path, info.checksum, checksum);
+      assertEquals(info.checksum, checksum, "Checking checksum for " + path);
     }
   }
   
@@ -172,7 +176,7 @@ public class TestDFSUpgradeFromImage {
   private static FSInputStream dfsOpenFileWithRetries(DistributedFileSystem dfs,
       String pathName) throws IOException {
     IOException exc = null;
-    for (int tries = 0; tries < 10; tries++) {
+    for (int tries = 0; tries < 30; tries++) {
       try {
         return dfs.dfs.open(pathName);
       } catch (IOException e) {
@@ -183,6 +187,7 @@ public class TestDFSUpgradeFromImage {
         throw exc;
       }
       try {
+        LOG.info("Open failed. " + tries + " times. Retrying.");
         Thread.sleep(1000);
       } catch (InterruptedException ignored) {}
     }
@@ -249,9 +254,9 @@ public class TestDFSUpgradeFromImage {
 
     // Set up a fake NN storage that looks like an ancient Hadoop dir circa 0.3.0
     FileUtil.fullyDelete(namenodeStorage);
-    assertTrue("Make " + namenodeStorage, namenodeStorage.mkdirs());
+    assertTrue(namenodeStorage.mkdirs(), "Make " + namenodeStorage);
     File imageDir = new File(namenodeStorage, "image");
-    assertTrue("Make " + imageDir, imageDir.mkdirs());
+    assertTrue(imageDir.mkdirs(), "Make " + imageDir);
 
     // Hex dump of a formatted image from Hadoop 0.3.0
     File imageFile = new File(imageDir, "fsimage");
@@ -326,12 +331,12 @@ public class TestDFSUpgradeFromImage {
       fail("Upgrade did not fail with bad MD5");
     } catch (IOException ioe) {
       String msg = StringUtils.stringifyException(ioe);
-      if (!msg.contains("Failed to load an FSImage file")) {
+      if (!msg.contains("Failed to load FSImage file")) {
         throw ioe;
       }
       int md5failures = appender.countExceptionsWithMessage(
           " is corrupt with MD5 checksum of ");
-      assertEquals("Upgrade did not fail with bad MD5", 1, md5failures);
+      assertEquals(1, md5failures, "Upgrade did not fail with bad MD5");
     }
   }
 
@@ -393,10 +398,10 @@ public class TestDFSUpgradeFromImage {
           }
         }
         for (String s: expected) {
-          assertTrue("Did not find expected path " + s, found.contains(s));
+          assertTrue(found.contains(s), "Did not find expected path " + s);
         }
-        assertEquals("Found an unexpected path while listing filesystem",
-            found.size(), expected.length);
+        assertEquals(found.size(), expected.length,
+            "Found an unexpected path while listing filesystem");
       }
     } finally {
       if (cluster != null) {
@@ -457,10 +462,10 @@ public class TestDFSUpgradeFromImage {
           }
         }
         for (String s: expected) {
-          assertTrue("Did not find expected path " + s, found.contains(s));
+          assertTrue(found.contains(s), "Did not find expected path " + s);
         }
-        assertEquals("Found an unexpected path while listing filesystem",
-            found.size(), expected.length);
+        assertEquals(found.size(), expected.length,
+            "Found an unexpected path while listing filesystem");
       }
     } finally {
       if (cluster != null) {
@@ -485,10 +490,15 @@ public class TestDFSUpgradeFromImage {
               .format(false)
               .startupOption(StartupOption.UPGRADE)
               .numDataNodes(0).build();
-    } catch (IllegalArgumentException e) {
-      GenericTestUtils.assertExceptionContains(
-          "reserved path component in this version",
-          e);
+    } catch (IOException ioe) {
+        Throwable cause = ioe.getCause();
+        if (cause != null && cause instanceof IllegalReservedPathException) {
+          GenericTestUtils.assertExceptionContains(
+              "reserved path component in this version",
+              cause);
+        } else {
+          throw ioe;
+        }
     } finally {
       if (cluster != null) {
         cluster.shutdown();
@@ -547,10 +557,10 @@ public class TestDFSUpgradeFromImage {
           }
         }
         for (String s: expected) {
-          assertTrue("Did not find expected path " + s, found.contains(s));
+          assertTrue(found.contains(s), "Did not find expected path " + s);
         }
-        assertEquals("Found an unexpected path while listing filesystem",
-            found.size(), expected.length);
+        assertEquals(found.size(), expected.length,
+            "Found an unexpected path while listing filesystem");
       }
     } finally {
       if (cluster != null) {
@@ -563,9 +573,18 @@ public class TestDFSUpgradeFromImage {
       Path path) throws IOException {
     String pathStr = path.toString();
     HdfsFileStatus status = dfs.getFileInfo(pathStr);
-    if (!status.isDir()) {
-      dfs.recoverLease(pathStr);
-      return;
+    if (!status.isDirectory()) {
+      for (int retries = 10; retries > 0; retries--) {
+        if (dfs.recoverLease(pathStr)) {
+          return;
+        } else {
+          try {
+            Thread.sleep(1000);
+          } catch (InterruptedException ignored) {
+          }
+        }
+      }
+      throw new IOException("Failed to recover lease of " + path);
     }
     byte prev[] = HdfsFileStatus.EMPTY_NAME;
     DirectoryListing dirList;
@@ -615,10 +634,10 @@ public class TestDFSUpgradeFromImage {
     unpackStorage(HADOOP1_BBW_IMAGE, HADOOP_DFS_DIR_TXT);
     Configuration conf = new Configuration(upgradeConf);
     conf.set(DFSConfigKeys.DFS_DATANODE_DATA_DIR_KEY, 
-        System.getProperty("test.build.data") + File.separator + 
+        GenericTestUtils.getTempPath(
         "dfs" + File.separator + 
         "data" + File.separator + 
-        "data1");
+        "data1"));
     upgradeAndVerify(new MiniDFSCluster.Builder(conf).
           numDataNodes(1).enableManagedDfsDirsRedundancy(false).
           manageDataDfsDirs(false), null);

@@ -25,8 +25,6 @@ import java.io.Writer;
 import java.util.Arrays;
 import java.util.List;
 
-import junit.framework.TestCase;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileUtil;
@@ -34,7 +32,6 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Text;
-import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.MiniMRCluster;
 import org.apache.hadoop.mapred.Utils;
 import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
@@ -42,21 +39,27 @@ import org.apache.hadoop.mapreduce.lib.input.TextInputFormat;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
 import org.apache.hadoop.mapreduce.lib.output.LazyOutputFormat;
 import org.apache.hadoop.mapreduce.lib.output.TextOutputFormat;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * A JUnit test to test the Map-Reduce framework's feature to create part
  * files only if there is an explicit output.collect. This helps in preventing
  * 0 byte files
  */
-public class TestMapReduceLazyOutput extends TestCase {
-  private static final int NUM_HADOOP_SLAVES = 3;
+public class TestMapReduceLazyOutput {
+  private static final int NUM_HADOOP_WORKERS = 3;
   private static final int NUM_MAPS_PER_NODE = 2;
-  private static final Path INPUT = new Path("/testlazy/input");
+  private static final Path INPUTPATH = new Path("/testlazy/input");
 
-  private static final List<String> input = 
+  private static final List<String> INPUTLIST =
     Arrays.asList("All","Roads","Lead","To","Hadoop");
 
-  public static class TestMapper 
+  /**
+   * Test mapper.
+   */
+  public static class TestMapper
   extends Mapper<LongWritable, Text, LongWritable, Text>{
 
     public void map(LongWritable key, Text value, Context context
@@ -69,11 +72,13 @@ public class TestMapReduceLazyOutput extends TestCase {
     }
   }
 
-
-  public static class TestReducer 
+  /**
+   * Test Reducer.
+   */
+  public static class TestReducer
   extends Reducer<LongWritable,Text,LongWritable,Text> {
-    
-    public void reduce(LongWritable key, Iterable<Text> values, 
+
+    public void reduce(LongWritable key, Iterable<Text> values,
         Context context) throws IOException, InterruptedException {
       String id = context.getTaskAttemptID().toString();
       // Reducer 0 does not output anything
@@ -84,13 +89,13 @@ public class TestMapReduceLazyOutput extends TestCase {
       }
     }
   }
-  
+
   private static void runTestLazyOutput(Configuration conf, Path output,
-      int numReducers, boolean createLazily) 
+      int numReducers, boolean createLazily)
   throws Exception {
     Job job = Job.getInstance(conf, "Test-Lazy-Output");
 
-    FileInputFormat.setInputPaths(job, INPUT);
+    FileInputFormat.setInputPaths(job, INPUTPATH);
     FileOutputFormat.setOutputPath(job, output);
 
     job.setJarByClass(TestMapReduceLazyOutput.class);
@@ -112,17 +117,17 @@ public class TestMapReduceLazyOutput extends TestCase {
 
   public void createInput(FileSystem fs, int numMappers) throws Exception {
     for (int i =0; i < numMappers; i++) {
-      OutputStream os = fs.create(new Path(INPUT, 
+      OutputStream os = fs.create(new Path(INPUTPATH,
         "text" + i + ".txt"));
       Writer wr = new OutputStreamWriter(os);
-      for(String inp : input) {
+      for(String inp : INPUTLIST) {
         wr.write(inp+"\n");
       }
       wr.close();
     }
   }
 
-
+  @Test
   public void testLazyOutput() throws Exception {
     MiniDFSCluster dfs = null;
     MiniMRCluster mr = null;
@@ -131,22 +136,23 @@ public class TestMapReduceLazyOutput extends TestCase {
       Configuration conf = new Configuration();
 
       // Start the mini-MR and mini-DFS clusters
-      dfs = new MiniDFSCluster.Builder(conf).numDataNodes(NUM_HADOOP_SLAVES)
+      dfs = new MiniDFSCluster.Builder(conf).numDataNodes(NUM_HADOOP_WORKERS)
           .build();
       fileSys = dfs.getFileSystem();
-      mr = new MiniMRCluster(NUM_HADOOP_SLAVES, fileSys.getUri().toString(), 1);
+      mr = new MiniMRCluster(NUM_HADOOP_WORKERS,
+                             fileSys.getUri().toString(), 1);
 
       int numReducers = 2;
-      int numMappers = NUM_HADOOP_SLAVES * NUM_MAPS_PER_NODE;
+      int numMappers = NUM_HADOOP_WORKERS * NUM_MAPS_PER_NODE;
 
       createInput(fileSys, numMappers);
       Path output1 = new Path("/testlazy/output1");
 
-      // Test 1. 
-      runTestLazyOutput(mr.createJobConf(), output1, 
+      // Test 1.
+      runTestLazyOutput(mr.createJobConf(), output1,
           numReducers, true);
 
-      Path[] fileList = 
+      Path[] fileList =
         FileUtil.stat2Paths(fileSys.listStatus(output1,
             new Utils.OutputFileUtils.OutputFilesFilter()));
       for(int i=0; i < fileList.length; ++i) {

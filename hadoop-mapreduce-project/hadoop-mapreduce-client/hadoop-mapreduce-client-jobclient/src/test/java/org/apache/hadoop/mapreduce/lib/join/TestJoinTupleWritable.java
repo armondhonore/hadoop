@@ -24,8 +24,6 @@ import java.io.DataOutputStream;
 import java.util.Arrays;
 import java.util.Random;
 
-import junit.framework.TestCase;
-
 import org.apache.hadoop.io.BooleanWritable;
 import org.apache.hadoop.io.BytesWritable;
 import org.apache.hadoop.io.FloatWritable;
@@ -33,8 +31,14 @@ import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.Writable;
+import org.junit.jupiter.api.Test;
 
-public class TestJoinTupleWritable extends TestCase {
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+public class TestJoinTupleWritable {
 
   private TupleWritable makeTuple(Writable[] writs) {
     Writable[] sub1 = { writs[1], writs[2] };
@@ -92,11 +96,12 @@ public class TestJoinTupleWritable extends TestCase {
         i = verifIter(writs, ((TupleWritable)w), i);
         continue;
       }
-      assertTrue("Bad value", w.equals(writs[i++]));
+      assertTrue(w.equals(writs[i++]), "Bad value");
     }
     return i;
   }
 
+  @Test
   public void testIterable() throws Exception {
     Random r = new Random();
     Writable[] writs = {
@@ -118,6 +123,7 @@ public class TestJoinTupleWritable extends TestCase {
     verifIter(writs, t, 0);
   }
 
+  @Test
   public void testNestedIterable() throws Exception {
     Random r = new Random();
     Writable[] writs = {
@@ -133,9 +139,10 @@ public class TestJoinTupleWritable extends TestCase {
       new IntWritable(r.nextInt())
     };
     TupleWritable sTuple = makeTuple(writs);
-    assertTrue("Bad count", writs.length == verifIter(writs, sTuple, 0));
+    assertTrue(writs.length == verifIter(writs, sTuple, 0), "Bad count");
   }
 
+  @Test
   public void testWritable() throws Exception {
     Random r = new Random();
     Writable[] writs = {
@@ -156,9 +163,10 @@ public class TestJoinTupleWritable extends TestCase {
     ByteArrayInputStream in = new ByteArrayInputStream(out.toByteArray());
     TupleWritable dTuple = new TupleWritable();
     dTuple.readFields(new DataInputStream(in));
-    assertTrue("Failed to write/read tuple", sTuple.equals(dTuple));
+    assertTrue(sTuple.equals(dTuple), "Failed to write/read tuple");
   }
 
+  @Test
   public void testWideWritable() throws Exception {
     Writable[] manyWrits = makeRandomWritables(131);
     
@@ -174,11 +182,13 @@ public class TestJoinTupleWritable extends TestCase {
     ByteArrayInputStream in = new ByteArrayInputStream(out.toByteArray());
     TupleWritable dTuple = new TupleWritable();
     dTuple.readFields(new DataInputStream(in));
-    assertTrue("Failed to write/read tuple", sTuple.equals(dTuple));
-    assertEquals("All tuple data has not been read from the stream", 
-      -1, in.read());
+    assertThat(dTuple).withFailMessage("Failed to write/read tuple")
+        .isEqualTo(sTuple);
+    assertEquals(-1, in.read(),
+        "All tuple data has not been read from the stream");
   }
-  
+
+  @Test
   public void testWideWritable2() throws Exception {
     Writable[] manyWrits = makeRandomWritables(71);
     
@@ -192,15 +202,17 @@ public class TestJoinTupleWritable extends TestCase {
     ByteArrayInputStream in = new ByteArrayInputStream(out.toByteArray());
     TupleWritable dTuple = new TupleWritable();
     dTuple.readFields(new DataInputStream(in));
-    assertTrue("Failed to write/read tuple", sTuple.equals(dTuple));
-    assertEquals("All tuple data has not been read from the stream", 
-      -1, in.read());
+    assertThat(dTuple).withFailMessage("Failed to write/read tuple")
+            .isEqualTo(sTuple);
+    assertEquals(-1, in.read(),
+        "All tuple data has not been read from the stream");
   }
   
   /**
    * Tests a tuple writable with more than 64 values and the values set written
    * spread far apart.
    */
+  @Test
   public void testSparseWideWritable() throws Exception {
     Writable[] manyWrits = makeRandomWritables(131);
     
@@ -216,11 +228,13 @@ public class TestJoinTupleWritable extends TestCase {
     ByteArrayInputStream in = new ByteArrayInputStream(out.toByteArray());
     TupleWritable dTuple = new TupleWritable();
     dTuple.readFields(new DataInputStream(in));
-    assertTrue("Failed to write/read tuple", sTuple.equals(dTuple));
-    assertEquals("All tuple data has not been read from the stream", 
-      -1, in.read());
+    assertThat(dTuple).withFailMessage("Failed to write/read tuple")
+        .isEqualTo(sTuple);
+    assertEquals(-1, in.read(),
+        "All tuple data has not been read from the stream");
   }
-  
+
+  @Test
   public void testWideTuple() throws Exception {
     Text emptyText = new Text("Should be empty");
     Writable[] values = new Writable[64];
@@ -236,12 +250,12 @@ public class TestJoinTupleWritable extends TestCase {
         assertTrue(has);
       }
       else {
-        assertFalse("Tuple position is incorrectly labelled as set: " + pos,
-          has);
+        assertFalse(has, "Tuple position is incorrectly labelled as set: " + pos);
       }
     }
   }
-  
+
+  @Test
   public void testWideTuple2() throws Exception {
     Text emptyText = new Text("Should be empty");
     Writable[] values = new Writable[64];
@@ -257,8 +271,7 @@ public class TestJoinTupleWritable extends TestCase {
         assertTrue(has);
       }
       else {
-        assertFalse("Tuple position is incorrectly labelled as set: " + pos,
-          has);
+        assertFalse(has, "Tuple position is incorrectly labelled as set: " + pos);
       }
     }
   }
@@ -266,6 +279,7 @@ public class TestJoinTupleWritable extends TestCase {
   /**
    * Tests that we can write more than 64 values.
    */
+  @Test
   public void testWideTupleBoundary() throws Exception {
     Text emptyText = new Text("Should not be set written");
     Writable[] values = new Writable[65];
@@ -281,8 +295,7 @@ public class TestJoinTupleWritable extends TestCase {
         assertTrue(has);
       }
       else {
-        assertFalse("Tuple position is incorrectly labelled as set: " + pos,
-          has);
+        assertFalse(has, "Tuple position is incorrectly labelled as set: " + pos);
       }
     }
   }

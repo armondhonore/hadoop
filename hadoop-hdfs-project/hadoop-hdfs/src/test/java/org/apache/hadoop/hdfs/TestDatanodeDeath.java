@@ -17,8 +17,8 @@
  */
 package org.apache.hadoop.hdfs;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 
@@ -34,18 +34,19 @@ import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.hdfs.server.protocol.InterDatanodeProtocol;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.apache.log4j.Level;
-import org.junit.Test;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
+import org.junit.jupiter.api.Test;
+import org.slf4j.event.Level;
 
 /**
  * This class tests that pipelines survive data node death and recovery.
  */
 public class TestDatanodeDeath {
   {
-    DFSTestUtil.setNameNodeLogLevel(Level.ALL);
-    GenericTestUtils.setLogLevel(DataNode.LOG, Level.ALL);
-    GenericTestUtils.setLogLevel(DFSClient.LOG, Level.ALL);
-    GenericTestUtils.setLogLevel(InterDatanodeProtocol.LOG, Level.ALL);
+    DFSTestUtil.setNameNodeLogLevel(Level.TRACE);
+    GenericTestUtils.setLogLevel(DataNode.LOG, Level.TRACE);
+    GenericTestUtils.setLogLevel(DFSClient.LOG, Level.TRACE);
+    GenericTestUtils.setLogLevel(InterDatanodeProtocol.LOG, Level.TRACE);
   }
 
   static final int blockSize = 8192;
@@ -61,7 +62,7 @@ public class TestDatanodeDeath {
   //
   // an object that does a bunch of transactions
   //
-  static class Workload extends Thread {
+  static class Workload extends SubjectInheritingThread {
     private final short replication;
     private final int numberOfFiles;
     private final int id;
@@ -81,7 +82,7 @@ public class TestDatanodeDeath {
 
     // create a bunch of files. Write to them and then verify.
     @Override
-    public void run() {
+    public void work() {
       System.out.println("Workload starting ");
       for (int i = 0; i < numberOfFiles; i++) {
         Path filename = new Path(id + "." + i);
@@ -96,7 +97,7 @@ public class TestDatanodeDeath {
           checkFile(fs, filename, replication, numBlocks, fileSize, myseed);
         } catch (Throwable e) {
           System.out.println("Workload exception " + e);
-          assertTrue(e.toString(), false);
+          assertTrue(false, e.toString());
         }
 
         // increment the stamp to indicate that another file is done.
@@ -148,9 +149,8 @@ public class TestDatanodeDeath {
     int attempt = 0;
 
     long len = fileSys.getFileStatus(name).getLen();
-    assertTrue(name + " should be of size " + filesize +
-               " but found to be of size " + len, 
-               len == filesize);
+    assertTrue(len == filesize, name + " should be of size " + filesize +
+        " but found to be of size " + len);
 
     // wait till all full blocks are confirmed by the datanodes.
     while (!done) {
@@ -198,9 +198,8 @@ public class TestDatanodeDeath {
 
   private static void checkData(byte[] actual, int from, byte[] expected, String message) {
     for (int idx = 0; idx < actual.length; idx++) {
-      assertEquals(message+" byte "+(from+idx)+" differs. expected "+
-                        expected[from+idx]+" actual "+actual[idx],
-                        actual[idx], expected[from+idx]);
+      assertEquals(actual[idx], expected[from + idx], message + " byte " + (from + idx) +
+          " differs. expected " + expected[from + idx] + " actual " + actual[idx]);
       actual[idx] = 0;
     }
   }
@@ -212,7 +211,7 @@ public class TestDatanodeDeath {
    * a block do not get killed (otherwise the file will be corrupt and the
    * test will fail).
    */
-  class Modify extends Thread {
+  class Modify extends SubjectInheritingThread {
     volatile boolean running;
     final MiniDFSCluster cluster;
     final Configuration conf;
@@ -224,7 +223,7 @@ public class TestDatanodeDeath {
     }
 
     @Override
-    public void run() {
+    public void work() {
 
       while (running) {
         try {
@@ -259,7 +258,7 @@ public class TestDatanodeDeath {
             // cluster.startDataNodes(conf, 1, true, null, null);
           } catch (IOException e) {
             System.out.println("TestDatanodeDeath Modify exception " + e);
-            assertTrue("TestDatanodeDeath Modify exception " + e, false);
+            assertTrue(false, "TestDatanodeDeath Modify exception " + e);
             running = false;
           }
         }
@@ -286,7 +285,7 @@ public class TestDatanodeDeath {
     Configuration conf = new HdfsConfiguration();
     conf.setInt(DFSConfigKeys.DFS_NAMENODE_HEARTBEAT_RECHECK_INTERVAL_KEY, 2000);
     conf.setInt(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 2);
-    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_PENDING_TIMEOUT_SEC_KEY, 2);
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_RECONSTRUCTION_PENDING_TIMEOUT_SEC_KEY, 2);
     conf.setInt(HdfsClientConfigKeys.DFS_CLIENT_SOCKET_TIMEOUT_KEY, 5000);
     MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf)
                                                .numDataNodes(numDatanodes).build();
@@ -342,7 +341,7 @@ public class TestDatanodeDeath {
     Configuration conf = new HdfsConfiguration();
     conf.setInt(DFSConfigKeys.DFS_NAMENODE_HEARTBEAT_RECHECK_INTERVAL_KEY, 2000);
     conf.setInt(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1);
-    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_PENDING_TIMEOUT_SEC_KEY, 2);
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_RECONSTRUCTION_PENDING_TIMEOUT_SEC_KEY, 2);
     conf.setInt(HdfsClientConfigKeys.DFS_CLIENT_SOCKET_TIMEOUT_KEY, 5000);
     int myMaxNodes = 5;
     System.out.println("SimpleTest starting with DataNode to Kill " + 
@@ -399,7 +398,7 @@ public class TestDatanodeDeath {
     } catch (Throwable e) {
       System.out.println("Simple Workload exception " + e);
       e.printStackTrace();
-      assertTrue(e.toString(), false);
+      assertTrue(false, e.toString());
     } finally {
       fs.close();
       cluster.shutdown();

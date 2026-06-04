@@ -19,23 +19,24 @@ package org.apache.hadoop.hdfs.server.blockmanagement;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.EnumMap;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hdfs.AddBlockFlag;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.protocol.BlockStoragePolicy;
-import org.apache.hadoop.hdfs.DFSConfigKeys;
-import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
-import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.net.NetworkTopology;
 import org.apache.hadoop.net.Node;
-import org.apache.hadoop.util.ReflectionUtils;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** 
  * This interface is used for choosing the desired number of targets
@@ -43,7 +44,8 @@ import org.apache.hadoop.util.ReflectionUtils;
  */
 @InterfaceAudience.Private
 public abstract class BlockPlacementPolicy {
-  static final Log LOG = LogFactory.getLog(BlockPlacementPolicy.class);
+  public static final Logger LOG = LoggerFactory.getLogger(
+      BlockPlacementPolicy.class);
 
   @InterfaceAudience.Private
   public static class NotEnoughReplicasException extends Exception {
@@ -65,6 +67,7 @@ public abstract class BlockPlacementPolicy {
    * @param returnChosenNodes decide if the chosenNodes are returned.
    * @param excludedNodes datanodes that should not be considered as targets.
    * @param blocksize size of the data to be written.
+   * @param flags Block placement flags.
    * @return array of DatanodeDescriptor instances chosen as target
    * and sorted as a pipeline.
    */
@@ -75,11 +78,10 @@ public abstract class BlockPlacementPolicy {
                                              boolean returnChosenNodes,
                                              Set<Node> excludedNodes,
                                              long blocksize,
-                                             BlockStoragePolicy storagePolicy);
+                                             BlockStoragePolicy storagePolicy,
+                                             EnumSet<AddBlockFlag> flags);
   
   /**
-   * Same as {@link #chooseTarget(String, int, Node, Set, long, List, StorageType)}
-   * with added parameter {@code favoredDatanodes}
    * @param favoredNodes datanodes that should be favored as targets. This
    *          is only a hint and due to cluster state, namenode may not be 
    *          able to place the blocks on these datanodes.
@@ -89,50 +91,64 @@ public abstract class BlockPlacementPolicy {
       Set<Node> excludedNodes,
       long blocksize,
       List<DatanodeDescriptor> favoredNodes,
-      BlockStoragePolicy storagePolicy) {
+      BlockStoragePolicy storagePolicy,
+      EnumSet<AddBlockFlag> flags) {
     // This class does not provide the functionality of placing
     // a block in favored datanodes. The implementations of this class
     // are expected to provide this functionality
 
     return chooseTarget(src, numOfReplicas, writer, 
         new ArrayList<DatanodeStorageInfo>(numOfReplicas), false,
-        excludedNodes, blocksize, storagePolicy);
+        excludedNodes, blocksize, storagePolicy, flags);
+  }
+
+  /**
+   * @param storageTypes storage types that should be used as targets.
+   */
+  public DatanodeStorageInfo[] chooseTarget(String srcPath, int numOfReplicas,
+      Node writer, List<DatanodeStorageInfo> chosen, boolean returnChosenNodes,
+      Set<Node> excludedNodes, long blocksize, BlockStoragePolicy storagePolicy,
+      EnumSet<AddBlockFlag> flags, EnumMap<StorageType, Integer> storageTypes) {
+    return chooseTarget(srcPath, numOfReplicas, writer, chosen,
+        returnChosenNodes, excludedNodes, blocksize, storagePolicy, flags);
   }
 
   /**
    * Verify if the block's placement meets requirement of placement policy,
    * i.e. replicas are placed on no less than minRacks racks in the system.
    * 
-   * @param srcPath the full pathname of the file to be verified
-   * @param lBlk block with locations
+   * @param locs block with locations
    * @param numOfReplicas replica number of file to be verified
    * @return the result of verification
    */
-  abstract public BlockPlacementStatus verifyBlockPlacement(String srcPath,
-      LocatedBlock lBlk,
-      int numOfReplicas);
+  public abstract BlockPlacementStatus verifyBlockPlacement(
+      DatanodeInfo[] locs, int numOfReplicas);
+
   /**
-   * Decide whether deleting the specified replica of the block still makes 
-   * the block conform to the configured block placement policy.
-   * 
-   * @param srcBC block collection of file to which block-to-be-deleted belongs
-   * @param block The block to be deleted
-   * @param replicationFactor The required number of replicas for this block
-   * @param moreThanOne The replica locations of this block that are present
-   *                    on more than one unique racks.
-   * @param exactlyOne Replica locations of this block that  are present
-   *                    on exactly one unique racks.
-   * @param excessTypes The excess {@link StorageType}s according to the
-   *                    {@link BlockStoragePolicy}.
-   * @return the replica that is the best candidate for deletion
+   * Select the excess replica storages for deletion based on either
+   * delNodehint/Excess storage types.
+   *
+   * @param availableReplicas
+   *          available replicas
+   * @param delCandidates
+   *          Candidates for deletion. For normal replication, this set is the
+   *          same with availableReplicas. For striped blocks, this set is a
+   *          subset of availableReplicas.
+   * @param expectedNumOfReplicas
+   *          The expected number of replicas remaining in the delCandidates
+   * @param excessTypes
+   *          type of the storagepolicy
+   * @param addedNode
+   *          New replica reported
+   * @param delNodeHint
+   *          Hint for excess storage selection
+   * @return Returns the list of excess replicas chosen for deletion
    */
-  abstract public DatanodeStorageInfo chooseReplicaToDelete(
-      BlockCollection srcBC,
-      Block block, 
-      short replicationFactor,
-      Collection<DatanodeStorageInfo> moreThanOne,
-      Collection<DatanodeStorageInfo> exactlyOne,
-      List<StorageType> excessTypes);
+  public abstract List<DatanodeStorageInfo> chooseReplicasToDelete(
+      Collection<DatanodeStorageInfo> availableReplicas,
+      Collection<DatanodeStorageInfo> delCandidates, int expectedNumOfReplicas,
+      List<StorageType> excessTypes, DatanodeDescriptor addedNode,
+      DatanodeDescriptor delNodeHint);
 
   /**
    * Used to setup a BlockPlacementPolicy object. This should be defined by 
@@ -142,34 +158,20 @@ public abstract class BlockPlacementPolicy {
    * @param stats retrieve cluster status from here
    * @param clusterMap cluster topology
    */
-  abstract protected void initialize(Configuration conf,  FSClusterStats stats, 
+  protected abstract void initialize(Configuration conf,  FSClusterStats stats,
                                      NetworkTopology clusterMap, 
                                      Host2NodesMap host2datanodeMap);
-    
+
   /**
-   * Get an instance of the configured Block Placement Policy based on the
-   * the configuration property
-   * {@link  DFSConfigKeys#DFS_BLOCK_REPLICATOR_CLASSNAME_KEY}.
-   * 
-   * @param conf the configuration to be used
-   * @param stats an object that is used to retrieve the load on the cluster
-   * @param clusterMap the network topology of the cluster
-   * @return an instance of BlockPlacementPolicy
+   * Check if the move is allowed. Used by balancer and other tools.
+   *
+   * @param candidates all replicas including source and target
+   * @param source source replica of the move
+   * @param target target replica of the move
    */
-  public static BlockPlacementPolicy getInstance(Configuration conf, 
-                                                 FSClusterStats stats,
-                                                 NetworkTopology clusterMap,
-                                                 Host2NodesMap host2datanodeMap) {
-    final Class<? extends BlockPlacementPolicy> replicatorClass = conf.getClass(
-        DFSConfigKeys.DFS_BLOCK_REPLICATOR_CLASSNAME_KEY,
-        DFSConfigKeys.DFS_BLOCK_REPLICATOR_CLASSNAME_DEFAULT,
-        BlockPlacementPolicy.class);
-    final BlockPlacementPolicy replicator = ReflectionUtils.newInstance(
-        replicatorClass, conf);
-    replicator.initialize(conf, stats, clusterMap, host2datanodeMap);
-    return replicator;
-  }
-  
+  public abstract boolean isMovable(Collection<DatanodeInfo> candidates,
+      DatanodeInfo source, DatanodeInfo target);
+
   /**
    * Adjust rackmap, moreThanOne, and exactlyOne after removing replica on cur.
    *
@@ -194,11 +196,24 @@ public abstract class BlockPlacementPolicy {
     if (moreThanOne.remove(cur)) {
       if (storages.size() == 1) {
         final DatanodeStorageInfo remaining = storages.get(0);
-        moreThanOne.remove(remaining);
-        exactlyOne.add(remaining);
+        if (moreThanOne.remove(remaining)) {
+          exactlyOne.add(remaining);
+        }
       }
     } else {
       exactlyOne.remove(cur);
+    }
+  }
+
+  protected <T> DatanodeInfo getDatanodeInfo(T datanode) {
+    Preconditions.checkArgument(
+        datanode instanceof DatanodeInfo ||
+        datanode instanceof DatanodeStorageInfo,
+        "class " + datanode.getClass().getName() + " not allowed");
+    if (datanode instanceof DatanodeInfo) {
+      return ((DatanodeInfo)datanode);
+    } else {
+      return ((DatanodeStorageInfo)datanode).getDatanodeDescriptor();
     }
   }
 
@@ -209,41 +224,64 @@ public abstract class BlockPlacementPolicy {
   protected String getRack(final DatanodeInfo datanode) {
     return datanode.getNetworkLocation();
   }
-  
+
   /**
    * Split data nodes into two sets, one set includes nodes on rack with
    * more than one  replica, the other set contains the remaining nodes.
-   * 
-   * @param dataNodes datanodes to be split into two sets
+   *
+   * @param availableSet all the available DataNodes/storages of the block
+   * @param candidates DatanodeStorageInfo/DatanodeInfo to be split
+   *        into two sets
    * @param rackMap a map from rack to datanodes
    * @param moreThanOne contains nodes on rack with more than one replica
    * @param exactlyOne remains contains the remaining nodes
    */
-  public void splitNodesWithRack(
-      final Iterable<DatanodeStorageInfo> storages,
-      final Map<String, List<DatanodeStorageInfo>> rackMap,
-      final List<DatanodeStorageInfo> moreThanOne,
-      final List<DatanodeStorageInfo> exactlyOne) {
-    for(DatanodeStorageInfo s: storages) {
-      final String rackName = getRack(s.getDatanodeDescriptor());
-      List<DatanodeStorageInfo> storageList = rackMap.get(rackName);
+  public <T> void splitNodesWithRack(
+      final Iterable<T> availableSet,
+      final Collection<T> candidates,
+      final Map<String, List<T>> rackMap,
+      final List<T> moreThanOne,
+      final List<T> exactlyOne) {
+    for(T s: availableSet) {
+      final String rackName = getRack(getDatanodeInfo(s));
+      List<T> storageList = rackMap.get(rackName);
       if (storageList == null) {
-        storageList = new ArrayList<DatanodeStorageInfo>();
+        storageList = new ArrayList<>();
         rackMap.put(rackName, storageList);
       }
       storageList.add(s);
     }
-    
-    // split nodes into two sets
-    for(List<DatanodeStorageInfo> storageList : rackMap.values()) {
-      if (storageList.size() == 1) {
+    for (T candidate : candidates) {
+      final String rackName = getRack(getDatanodeInfo(candidate));
+      if (rackMap.get(rackName).size() == 1) {
         // exactlyOne contains nodes on rack with only one replica
-        exactlyOne.add(storageList.get(0));
+        exactlyOne.add(candidate);
       } else {
         // moreThanOne contains nodes on rack with more than one replica
-        moreThanOne.addAll(storageList);
+        moreThanOne.add(candidate);
       }
     }
   }
 
+  /**
+   * Updates the value used for excludeSlowNodesEnabled, which is set by
+   * {@code DFSConfigKeys.DFS_NAMENODE_BLOCKPLACEMENTPOLICY_EXCLUDE_SLOW_NODES_ENABLED_KEY}
+   * initially.
+   *
+   * @param enable true, we will filter out slow nodes
+   * when choosing targets for blocks, otherwise false not filter.
+   */
+  public abstract void setExcludeSlowNodesEnabled(boolean enable);
+
+  public abstract boolean getExcludeSlowNodesEnabled();
+
+  /**
+   * Updates the value used for minBlocksForWrite, which is set by
+   * {@code DFSConfigKeys.DFS_NAMENODE_BLOCKPLACEMENTPOLICY_MIN_BLOCKS_FOR_WRITE_KEY}.
+   *
+   * @param minBlocksForWrite the minimum number of blocks required for write operations.
+   */
+  public abstract void setMinBlocksForWrite(int minBlocksForWrite);
+
+  public abstract int getMinBlocksForWrite();
 }

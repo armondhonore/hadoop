@@ -16,7 +16,7 @@
 # limitations under the License.
 
 
-# Run a Hadoop command on all slave hosts.
+# Run a Hadoop command on all worker hosts.
 
 function hadoop_usage
 {
@@ -27,13 +27,13 @@ this="${BASH_SOURCE-$0}"
 bin=$(cd -P -- "$(dirname -- "${this}")" >/dev/null && pwd -P)
 
 # let's locate libexec...
-if [[ -n "${HADOOP_PREFIX}" ]]; then
-  DEFAULT_LIBEXEC_DIR="${HADOOP_PREFIX}/libexec"
+if [[ -n "${HADOOP_HOME}" ]]; then
+  HADOOP_DEFAULT_LIBEXEC_DIR="${HADOOP_HOME}/libexec"
 else
-  DEFAULT_LIBEXEC_DIR="${bin}/../libexec"
+  HADOOP_DEFAULT_LIBEXEC_DIR="${bin}/../libexec"
 fi
 
-HADOOP_LIBEXEC_DIR="${HADOOP_LIBEXEC_DIR:-$DEFAULT_LIBEXEC_DIR}"
+HADOOP_LIBEXEC_DIR="${HADOOP_LIBEXEC_DIR:-$HADOOP_DEFAULT_LIBEXEC_DIR}"
 # shellcheck disable=SC2034
 HADOOP_NEW_CONFIG=true
 if [[ -f "${HADOOP_LIBEXEC_DIR}/hdfs-config.sh" ]]; then
@@ -51,19 +51,19 @@ daemonmode=$1
 shift
 
 if [[ -z "${HADOOP_HDFS_HOME}" ]]; then
-  hdfsscript="${HADOOP_PREFIX}/bin/hdfs"
+  hdfsscript="${HADOOP_HOME}/bin/hdfs"
 else
   hdfsscript="${HADOOP_HDFS_HOME}/bin/hdfs"
 fi
 
 hadoop_error "WARNING: Use of this script to ${daemonmode} HDFS daemons is deprecated."
-hadoop_error "WARNING: Attempting to execute replacement \"hdfs --slaves --daemon ${daemonmode}\" instead."
+hadoop_error "WARNING: Attempting to execute replacement \"hdfs --workers --daemon ${daemonmode}\" instead."
 
 #
 # Original input was usually:
 #  hadoop-daemons.sh (shell options) (start|stop) (datanode|...) (daemon options)
 # we're going to turn this into
-#  hdfs --slaves --daemon (start|stop) (rest of options)
+#  hdfs --workers --daemon (start|stop) (rest of options)
 #
 for (( i = 0; i < ${#HADOOP_USER_PARAMS[@]}; i++ ))
 do
@@ -74,4 +74,4 @@ do
   fi
 done
 
-${hdfsscript} --slaves --daemon "${daemonmode}" "${HADOOP_USER_PARAMS[@]}"
+${hdfsscript} --workers --daemon "${daemonmode}" "${HADOOP_USER_PARAMS[@]}"

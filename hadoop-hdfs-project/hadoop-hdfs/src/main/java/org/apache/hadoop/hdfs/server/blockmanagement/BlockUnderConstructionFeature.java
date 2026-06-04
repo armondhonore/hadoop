@@ -18,12 +18,15 @@
 package org.apache.hadoop.hdfs.server.blockmanagement;
 
 import org.apache.hadoop.hdfs.protocol.Block;
+import org.apache.hadoop.hdfs.protocol.BlockType;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.BlockUCState;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.ReplicaState;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
 
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
+import java.util.NoSuchElementException;
 
 import static org.apache.hadoop.hdfs.server.common.HdfsServerConstants.BlockUCState.COMPLETE;
 
@@ -33,11 +36,13 @@ import static org.apache.hadoop.hdfs.server.common.HdfsServerConstants.BlockUCSt
  */
 public class BlockUnderConstructionFeature {
   private BlockUCState blockUCState;
+  private static final ReplicaUnderConstruction[] NO_REPLICAS =
+      new ReplicaUnderConstruction[0];
 
   /**
    * Block replicas as assigned when the block was allocated.
    */
-  private ReplicaUnderConstruction[] replicas;
+  private ReplicaUnderConstruction[] replicas = NO_REPLICAS;
 
   /**
    * Index of the primary data node doing the recovery. Useful for log
@@ -55,23 +60,41 @@ public class BlockUnderConstructionFeature {
   /**
    * The block source to use in the event of copy-on-write truncate.
    */
-  private Block truncateBlock;
+  private BlockInfo truncateBlock;
 
   public BlockUnderConstructionFeature(Block blk,
-      BlockUCState state, DatanodeStorageInfo[] targets) {
+      BlockUCState state, DatanodeStorageInfo[] targets, BlockType blockType) {
     assert getBlockUCState() != COMPLETE :
         "BlockUnderConstructionFeature cannot be in COMPLETE state";
     this.blockUCState = state;
-    setExpectedLocations(blk, targets);
+    setExpectedLocations(blk, targets, blockType);
   }
 
   /** Set expected locations */
-  public void setExpectedLocations(Block block, DatanodeStorageInfo[] targets) {
-    int numLocations = targets == null ? 0 : targets.length;
+  public void setExpectedLocations(Block block, DatanodeStorageInfo[] targets,
+      BlockType blockType) {
+    if (targets == null) {
+      return;
+    }
+    int numLocations = 0;
+    for (DatanodeStorageInfo target : targets) {
+      if (target != null) {
+        numLocations++;
+      }
+    }
+
     this.replicas = new ReplicaUnderConstruction[numLocations];
-    for(int i = 0; i < numLocations; i++) {
-      replicas[i] = new ReplicaUnderConstruction(block, targets[i],
-          ReplicaState.RBW);
+    int offset = 0;
+    for(int i = 0; i < targets.length; i++) {
+      if (targets[i] != null) {
+        // when creating a new striped block we simply sequentially assign block
+        // index to each storage
+        Block replicaBlock = blockType == BlockType.STRIPED ?
+            new Block(block.getBlockId() + i, 0, block.getGenerationStamp()) :
+            block;
+        replicas[offset++] = new ReplicaUnderConstruction(replicaBlock,
+            targets[i], ReplicaState.RBW);
+      }
     }
   }
 
@@ -88,9 +111,77 @@ public class BlockUnderConstructionFeature {
     return storages;
   }
 
-  /** Get the number of expected locations */
+  /**
+   * Note that this iterator doesn't guarantee thread-safe. It depends on
+   * external mechanisms such as the FSNamesystem lock for protection.
+   */
+  public Iterator<DatanodeStorageInfo> getExpectedStorageLocationsIterator() {
+    return new Iterator<DatanodeStorageInfo>() {
+      private int index = 0;
+
+      @Override
+      public boolean hasNext() {
+        return index <  replicas.length;
+      }
+
+      @Override
+      public DatanodeStorageInfo next() {
+        if (!hasNext()) {
+          throw new NoSuchElementException();
+        }
+        return replicas[index++].getExpectedStorageLocation();
+      }
+    };
+  }
+
+  /**
+   * @return the index array indicating the block index in each storage. Used
+   * only by striped blocks.
+   */
+  public byte[] getBlockIndices() {
+    int numLocations = getNumExpectedLocations();
+    byte[] indices = new byte[numLocations];
+    for (int i = 0; i < numLocations; i++) {
+      indices[i] = BlockIdManager.getBlockIndex(replicas[i]);
+    }
+    return indices;
+  }
+
+  public byte[] getBlockIndicesForSpecifiedStorages(List<Integer> storageIdx) {
+    byte[] indices = new byte[storageIdx.size()];
+    for (int i = 0; i < indices.length; i++) {
+      indices[i] = BlockIdManager.getBlockIndex(replicas[storageIdx.get(i)]);
+    }
+    return indices;
+  }
+
   public int getNumExpectedLocations() {
-    return replicas == null ? 0 : replicas.length;
+    return replicas.length;
+  }
+
+  /**
+   * when committing a striped block whose size is less than a stripe, we need
+   * to decrease the scheduled block size of the DataNodes that do not store
+   * any internal block.
+   */
+  void updateStorageScheduledSize(BlockInfoStriped storedBlock) {
+    assert storedBlock.getUnderConstructionFeature() == this;
+    if (replicas.length == 0) {
+      return;
+    }
+    final int dataBlockNum = storedBlock.getDataBlockNum();
+    final int realDataBlockNum = storedBlock.getRealDataBlockNum();
+    if (realDataBlockNum < dataBlockNum) {
+      for (ReplicaUnderConstruction replica : replicas) {
+        int index = BlockIdManager.getBlockIndex(replica);
+        if (index >= realDataBlockNum && index < dataBlockNum) {
+          final DatanodeStorageInfo storage =
+              replica.getExpectedStorageLocation();
+          storage.getDatanodeDescriptor()
+              .decrementBlocksScheduled(storage.getStorageType());
+        }
+      }
+    }
   }
 
   /**
@@ -110,11 +201,11 @@ public class BlockUnderConstructionFeature {
   }
 
   /** Get recover block */
-  public Block getTruncateBlock() {
+  public BlockInfo getTruncateBlock() {
     return truncateBlock;
   }
 
-  public void setTruncateBlock(Block recoveryBlock) {
+  public void setTruncateBlock(BlockInfo recoveryBlock) {
     this.truncateBlock = recoveryBlock;
   }
 
@@ -127,12 +218,10 @@ public class BlockUnderConstructionFeature {
 
   List<ReplicaUnderConstruction> getStaleReplicas(long genStamp) {
     List<ReplicaUnderConstruction> staleReplicas = new ArrayList<>();
-    if (replicas != null) {
-      // Remove replicas with wrong gen stamp. The replica list is unchanged.
-      for (ReplicaUnderConstruction r : replicas) {
-        if (genStamp != r.getGenerationStamp()) {
-          staleReplicas.add(r);
-        }
+    // Remove replicas with wrong gen stamp. The replica list is unchanged.
+    for (ReplicaUnderConstruction r : replicas) {
+      if (genStamp != r.getGenerationStamp()) {
+        staleReplicas.add(r);
       }
     }
     return staleReplicas;
@@ -142,11 +231,18 @@ public class BlockUnderConstructionFeature {
    * Initialize lease recovery for this block.
    * Find the first alive data-node starting from the previous primary and
    * make it primary.
+   * @param blockInfo Block to be recovered
+   * @param recoveryId Recovery ID (new gen stamp)
+   * @param startRecovery Issue recovery command to datanode if true.
    */
-  public void initializeBlockRecovery(BlockInfo blockInfo, long recoveryId) {
+  public void initializeBlockRecovery(BlockInfo blockInfo, long recoveryId,
+      boolean startRecovery) {
     setBlockUCState(BlockUCState.UNDER_RECOVERY);
     blockRecoveryId = recoveryId;
-    if (replicas == null || replicas.length == 0) {
+    if (!startRecovery) {
+      return;
+    }
+    if (replicas.length == 0) {
       NameNode.blockStateChangeLog.warn("BLOCK*" +
           " BlockUnderConstructionFeature.initializeBlockRecovery:" +
           " No blocks found, lease removed.");
@@ -197,7 +293,7 @@ public class BlockUnderConstructionFeature {
   /** Add the reported replica if it is not already in the replica list. */
   void addReplicaIfNotPresent(DatanodeStorageInfo storage,
       Block reportedBlock, ReplicaState rState) {
-    if (replicas == null) {
+    if (replicas.length == 0) {
       replicas = new ReplicaUnderConstruction[1];
       replicas[0] = new ReplicaUnderConstruction(reportedBlock, storage,
           rState);
@@ -240,15 +336,24 @@ public class BlockUnderConstructionFeature {
       .append(", truncateBlock=").append(truncateBlock)
       .append(", primaryNodeIndex=").append(primaryNodeIndex)
       .append(", replicas=[");
-    if (replicas != null) {
-      int i = 0;
-      for (ReplicaUnderConstruction r : replicas) {
-        r.appendStringTo(sb);
-        if (++i < replicas.length) {
-          sb.append(", ");
-        }
+    int i = 0;
+    for (ReplicaUnderConstruction r : replicas) {
+      r.appendStringTo(sb);
+      if (++i < replicas.length) {
+        sb.append(", ");
       }
     }
     sb.append("]}");
+  }
+  
+  public void appendUCPartsConcise(StringBuilder sb) {
+    sb.append("replicas=");
+    int i = 0;
+    for (ReplicaUnderConstruction r : replicas) {
+      sb.append(r.getExpectedStorageLocation().getDatanodeDescriptor());
+      if (++i < replicas.length) {
+        sb.append(", ");
+      }
+    }
   }
 }

@@ -21,19 +21,23 @@ package org.apache.hadoop.io;
 import java.io.IOException;
 import java.util.Random;
 
-import junit.framework.TestCase;
-
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-public class TestDefaultStringifier extends TestCase {
+import static org.apache.hadoop.test.LambdaTestUtils.intercept;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+public class TestDefaultStringifier {
 
   private static Configuration conf = new Configuration();
-  private static final Log LOG = LogFactory.getLog(TestDefaultStringifier.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestDefaultStringifier.class);
 
   private char[] alphabet = "abcdefghijklmnopqrstuvwxyz".toCharArray();
 
+  @Test
   public void testWithWritable() throws Exception {
 
     conf.set("io.serializations", "org.apache.hadoop.io.serializer.WritableSerialization");
@@ -61,6 +65,7 @@ public class TestDefaultStringifier extends TestCase {
     }
   }
 
+  @Test
   public void testWithJavaSerialization() throws Exception {
     conf.set("io.serializations", "org.apache.hadoop.io.serializer.JavaSerialization");
 
@@ -77,6 +82,7 @@ public class TestDefaultStringifier extends TestCase {
     assertEquals(testInt, claimedInt);
   }
 
+  @Test
   public void testStoreLoad() throws IOException {
 
     LOG.info("Testing DefaultStringifier#store() and #load()");
@@ -87,12 +93,13 @@ public class TestDefaultStringifier extends TestCase {
     DefaultStringifier.store(conf,text, keyName);
 
     Text claimedText = DefaultStringifier.load(conf, keyName, Text.class);
-    assertEquals("DefaultStringifier#load() or #store() might be flawed"
-        , text, claimedText);
+    assertEquals(text, claimedText,
+        "DefaultStringifier#load() or #store() might be flawed");
 
   }
 
-  public void testStoreLoadArray() throws IOException {
+  @Test
+  public void testStoreLoadArray() throws Exception {
     LOG.info("Testing DefaultStringifier#storeArray() and #loadArray()");
     conf.set("io.serializations", "org.apache.hadoop.io.serializer.JavaSerialization");
 
@@ -101,11 +108,13 @@ public class TestDefaultStringifier extends TestCase {
     Integer[] array = new Integer[] {1,2,3,4,5};
 
 
+    intercept(IndexOutOfBoundsException.class, () ->
+        DefaultStringifier.storeArray(conf, new Integer[] {}, keyName));
     DefaultStringifier.storeArray(conf, array, keyName);
 
     Integer[] claimedArray = DefaultStringifier.<Integer>loadArray(conf, keyName, Integer.class);
     for (int i = 0; i < array.length; i++) {
-      assertEquals("two arrays are not equal", array[i], claimedArray[i]);
+      assertEquals(array[i], claimedArray[i], "two arrays are not equal");
     }
 
   }

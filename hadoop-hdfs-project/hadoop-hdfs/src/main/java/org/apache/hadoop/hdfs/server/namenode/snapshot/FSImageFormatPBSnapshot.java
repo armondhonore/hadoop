@@ -1,4 +1,4 @@
-/**
+ /**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -27,6 +27,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -34,20 +35,22 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
-import com.google.common.collect.ImmutableList;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableList;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.fs.permission.PermissionStatus;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.BlockProto;
-import org.apache.hadoop.hdfs.protocolPB.PBHelper;
+import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.BlockTypeProto;
+import org.apache.hadoop.hdfs.protocolPB.PBHelperClient;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfo;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockInfoContiguous;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
 import org.apache.hadoop.hdfs.server.namenode.AclEntryStatusFormat;
 import org.apache.hadoop.hdfs.server.namenode.AclFeature;
 import org.apache.hadoop.hdfs.server.namenode.FSDirectory;
+import org.apache.hadoop.hdfs.server.namenode.FSImage;
 import org.apache.hadoop.hdfs.server.namenode.FSImageFormatPBINode;
 import org.apache.hadoop.hdfs.server.namenode.FSImageFormatProtobuf;
 import org.apache.hadoop.hdfs.server.namenode.FSImageFormatProtobuf.LoaderContext;
@@ -77,11 +80,10 @@ import org.apache.hadoop.hdfs.server.namenode.snapshot.DirectoryWithSnapshotFeat
 import org.apache.hadoop.hdfs.server.namenode.snapshot.DirectoryWithSnapshotFeature.DirectoryDiffList;
 import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot.Root;
 import org.apache.hadoop.hdfs.server.namenode.XAttrFeature;
-import org.apache.hadoop.hdfs.util.Diff.ListType;
 import org.apache.hadoop.hdfs.util.EnumCounters;
 
-import com.google.common.base.Preconditions;
-import com.google.protobuf.ByteString;
+import org.apache.hadoop.util.Preconditions;
+import org.apache.hadoop.thirdparty.protobuf.ByteString;
 
 @InterfaceAudience.Private
 public class FSImageFormatPBSnapshot {
@@ -120,7 +122,7 @@ public class FSImageFormatPBSnapshot {
     }
 
     private INodeReference loadINodeReference(
-        INodeReferenceSection.INodeReference r) throws IOException {
+        INodeReferenceSection.INodeReference r) {
       long referredId = r.getReferredId();
       INode referred = fsDir.getInode(referredId);
       WithCount withCount = (WithCount) referred.getParentReference();
@@ -154,7 +156,8 @@ public class FSImageFormatPBSnapshot {
           dir.addSnapshottableFeature();
         } else {
           // dir is root, and admin set root to snapshottable before
-          dir.setSnapshotQuota(DirectorySnapshottableFeature.SNAPSHOT_LIMIT);
+          dir.setSnapshotQuota(
+              DirectorySnapshottableFeature.SNAPSHOT_QUOTA_DEFAULT);
         }
         sm.addSnapshottable(dir);
       }
@@ -232,23 +235,32 @@ public class FSImageFormatPBSnapshot {
                 fileInPb.getXAttrs(), state.getStringTable()));
           }
 
+          boolean isStriped =
+              (fileInPb.getBlockType() == BlockTypeProto .STRIPED);
+          Short replication =
+              (!isStriped ? (short)fileInPb.getReplication() : null);
+          Byte ecPolicyID =
+              (isStriped ? (byte)fileInPb.getErasureCodingPolicyID() : null);
           copy = new INodeFileAttributes.SnapshotCopy(pbf.getName()
               .toByteArray(), permission, acl, fileInPb.getModificationTime(),
-              fileInPb.getAccessTime(), (short) fileInPb.getReplication(),
+              fileInPb.getAccessTime(), replication, ecPolicyID,
               fileInPb.getPreferredBlockSize(),
-              (byte)fileInPb.getStoragePolicyID(), xAttrs);
+              (byte)fileInPb.getStoragePolicyID(), xAttrs,
+              PBHelperClient.convert(fileInPb.getBlockType()));
         }
 
         FileDiff diff = new FileDiff(pbf.getSnapshotId(), copy, null,
             pbf.getFileSize());
         List<BlockProto> bpl = pbf.getBlocksList();
+        // in file diff there can only be contiguous blocks
         BlockInfo[] blocks = new BlockInfo[bpl.size()];
         for(int j = 0, e = bpl.size(); j < e; ++j) {
-          Block blk = PBHelper.convert(bpl.get(j));
+          Block blk = PBHelperClient.convert(bpl.get(j));
           BlockInfo storedBlock = bm.getStoredBlock(blk);
           if(storedBlock == null) {
-            storedBlock = bm.addBlockCollection(
-                new BlockInfoContiguous(blk, copy.getFileReplication()), file);
+            storedBlock = (BlockInfoContiguous) fsn.getBlockManager()
+                .addBlockCollectionWithCheck(new BlockInfoContiguous(blk,
+                    copy.getFileReplication()), file);
           }
           blocks[j] = storedBlock;
         }
@@ -257,7 +269,7 @@ public class FSImageFormatPBSnapshot {
         }
         diffs.addFirst(diff);
       }
-      file.addSnapshotFeature(diffs);
+      file.loadSnapshotFeature(diffs);
       short repl = file.getPreferredBlockReplication();
       for (BlockInfo b : file.getBlocks()) {
         if (b.getReplication() < repl) {
@@ -405,6 +417,7 @@ public class FSImageFormatPBSnapshot {
     private final FileSummary.Builder headers;
     private final FSImageFormatProtobuf.Saver parent;
     private final SaveNamespaceContext context;
+    private long numImageErrors;
 
     public Saver(FSImageFormatProtobuf.Saver parent,
         FileSummary.Builder headers, SaveNamespaceContext context,
@@ -413,6 +426,7 @@ public class FSImageFormatPBSnapshot {
       this.headers = headers;
       this.context = context;
       this.fsn = fsn;
+      this.numImageErrors = 0;
     }
 
     /**
@@ -424,7 +438,7 @@ public class FSImageFormatPBSnapshot {
           .setSnapshotCounter(sm.getSnapshotCounter())
           .setNumSnapshots(sm.getNumSnapshots());
 
-      INodeDirectory[] snapshottables = sm.getSnapshottableDirs();
+      final List<INodeDirectory> snapshottables = sm.getSnapshottableDirs();
       for (INodeDirectory sdir : snapshottables) {
         b.addSnapshottableDir(sdir.getId());
       }
@@ -461,15 +475,17 @@ public class FSImageFormatPBSnapshot {
         throws IOException {
       final List<INodeReference> refList = parent.getSaverContext()
           .getRefList();
+      long i = 0;
       for (INodeReference ref : refList) {
-        INodeReferenceSection.INodeReference.Builder rb = buildINodeReference(ref);
+        INodeReferenceSection.INodeReference.Builder rb =
+            buildINodeReference(ref, i++);
         rb.build().writeDelimitedTo(out);
       }
       parent.commitSection(headers, SectionName.INODE_REFERENCE);
     }
 
     private INodeReferenceSection.INodeReference.Builder buildINodeReference(
-        INodeReference ref) throws IOException {
+        final INodeReference ref, final long refIndex) throws IOException {
       INodeReferenceSection.INodeReference.Builder rb =
           INodeReferenceSection.INodeReference.newBuilder().
             setReferredId(ref.getId());
@@ -478,6 +494,16 @@ public class FSImageFormatPBSnapshot {
             ByteString.copyFrom(ref.getLocalNameBytes()));
       } else if (ref instanceof DstReference) {
         rb.setDstSnapshotId(ref.getDstSnapshotId());
+      }
+
+      if (fsn.getFSDirectory().getInode(ref.getId()) == null) {
+        FSImage.LOG.error(
+            "FSImageFormatPBSnapshot: Missing referred INodeId " +
+            ref.getId() + " for INodeReference index " + refIndex +
+            "; path=" + ref.getFullPathName() +
+            "; parent=" + (ref.getParent() == null ? "null" :
+                ref.getParent().getFullPathName()));
+        ++numImageErrors;
       }
       return rb;
     }
@@ -503,16 +529,21 @@ public class FSImageFormatPBSnapshot {
         if (i % FSImageFormatProtobuf.Saver.CHECK_CANCEL_INTERVAL == 0) {
           context.checkCancelled();
         }
+        if (i % parent.getInodesPerSubSection() == 0) {
+          parent.commitSubSection(headers, FSImageFormatProtobuf.SectionName.SNAPSHOT_DIFF_SUB);
+          out = parent.getSectionOutputStream();
+        }
       }
-      parent.commitSection(headers,
-          FSImageFormatProtobuf.SectionName.SNAPSHOT_DIFF);
+      parent.commitSectionAndSubSection(headers,
+          FSImageFormatProtobuf.SectionName.SNAPSHOT_DIFF,
+          FSImageFormatProtobuf.SectionName.SNAPSHOT_DIFF_SUB);
     }
 
     private void serializeFileDiffList(INodeFile file, OutputStream out)
         throws IOException {
       FileWithSnapshotFeature sf = file.getFileWithSnapshotFeature();
       if (sf != null) {
-        List<FileDiff> diffList = sf.getDiffs().asList();
+        DiffList<FileDiff> diffList = sf.getDiffs().asList();
         SnapshotDiffSection.DiffEntry entry = SnapshotDiffSection.DiffEntry
             .newBuilder().setInodeId(file.getId()).setType(Type.FILEDIFF)
             .setNumOfDiff(diffList.size()).build();
@@ -524,7 +555,7 @@ public class FSImageFormatPBSnapshot {
               .setFileSize(diff.getFileSize());
           if(diff.getBlocks() != null) {
             for(Block block : diff.getBlocks()) {
-              fb.addBlocks(PBHelper.convert(block));
+              fb.addBlocks(PBHelperClient.convert(block));
             }
           }
           INodeFileAttributes copy = diff.snapshotINode;
@@ -552,7 +583,7 @@ public class FSImageFormatPBSnapshot {
         throws IOException {
       DirectoryWithSnapshotFeature sf = dir.getDirectoryWithSnapshotFeature();
       if (sf != null) {
-        List<DirectoryDiff> diffList = sf.getDiffs().asList();
+        DiffList<DirectoryDiff> diffList = sf.getDiffs().asList();
         SnapshotDiffSection.DiffEntry entry = SnapshotDiffSection.DiffEntry
             .newBuilder().setInodeId(dir.getId()).setType(Type.DIRECTORYDIFF)
             .setNumOfDiff(diffList.size()).build();
@@ -570,11 +601,26 @@ public class FSImageFormatPBSnapshot {
                     buildINodeDirectory(copy, parent.getSaverContext()));
           }
           // process created list and deleted list
-          List<INode> created = diff.getChildrenDiff()
-              .getList(ListType.CREATED);
+          List<INode> created = diff.getChildrenDiff().getCreatedUnmodifiable();
           db.setCreatedListSize(created.size());
-          List<INode> deleted = diff.getChildrenDiff().getList(ListType.DELETED);
+          List<INode> deleted = diff.getChildrenDiff().getDeletedUnmodifiable();
+          INode previousNode = null;
+          boolean misordered = false;
           for (INode d : deleted) {
+            // getBytes() may return null below, and that is okay.
+            final int result = previousNode == null ? -1 :
+                previousNode.compareTo(d.getLocalNameBytes());
+            if (result == 0) {
+              FSImage.LOG.error(
+                  "Name '" + d.getLocalName() + "' is repeated in the " +
+                      "'deleted' difflist of directory " +
+                      dir.getFullPathName() + ", INodeId=" + dir.getId());
+              ++numImageErrors;
+            } else if (result > 0 && !misordered) {
+              misordered = true;
+              ++numImageErrors;
+            }
+            previousNode = d;
             if (d.isReference()) {
               refList.add(d.asReference());
               db.addDeletedINodeRef(refList.size() - 1);
@@ -582,10 +628,27 @@ public class FSImageFormatPBSnapshot {
               db.addDeletedINode(d.getId());
             }
           }
+          if (misordered) {
+            FSImage.LOG.error(
+                "Misordered entries in the 'deleted' difflist of directory " +
+                    dir.getFullPathName() + ", INodeId=" + dir.getId() +
+                    ". The full list is " +
+                    Arrays.toString(deleted.toArray()));
+          }
           db.build().writeDelimitedTo(out);
           saveCreatedList(created, out);
         }
       }
+    }
+
+
+    /**
+     * Number of non-fatal errors detected while writing the
+     * SnapshotDiff and INodeReference sections.
+     * @return the number of non-fatal errors detected.
+     */
+    public long getNumImageErrors() {
+      return numImageErrors;
     }
   }
 

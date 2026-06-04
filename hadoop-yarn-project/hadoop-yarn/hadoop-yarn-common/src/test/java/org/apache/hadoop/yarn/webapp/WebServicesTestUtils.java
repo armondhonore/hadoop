@@ -18,15 +18,18 @@
 
 package org.apache.hadoop.yarn.webapp;
 
-import static org.junit.Assert.assertTrue;
+import java.util.ArrayList;
+import java.util.List;
+import javax.ws.rs.core.Response.StatusType;
 
 import org.w3c.dom.Attr;
 import org.w3c.dom.Element;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 
-public class WebServicesTestUtils {
+import static org.assertj.core.api.Assertions.assertThat;
 
+public class WebServicesTestUtils {
   public static long getXmlLong(Element element, String name) {
     String val = getXmlString(element, name);
     return Long.parseLong(val);
@@ -47,6 +50,31 @@ public class WebServicesTestUtils {
     return Float.parseFloat(val);
   }
 
+  public static List<String> getXmlStrings(Element element, String name) {
+    NodeList id = element.getElementsByTagName(name);
+    List<String> strings = new ArrayList<>();
+    int len = id.getLength();
+    if (id.getLength() == 0) {
+      return strings;
+    }
+    for (int i = 0; i < len; i++) {
+      Element line = (Element) id.item(i);
+      if (line == null) {
+        continue;
+      }
+      Node first = line.getFirstChild();
+      if (first == null) {
+        continue;
+      }
+      String val = first.getNodeValue();
+      if (val == null) {
+        continue;
+      }
+      strings.add(val);
+    }
+    return strings;
+  }
+
   public static String getXmlString(Element element, String name) {
     NodeList id = element.getElementsByTagName(name);
     Element line = (Element) id.item(0);
@@ -65,6 +93,24 @@ public class WebServicesTestUtils {
     return val;
   }
 
+  public static String getPropertyValue(Element element, String elementName,
+      String propertyName) {
+    NodeList id = element.getElementsByTagName(elementName);
+    Element line = (Element) id.item(0);
+    if (line == null) {
+      return null;
+    }
+    NodeList properties = line.getChildNodes();
+    for (int i = 0; i < properties.getLength(); i++) {
+      Element property = (Element) properties.item(i);
+      if (getXmlString(property, "name").equals(propertyName)) {
+        return getXmlString(property, "value");
+      }
+    }
+    return null;
+  }
+
+
   public static String getXmlAttrString(Element element, String name) {
     Attr at = element.getAttributeNode(name);
     if (at != null) {
@@ -74,21 +120,24 @@ public class WebServicesTestUtils {
   }
 
   public static void checkStringMatch(String print, String expected, String got) {
-    assertTrue(
-        print + " doesn't match, got: " + got + " expected: " + expected,
-        got.matches(expected));
+    assertThat(got).as(print).matches(expected);
   }
 
   public static void checkStringContains(String print, String expected, String got) {
-    assertTrue(
-        print + " doesn't contain expected string, got: " + got + " expected: " + expected,
-        got.contains(expected));
+    assertThat(got).as(print).contains(expected);
   }
 
   public static void checkStringEqual(String print, String expected, String got) {
-    assertTrue(
-        print + " is not equal, got: " + got + " expected: " + expected,
-        got.equals(expected));
+    assertThat(got).as(print).isEqualTo(expected);
   }
 
+  public static void assertResponseStatusCode(StatusType expected,
+      StatusType actual) {
+    assertThat(expected.getStatusCode()).isEqualTo(actual.getStatusCode());
+  }
+
+  public static void assertResponseStatusCode(String errmsg,
+      StatusType expected, StatusType actual) {
+    assertThat(expected.getStatusCode()).withFailMessage(errmsg).isEqualTo(actual.getStatusCode());
+  }
 }

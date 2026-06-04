@@ -20,11 +20,6 @@ package org.apache.hadoop.mapreduce.lib.join;
 import java.io.IOException;
 import java.util.List;
 
-import junit.framework.Test;
-import junit.framework.TestCase;
-import junit.framework.TestSuite;
-import junit.extensions.TestSetup;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
@@ -36,8 +31,14 @@ import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapreduce.*;
 import org.apache.hadoop.mapreduce.lib.input.SequenceFileInputFormat;
 import org.apache.hadoop.mapreduce.task.MapContextImpl;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
-public class TestJoinProperties extends TestCase {
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+public class TestJoinProperties {
 
   private static MiniDFSCluster cluster = null;
   final static int SOURCES = 3;
@@ -46,21 +47,19 @@ public class TestJoinProperties extends TestCase {
   static Path[] src;
   static Path base;
 
-  public static Test suite() {
-    TestSetup setup = new TestSetup(new TestSuite(TestJoinProperties.class)) {
-      protected void setUp() throws Exception {
-        Configuration conf = new Configuration();
-        cluster = new MiniDFSCluster.Builder(conf).numDataNodes(2).build();
-        base = cluster.getFileSystem().makeQualified(new Path("/nested"));
-        src = generateSources(conf);
-      }
-      protected void tearDown() throws Exception {
-        if (cluster != null) {
-          cluster.shutdown();
-        }
-      }
-    };
-    return setup;
+  @BeforeAll
+  public static void setUp() throws Exception {
+    Configuration conf = new Configuration();
+    cluster = new MiniDFSCluster.Builder(conf).numDataNodes(2).build();
+    base = cluster.getFileSystem().makeQualified(new Path("/nested"));
+    src = generateSources(conf);
+  }
+
+  @AfterAll
+  public static void tearDown() throws Exception {
+    if (cluster != null) {
+      cluster.shutdown();
+    }
   }
 
   // Sources from 0 to srcs-2 have IntWritable key and IntWritable value
@@ -206,7 +205,7 @@ public class TestJoinProperties extends TestCase {
     String joinExpr = constructExpr1(op);
     conf.set(CompositeInputFormat.JOIN_EXPR, joinExpr);
     int count = testFormat(conf, 2, true, false, ttype);
-    assertTrue("not all keys present", count == expectedCount);
+    assertTrue(count == expectedCount, "not all keys present");
   }
 
   private void testExpr2(Configuration conf, String op, TestType ttype,
@@ -214,7 +213,7 @@ public class TestJoinProperties extends TestCase {
     String joinExpr = constructExpr2(op);
     conf.set(CompositeInputFormat.JOIN_EXPR, joinExpr);
     int count = testFormat(conf, 2, false, true, ttype);
-    assertTrue("not all keys present", count == expectedCount);
+    assertTrue(count == expectedCount, "not all keys present");
   }
 
   private void testExpr3(Configuration conf, String op, TestType ttype,
@@ -222,17 +221,18 @@ public class TestJoinProperties extends TestCase {
     String joinExpr = constructExpr3(op);
     conf.set(CompositeInputFormat.JOIN_EXPR, joinExpr);
     int count = testFormat(conf, 3, false, false, ttype);
-    assertTrue("not all keys present", count == expectedCount);
+    assertTrue(count == expectedCount, "not all keys present");
   }
 
   private void testExpr4(Configuration conf) throws Exception {
     String joinExpr = constructExpr4();
     conf.set(CompositeInputFormat.JOIN_EXPR, joinExpr);
     int count = testFormat(conf, 0, false, false, TestType.INNER_IDENTITY);
-    assertTrue("not all keys present", count == ITEMS);
+    assertTrue(count == ITEMS, "not all keys present");
   }
 
   // outer(outer(A, B), C) == outer(A,outer(B, C)) == outer(A, B, C)
+  @Test
   public void testOuterAssociativity() throws Exception {
     Configuration conf = new Configuration();
     testExpr1(conf, "outer", TestType.OUTER_ASSOCIATIVITY, 33);
@@ -241,6 +241,7 @@ public class TestJoinProperties extends TestCase {
   }
  
   // inner(inner(A, B), C) == inner(A,inner(B, C)) == inner(A, B, C)
+  @Test
   public void testInnerAssociativity() throws Exception {
     Configuration conf = new Configuration();
     testExpr1(conf, "inner", TestType.INNER_ASSOCIATIVITY, 2);
@@ -249,6 +250,7 @@ public class TestJoinProperties extends TestCase {
   }
 
   // override(inner(A, B), A) == A
+  @Test
   public void testIdentity() throws Exception {
     Configuration conf = new Configuration();
     testExpr4(conf);
@@ -257,7 +259,7 @@ public class TestJoinProperties extends TestCase {
   private void validateOuterKeyValue(IntWritable k, TupleWritable v, 
       int tupleSize, boolean firstTuple, boolean secondTuple) {
 	final String kvstr = "Unexpected tuple: " + stringify(k, v);
-	assertTrue(kvstr, v.size() == tupleSize);
+    assertTrue(v.size() == tupleSize, kvstr);
 	int key = k.get();
 	IntWritable val0 = null;
 	IntWritable val1 = null;
@@ -267,74 +269,74 @@ public class TestJoinProperties extends TestCase {
       if (key % 2 == 0 && key / 2 <= ITEMS) {
         val0 = (IntWritable)v0.get(0);
       } else {
-        assertFalse(kvstr, v0.has(0));
+        assertFalse(v0.has(0), kvstr);
       }
       if (key % 3 == 0 && key / 3 <= ITEMS) {
         val1 = (IntWritable)v0.get(1);
       } else {
-        assertFalse(kvstr, v0.has(1));
+        assertFalse(v0.has(1), kvstr);
       }
       if (key % 4 == 0 && key / 4 <= ITEMS) {
         val2 = (LongWritable)v.get(1);
       } else {
-        assertFalse(kvstr, v.has(2));
+        assertFalse(v.has(2), kvstr);
       }
     } else if (secondTuple) {
       if (key % 2 == 0 && key / 2 <= ITEMS) {
         val0 = (IntWritable)v.get(0);
       } else {
-        assertFalse(kvstr, v.has(0));
+        assertFalse(v.has(0), kvstr);
       }
       TupleWritable v1 = ((TupleWritable)v.get(1));
       if (key % 3 == 0 && key / 3 <= ITEMS) {
         val1 = (IntWritable)v1.get(0);
       } else {
-        assertFalse(kvstr, v1.has(0));
+        assertFalse(v1.has(0), kvstr);
       }
       if (key % 4 == 0 && key / 4 <= ITEMS) {
         val2 = (LongWritable)v1.get(1);
       } else {
-        assertFalse(kvstr, v1.has(1));
+        assertFalse(v1.has(1), kvstr);
       }
     } else {
       if (key % 2 == 0 && key / 2 <= ITEMS) {
         val0 = (IntWritable)v.get(0);
       } else {
-        assertFalse(kvstr, v.has(0));
+        assertFalse(v.has(0), kvstr);
       }
       if (key % 3 == 0 && key / 3 <= ITEMS) {
         val1 = (IntWritable)v.get(1);
       } else {
-        assertFalse(kvstr, v.has(1));
+        assertFalse(v.has(1), kvstr);
       }
       if (key % 4 == 0 && key / 4 <= ITEMS) {
         val2 = (LongWritable)v.get(2);
       } else {
-        assertFalse(kvstr, v.has(2));
+        assertFalse(v.has(2), kvstr);
       }
     }
 	if (val0 != null) {
-      assertTrue(kvstr, val0.get() == 0);
+      assertTrue(val0.get() == 0, kvstr);
     }
 	if (val1 != null) {
-      assertTrue(kvstr, val1.get() == 1);
+      assertTrue(val1.get() == 1, kvstr);
     }
 	if (val2 != null) {
-      assertTrue(kvstr, val2.get() == 2);
+      assertTrue(val2.get() == 2, kvstr);
     }
   }
 
   private void validateInnerKeyValue(IntWritable k, TupleWritable v,
       int tupleSize, boolean firstTuple, boolean secondTuple) {
 	final String kvstr = "Unexpected tuple: " + stringify(k, v);
-	assertTrue(kvstr, v.size() == tupleSize);
+    assertTrue(v.size() == tupleSize, kvstr);
 	int key = k.get();
 	IntWritable val0 = null;
 	IntWritable val1 = null;
 	LongWritable val2 = null;
-	assertTrue(kvstr, key % 2 == 0 && key / 2 <= ITEMS);
-	assertTrue(kvstr, key % 3 == 0 && key / 3 <= ITEMS);
-	assertTrue(kvstr, key % 4 == 0 && key / 4 <= ITEMS);
+    assertTrue(key % 2 == 0 && key / 2 <= ITEMS, kvstr);
+    assertTrue(key % 3 == 0 && key / 3 <= ITEMS, kvstr);
+    assertTrue(key % 4 == 0 && key / 4 <= ITEMS, kvstr);
 	if (firstTuple) {
       TupleWritable v0 = ((TupleWritable)v.get(0));
       val0 = (IntWritable)v0.get(0);
@@ -350,16 +352,16 @@ public class TestJoinProperties extends TestCase {
       val1 = (IntWritable)v.get(1);
       val2 = (LongWritable)v.get(2);
     }
-    assertTrue(kvstr, val0.get() == 0);
-    assertTrue(kvstr, val1.get() == 1);
-    assertTrue(kvstr, val2.get() == 2);
+    assertTrue(val0.get() == 0, kvstr);
+    assertTrue(val1.get() == 1, kvstr);
+    assertTrue(val2.get() == 2, kvstr);
   }
 
   private void validateKeyValue_INNER_IDENTITY(IntWritable k, IntWritable v) {
     final String kvstr = "Unexpected tuple: " + stringify(k, v);
     int key = k.get();
-    assertTrue(kvstr, (key % 2 == 0 && key / 2 <= ITEMS));
-    assertTrue(kvstr, v.get() == 0);
+    assertTrue((key % 2 == 0 && key / 2 <= ITEMS), kvstr);
+    assertTrue(v.get() == 0, kvstr);
   }
   
   @SuppressWarnings("unchecked")

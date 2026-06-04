@@ -17,13 +17,13 @@
  */
 package org.apache.hadoop.hdfs.server.blockmanagement;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.server.common.GenerationStamp;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.BlockUCState;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 /**
  * This class provides tests for {@link BlockUnderConstructionFeature} class
@@ -38,7 +38,9 @@ public class TestBlockUnderConstructionFeature {
     DatanodeStorageInfo s3 = DFSTestUtil.createDatanodeStorageInfo("10.10.1.3", "s3");
     DatanodeDescriptor dd3 = s3.getDatanodeDescriptor();
 
-    dd1.isAlive = dd2.isAlive = dd3.isAlive = true;
+    dd1.setAlive(true);
+    dd2.setAlive(true);
+    dd3.setAlive(true);
     BlockInfoContiguous blockInfo = new BlockInfoContiguous(
         new Block(0, 0, GenerationStamp.LAST_RESERVED_STAMP), (short) 3);
     blockInfo.convertToBlockUnderConstruction(BlockUCState.UNDER_CONSTRUCTION,
@@ -48,7 +50,7 @@ public class TestBlockUnderConstructionFeature {
     DFSTestUtil.resetLastUpdatesWithOffset(dd1, -3 * 1000);
     DFSTestUtil.resetLastUpdatesWithOffset(dd2, -1 * 1000);
     DFSTestUtil.resetLastUpdatesWithOffset(dd3, -2 * 1000);
-    blockInfo.getUnderConstructionFeature().initializeBlockRecovery(blockInfo, 1);
+    blockInfo.getUnderConstructionFeature().initializeBlockRecovery(blockInfo, 1, true);
     BlockInfo[] blockInfoRecovery = dd2.getLeaseRecoveryCommand(1);
     assertEquals(blockInfoRecovery[0], blockInfo);
 
@@ -56,7 +58,7 @@ public class TestBlockUnderConstructionFeature {
     DFSTestUtil.resetLastUpdatesWithOffset(dd1, -2 * 1000);
     DFSTestUtil.resetLastUpdatesWithOffset(dd2, -1 * 1000);
     DFSTestUtil.resetLastUpdatesWithOffset(dd3, -3 * 1000);
-    blockInfo.getUnderConstructionFeature().initializeBlockRecovery(blockInfo, 2);
+    blockInfo.getUnderConstructionFeature().initializeBlockRecovery(blockInfo, 2, true);
     blockInfoRecovery = dd1.getLeaseRecoveryCommand(1);
     assertEquals(blockInfoRecovery[0], blockInfo);
 
@@ -64,7 +66,7 @@ public class TestBlockUnderConstructionFeature {
     DFSTestUtil.resetLastUpdatesWithOffset(dd1, -2 * 1000);
     DFSTestUtil.resetLastUpdatesWithOffset(dd2, -1 * 1000);
     DFSTestUtil.resetLastUpdatesWithOffset(dd3, -3 * 1000);
-    blockInfo.getUnderConstructionFeature().initializeBlockRecovery(blockInfo, 3);
+    blockInfo.getUnderConstructionFeature().initializeBlockRecovery(blockInfo, 3, true);
     blockInfoRecovery = dd3.getLeaseRecoveryCommand(1);
     assertEquals(blockInfoRecovery[0], blockInfo);
 
@@ -73,7 +75,7 @@ public class TestBlockUnderConstructionFeature {
     DFSTestUtil.resetLastUpdatesWithOffset(dd1, -2 * 1000);
     DFSTestUtil.resetLastUpdatesWithOffset(dd2, -1 * 1000);
     DFSTestUtil.resetLastUpdatesWithOffset(dd3, 0);
-    blockInfo.getUnderConstructionFeature().initializeBlockRecovery(blockInfo, 3);
+    blockInfo.getUnderConstructionFeature().initializeBlockRecovery(blockInfo, 3, true);
     blockInfoRecovery = dd3.getLeaseRecoveryCommand(1);
     assertEquals(blockInfoRecovery[0], blockInfo);
   }

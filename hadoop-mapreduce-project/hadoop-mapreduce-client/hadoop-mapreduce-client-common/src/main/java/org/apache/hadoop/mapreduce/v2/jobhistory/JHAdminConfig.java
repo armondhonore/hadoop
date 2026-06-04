@@ -20,7 +20,6 @@ package org.apache.hadoop.mapreduce.v2.jobhistory;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
-import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.http.HttpConfig;
 
 /**
@@ -61,8 +60,13 @@ public class JHAdminConfig {
     MR_HISTORY_PREFIX + "cleaner.interval-ms";
   public static final long DEFAULT_MR_HISTORY_CLEANER_INTERVAL_MS = 
     1 * 24 * 60 * 60 * 1000l; //1 day
-  
-  
+
+  /** Always scan user dir, irrespective of dir modification time.*/
+  public static final String MR_HISTORY_ALWAYS_SCAN_USER_DIR =
+      MR_HISTORY_PREFIX + "always-scan-user-dir";
+  public static final boolean DEFAULT_MR_HISTORY_ALWAYS_SCAN_USER_DIR =
+      false;
+
   /** The number of threads to handle client API requests.*/
   public static final String MR_HISTORY_CLIENT_THREAD_COUNT = 
     MR_HISTORY_PREFIX + "client.thread-count";
@@ -93,12 +97,16 @@ public class JHAdminConfig {
    **/
   public static final String MR_HISTORY_INTERMEDIATE_DONE_DIR =
     MR_HISTORY_PREFIX + "intermediate-done-dir";
+  public static final String MR_HISTORY_INTERMEDIATE_USER_DONE_DIR_PERMISSIONS =
+      MR_HISTORY_PREFIX + "intermediate-user-done-dir.permissions";
+  public static final short
+      DEFAULT_MR_HISTORY_INTERMEDIATE_USER_DONE_DIR_PERMISSIONS = 0770;
   
   /** Size of the job list cache.*/
   public static final String MR_HISTORY_JOBLIST_CACHE_SIZE =
     MR_HISTORY_PREFIX + "joblist.cache.size";
   public static final int DEFAULT_MR_HISTORY_JOBLIST_CACHE_SIZE = 20000;
-  
+
   /** The location of the Kerberos keytab file.*/
   public static final String MR_HISTORY_KEYTAB = MR_HISTORY_PREFIX + "keytab";
   
@@ -106,7 +114,11 @@ public class JHAdminConfig {
   public static final String MR_HISTORY_LOADED_JOB_CACHE_SIZE = 
     MR_HISTORY_PREFIX + "loadedjobs.cache.size";
   public static final int DEFAULT_MR_HISTORY_LOADED_JOB_CACHE_SIZE = 5;
-  
+
+  /** Size of the loaded job cache (in tasks).*/
+  public static final String MR_HISTORY_LOADED_TASKS_CACHE_SIZE =
+      MR_HISTORY_PREFIX + "loadedtasks.cache.size";
+
   /**
    * The maximum age of a job history file before it is deleted from the history
    * server.
@@ -221,11 +233,46 @@ public class JHAdminConfig {
       + "jobname.limit";
   public static final int DEFAULT_MR_HS_JOBNAME_LIMIT = 50;
 
+
+  /**
+   * CSRF settings.
+   */
+  public static final String MR_HISTORY_CSRF_PREFIX = MR_HISTORY_PREFIX +
+                                                      "webapp.rest-csrf.";
+  public static final String MR_HISTORY_CSRF_ENABLED = MR_HISTORY_CSRF_PREFIX +
+                                                       "enabled";
+  public static final String MR_HISTORY_CSRF_CUSTOM_HEADER =
+      MR_HISTORY_CSRF_PREFIX + "custom-header";
+  public static final String MR_HISTORY_METHODS_TO_IGNORE =
+      MR_HISTORY_CSRF_PREFIX + "methods-to-ignore";
+
+  /**
+   * XFS settings.
+   */
+  public static final String MR_HISTORY_XFS_PREFIX = MR_HISTORY_PREFIX +
+      "webapp.xfs-filter.";
+  public static final String MR_HISTORY_XFS_OPTIONS = MR_HISTORY_XFS_PREFIX +
+      "xframe-options";
+
+  /**
+   * CORS settings.
+   */
+  public static final String MR_HISTORY_ENABLE_CORS_FILTER = MR_HISTORY_PREFIX +
+      "webapp.cross-origin.enabled";
+  public static final boolean DEFAULT_MR_HISTORY_ENABLE_CORS_FILTER = false;
+
   /**
    * Settings for .jhist file format.
    */
   public static final String MR_HS_JHIST_FORMAT =
       MR_HISTORY_PREFIX + "jhist.format";
   public static final String DEFAULT_MR_HS_JHIST_FORMAT =
-      "json";
+      "binary";
+
+  /**
+   * The maximum number of tasks for a job to be loaded in Job History Server.
+   */
+  public static final String MR_HS_LOADED_JOBS_TASKS_MAX =
+      MR_HISTORY_PREFIX + "loadedjob.tasks.max";
+  public static final int DEFAULT_MR_HS_LOADED_JOBS_TASKS_MAX = -1;
 }

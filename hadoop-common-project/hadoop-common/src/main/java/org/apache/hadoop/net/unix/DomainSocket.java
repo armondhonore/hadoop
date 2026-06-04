@@ -28,13 +28,13 @@ import java.nio.channels.ClosedChannelException;
 import java.nio.channels.ReadableByteChannel;
 import java.nio.ByteBuffer;
 
-import org.apache.commons.lang.SystemUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.commons.lang3.SystemUtils;
 import org.apache.hadoop.util.NativeCodeLoader;
 import org.apache.hadoop.util.CloseableReferenceCount;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * The implementation of UNIX domain sockets in Java.
@@ -60,10 +60,11 @@ public class DomainSocket implements Closeable {
     }
   }
 
-  static Log LOG = LogFactory.getLog(DomainSocket.class);
+  static final Logger LOG = LoggerFactory.getLogger(DomainSocket.class);
 
   /**
-   * True only if we should validate the paths used in {@link DomainSocket#bind()}
+   * True only if we should validate the paths used in
+   * {@link DomainSocket#bindAndListen(String)}
    */
   private static boolean validateBindPaths = true;
 
@@ -92,6 +93,9 @@ public class DomainSocket implements Closeable {
    * misconfigurations.  System administrators do not commonly change
    * permissions on these paths while the server is running.
    *
+   * For more information on Security exceptions see this wiki page:
+   * https://wiki.apache.org/hadoop/SocketPathSecurity
+   *
    * @param path             the path to validate
    * @param skipComponents   the number of starting path components to skip 
    *                         validation for (used only for testing)
@@ -102,6 +106,8 @@ public class DomainSocket implements Closeable {
 
   /**
    * Return true only if UNIX domain sockets are available.
+   *
+   * @return loadingFailureReason.
    */
   public static String getLoadingFailureReason() {
     return loadingFailureReason;
@@ -180,6 +186,7 @@ public class DomainSocket implements Closeable {
    *
    * @param path         The path to bind and listen on.
    * @return             The new DomainSocket.
+   * @throws IOException raised on errors performing I/O.
    */
   public static DomainSocket bindAndListen(String path) throws IOException {
     if (loadingFailureReason != null) {
@@ -217,11 +224,11 @@ public class DomainSocket implements Closeable {
    *
    * This method can only be used on sockets that were bound with bind().
    *
-   * @return                              The new connection.
-   * @throws IOException                  If there was an I/O error
-   *                                      performing the accept-- such as the
-   *                                      socket being closed from under us.
-   * @throws SocketTimeoutException       If the accept timed out.
+   * @return                The new connection.
+   * @throws IOException    If there was an I/O error performing the accept--
+   *                        such as the socket being closed from under us.
+   *                        Particularly when the accept is timed out, it throws
+   *                        SocketTimeoutException.
    */
   public DomainSocket accept() throws IOException {
     refCount.reference();
@@ -235,13 +242,15 @@ public class DomainSocket implements Closeable {
     }
   }
 
-  private static native int connect0(String path);
+  private static native int connect0(String path) throws IOException;
 
   /**
    * Create a new DomainSocket connected to the given path.
    *
-   * @param path         The path to connect to.
-   * @return             The new DomainSocket.
+   * @param path              The path to connect to.
+   * @throws IOException      If there was an I/O error performing the connect.
+   *
+   * @return                  The new DomainSocket.
    */
   public static DomainSocket connect(String path) throws IOException {
     if (loadingFailureReason != null) {
@@ -330,10 +339,13 @@ public class DomainSocket implements Closeable {
   private static native void shutdown0(int fd) throws IOException;
 
   /**
-   * Close the Socket.
+   * Close the Server Socket without check refCount.
+   * When Server Socket is blocked on accept(), its refCount is 1.
+   * close() call on Server Socket will be stuck in the while loop count check.
+   * @param force         if true, will not check refCount before close socket.
+   * @throws IOException  raised on errors performing I/O.
    */
-  @Override
-  public void close() throws IOException {
+  public void close(boolean force) throws IOException {
     // Set the closed bit on this DomainSocket
     int count;
     try {
@@ -342,46 +354,66 @@ public class DomainSocket implements Closeable {
       // Someone else already closed the DomainSocket.
       return;
     }
-    // Wait for all references to go away
-    boolean didShutdown = false;
+
     boolean interrupted = false;
-    while (count > 0) {
-      if (!didShutdown) {
-        try {
-          // Calling shutdown on the socket will interrupt blocking system
-          // calls like accept, write, and read that are going on in a
-          // different thread.
-          shutdown0(fd);
-        } catch (IOException e) {
-          LOG.error("shutdown error: ", e);
-        }
-        didShutdown = true;
-      }
+    if (force) {
       try {
-        Thread.sleep(10);
-      } catch (InterruptedException e) {
-        interrupted = true;
+        // Calling shutdown on the socket will interrupt blocking system
+        // calls like accept, write, and read that are going on in a
+        // different thread.
+        shutdown0(fd);
+      } catch (IOException e) {
+        LOG.error("shutdown error: ", e);
       }
-      count = refCount.getReferenceCount();
+    } else {
+      // Wait for all references to go away
+      boolean didShutdown = false;
+      while (count > 0) {
+        if (!didShutdown) {
+          try {
+            // Calling shutdown on the socket will interrupt blocking system
+            // calls like accept, write, and read that are going on in a
+            // different thread.
+            shutdown0(fd);
+          } catch (IOException e) {
+            LOG.error("shutdown error: ", e);
+          }
+          didShutdown = true;
+        }
+        try {
+          Thread.sleep(10);
+        } catch (InterruptedException e) {
+          interrupted = true;
+        }
+        count = refCount.getReferenceCount();
+      }
     }
 
-    // At this point, nobody has a reference to the file descriptor, 
+    // At this point, nobody has a reference to the file descriptor,
     // and nobody will be able to get one in the future either.
     // We now call close(2) on the file descriptor.
-    // After this point, the file descriptor number will be reused by 
-    // something else.  Although this DomainSocket object continues to hold 
-    // the old file descriptor number (it's a final field), we never use it 
+    // After this point, the file descriptor number will be reused by
+    // something else.  Although this DomainSocket object continues to hold
+    // the old file descriptor number (it's a final field), we never use it
     // again because this DomainSocket is closed.
     close0(fd);
     if (interrupted) {
       Thread.currentThread().interrupt();
     }
   }
+
+  /**
+   * Close the Socket.
+   */
+  @Override
+  public void close() throws IOException {
+    close(false);
+  }
   
   /**
    * Call shutdown(SHUT_RDWR) on the UNIX domain socket.
    *
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    */
   public void shutdown() throws IOException {
     refCount.reference();
@@ -407,6 +439,7 @@ public class DomainSocket implements Closeable {
    *                          one byte.
    * @param offset            The offset in the jbuf array to start at.
    * @param length            Length of the jbuf array to use.
+   * @throws IOException raised on errors performing I/O.
    */
   public void sendFileDescriptors(FileDescriptor descriptors[],
       byte jbuf[], int offset, int length) throws IOException {
@@ -422,47 +455,18 @@ public class DomainSocket implements Closeable {
 
   private static native int receiveFileDescriptors0(int fd,
       FileDescriptor[] descriptors,
-      byte jbuf[], int offset, int length) throws IOException;
-
-  /**
-   * Receive some FileDescriptor objects from the process on the other side of
-   * this socket.
-   *
-   * @param descriptors       (output parameter) Array of FileDescriptors.
-   *                          We will fill as many slots as possible with file
-   *                          descriptors passed from the remote process.  The
-   *                          other slots will contain NULL.
-   * @param jbuf              (output parameter) Buffer to read into.
-   *                          The UNIX domain sockets API requires you to read
-   *                          at least one byte from the remote process, even
-   *                          if all you care about is the file descriptors
-   *                          you will receive.
-   * @param offset            Offset into the byte buffer to load data
-   * @param length            Length of the byte buffer to use for data
-   *
-   * @return                  The number of bytes read.  This will be -1 if we
-   *                          reached EOF (similar to SocketInputStream);
-   *                          otherwise, it will be positive.
-   * @throws                  IOException if there was an I/O error.
-   */
-  public int receiveFileDescriptors(FileDescriptor[] descriptors,
-      byte jbuf[], int offset, int length) throws IOException {
-    refCount.reference();
-    boolean exc = true;
-    try {
-      int nBytes = receiveFileDescriptors0(fd, descriptors, jbuf, offset, length);
-      exc = false;
-      return nBytes;
-    } finally {
-      unreference(exc);
-    }
-  }
+      byte[] buf, int offset, int length) throws IOException;
 
   /**
    * Receive some FileDescriptor objects from the process on the other side of
    * this socket, and wrap them in FileInputStream objects.
    *
-   * See {@link DomainSocket#recvFileInputStreams(ByteBuffer)}
+   * @param streams input stream.
+   * @param buf input buf.
+   * @param offset input offset.
+   * @param length input length.
+   * @return wrap them in FileInputStream objects.
+   * @throws IOException raised on errors performing I/O.
    */
   public int recvFileInputStreams(FileInputStream[] streams, byte buf[],
         int offset, int length) throws IOException {
@@ -489,13 +493,13 @@ public class DomainSocket implements Closeable {
             try {
               closeFileDescriptor0(descriptors[i]);
             } catch (Throwable t) {
-              LOG.warn(t);
+              LOG.warn(t.toString());
             }
           } else if (streams[i] != null) {
             try {
               streams[i].close();
             } catch (Throwable t) {
-              LOG.warn(t);
+              LOG.warn(t.toString());
             } finally {
               streams[i] = null; }
           }

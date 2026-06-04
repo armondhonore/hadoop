@@ -18,19 +18,26 @@
 
 package org.apache.hadoop.io;
 
-import junit.framework.TestCase;
 import java.io.IOException;
 import java.nio.BufferUnderflowException;
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
+import java.nio.charset.StandardCharsets;
 import java.util.Random;
-import com.google.common.base.Charsets;
-import com.google.common.primitives.Bytes;
+
+import org.apache.hadoop.constants.ConfigConstants;
+import org.apache.hadoop.thirdparty.com.google.common.primitives.Bytes;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /** Unit tests for LargeUTF8. */
-public class TestText extends TestCase {
+public class TestText {
   private static final int NUM_ITERATIONS = 100;
-  public TestText(String name) { super(name); }
 
   private static final Random RANDOM = new Random(1);
 
@@ -70,6 +77,7 @@ public class TestText extends TestCase {
     return buffer.toString();
   }
 
+  @Test
   public void testWritable() throws Exception {
     for (int i = 0; i < NUM_ITERATIONS; i++) {
       String str;
@@ -82,6 +90,7 @@ public class TestText extends TestCase {
   }
 
 
+  @Test
   public void testCoding() throws Exception {
     String before = "Bad \t encoding \t testcase";
     Text text = new Text(before);
@@ -99,17 +108,17 @@ public class TestText extends TestCase {
       ByteBuffer bb = Text.encode(before);
           
       byte[] utf8Text = bb.array();
-      byte[] utf8Java = before.getBytes("UTF-8");
+      byte[] utf8Java = before.getBytes(StandardCharsets.UTF_8);
       assertEquals(0, WritableComparator.compareBytes(
-                                                      utf8Text, 0, bb.limit(),
-                                                      utf8Java, 0, utf8Java.length));
-              
+              utf8Text, 0, bb.limit(),
+              utf8Java, 0, utf8Java.length));
       // test utf8 to string
       after = Text.decode(utf8Java);
       assertTrue(before.equals(after));
     }
   }
-  
+
+  @Test
   public void testIO() throws Exception {
     DataOutputBuffer out = new DataOutputBuffer();
     DataInputBuffer in = new DataInputBuffer();
@@ -166,13 +175,15 @@ public class TestText extends TestCase {
     after = Text.readString(in, len + 1);
     assertTrue(str.equals(after));
   }
-  
+
+  @Test
   public void testLimitedIO() throws Exception {
     doTestLimitedIO("abcd", 3);
     doTestLimitedIO("foo bar baz", 10);
     doTestLimitedIO("1", 0);
   }
 
+  @Test
   public void testCompare() throws Exception {
     DataOutputBuffer out1 = new DataOutputBuffer();
     DataOutputBuffer out2 = new DataOutputBuffer();
@@ -213,24 +224,24 @@ public class TestText extends TestCase {
           
       assertEquals(ret1, ret2);
           
-      assertEquals("Equivalence of different txt objects, same content" ,
-              0,
-              txt1.compareTo(txt3));
-      assertEquals("Equvalence of data output buffers",
-              0,
-              comparator.compare(out1.getData(), 0, out3.getLength(),
-                      out3.getData(), 0, out3.getLength()));
+      assertEquals(0, txt1.compareTo(txt3),
+          "Equivalence of different txt objects, same content");
+      assertEquals(0, comparator.compare(out1.getData(), 0, out3.getLength(),
+          out3.getData(), 0, out3.getLength()),
+          "Equvalence of data output buffers");
     }
   }
-      
+
+  @Test
   public void testFind() throws Exception {
     Text text = new Text("abcd\u20acbdcd\u20ac");
-    assertTrue(text.find("abd")==-1);
-    assertTrue(text.find("ac")==-1);
-    assertTrue(text.find("\u20ac")==4);
-    assertTrue(text.find("\u20ac", 5)==11);
+    assertThat(text.find("abd")).isEqualTo(-1);
+    assertThat(text.find("ac")).isEqualTo(-1);
+    assertThat(text.find("\u20ac")).isEqualTo(4);
+    assertThat(text.find("\u20ac", 5)).isEqualTo(11);
   }
 
+  @Test
   public void testFindAfterUpdatingContents() throws Exception {
     Text text = new Text("abcd");
     text.set("a".getBytes());
@@ -239,6 +250,7 @@ public class TestText extends TestCase {
     assertEquals(text.find("b"), -1);
   }
 
+  @Test
   public void testValidate() throws Exception {
     Text text = new Text("abcd\u20acbdcd\u20ac");
     byte [] utf8 = text.getBytes();
@@ -246,51 +258,56 @@ public class TestText extends TestCase {
     Text.validateUTF8(utf8, 0, length);
   }
 
+  @Test
   public void testClear() throws Exception {
     // Test lengths on an empty text object
     Text text = new Text();
-    assertEquals(
-        "Actual string on an empty text object must be an empty string",
-        "", text.toString());
-    assertEquals("Underlying byte array length must be zero",
-        0, text.getBytes().length);
-    assertEquals("String's length must be zero",
-        0, text.getLength());
+    assertEquals("", text.toString(),
+        "Actual string on an empty text object must be an empty string");
+    assertEquals(0, text.getBytes().length,
+        "Underlying byte array length must be zero");
+    assertEquals(0, text.getLength(), "String's length must be zero");
+    assertEquals(0, text.getTextLength(), "String's text length must be zero");
 
     // Test if clear works as intended
     text = new Text("abcd\u20acbdcd\u20ac");
     int len = text.getLength();
     text.clear();
-    assertEquals("String must be empty after clear()",
-        "", text.toString());
-    assertTrue(
-        "Length of the byte array must not decrease after clear()",
-        text.getBytes().length >= len);
-    assertEquals("Length of the string must be reset to 0 after clear()",
-        0, text.getLength());
+    assertEquals("", text.toString(),
+        "String must be empty after clear()");
+    assertTrue(text.getBytes().length >= len,
+        "Length of the byte array must not decrease after clear()");
+    assertEquals(0, text.getLength(),
+        "Length of the string must be reset to 0 after clear()");
+    assertEquals(0, text.getTextLength(),
+        "Text length of the string must be reset to 0 after clear()");
   }
 
+  @Test
   public void testTextText() throws CharacterCodingException {
     Text a=new Text("abc");
     Text b=new Text("a");
     b.set(a);
     assertEquals("abc", b.toString());
+    assertEquals(3, a.getTextLength());
+    assertEquals(3, b.getTextLength());
     a.append("xdefgxxx".getBytes(), 1, 4);
-    assertEquals("modified aliased string", "abc", b.toString());
-    assertEquals("appended string incorrectly", "abcdefg", a.toString());
-    // add an extra byte so that capacity = 14 and length = 8
+    assertEquals("abc", b.toString(), "modified aliased string");
+    assertEquals("abcdefg", a.toString(), "appended string incorrectly");
+    assertEquals(7, a.getTextLength(), "This should reflect in the lenght");
+    // add an extra byte so that capacity = 10 and length = 8
     a.append(new byte[]{'d'}, 0, 1);
-    assertEquals(14, a.getBytes().length);
+    assertEquals(10, a.getBytes().length);
     assertEquals(8, a.copyBytes().length);
   }
   
-  private class ConcurrentEncodeDecodeThread extends Thread {
+  private class ConcurrentEncodeDecodeThread extends SubjectInheritingThread {
     public ConcurrentEncodeDecodeThread(String name) {
       super(name);
     }
 
     @Override
-    public void run() {
+    public void work() {
       final String name = this.getName();
       DataOutputBuffer out = new DataOutputBuffer();
       DataInputBuffer in = new DataInputBuffer();
@@ -302,14 +319,15 @@ public class TestText extends TestCase {
           in.reset(out.getData(), out.getLength());
           String s = WritableUtils.readString(in);
           
-          assertEquals("input buffer reset contents = " + name, name, s);
+          assertEquals(name, s, "input buffer reset contents = " + name);
         } catch (Exception ioe) {
           throw new RuntimeException(ioe);
         }
       }
     }
   }
-  
+
+  @Test
   public void testConcurrentEncodeDecode() throws Exception{
     Thread thread1 = new ConcurrentEncodeDecodeThread("apache");
     Thread thread2 = new ConcurrentEncodeDecodeThread("hadoop");
@@ -321,28 +339,33 @@ public class TestText extends TestCase {
     thread2.join();
   }
 
+  @Test
   public void testAvroReflect() throws Exception {
+    // Avro expects explicitely stated, trusted packages used for (de-)serialization
+    System.setProperty(ConfigConstants.CONFIG_AVRO_SERIALIZABLE_PACKAGES, "org.apache.hadoop.io");
     AvroTestUtil.testReflect
-      (new Text("foo"),
-       "{\"type\":\"string\",\"java-class\":\"org.apache.hadoop.io.Text\"}");
+            (new Text("foo"),
+                    "{\"type\":\"string\",\"java-class\":\"org.apache.hadoop.io.Text\"}");
   }
   
   /**
    * 
    */
+  @Test
   public void testCharAt() {
     String line = "adsawseeeeegqewgasddga";
     Text text = new Text(line);
     for (int i = 0; i < line.length(); i++) {
-      assertTrue("testCharAt error1 !!!", text.charAt(i) == line.charAt(i));
+      assertTrue(text.charAt(i) == line.charAt(i), "testCharAt error1 !!!");
     }    
-    assertEquals("testCharAt error2 !!!", -1, text.charAt(-1));    
-    assertEquals("testCharAt error3 !!!", -1, text.charAt(100));
-  }    
+    assertEquals(-1, text.charAt(-1), "testCharAt error2 !!!");
+    assertEquals(-1, text.charAt(100), "testCharAt error3 !!!");
+  }
   
   /**
    * test {@code Text} readFields/write operations
    */
+  @Test
   public void testReadWriteOperations() {
     String line = "adsawseeeeegqewgasddga";
     byte[] inputBytes = line.getBytes();       
@@ -365,25 +388,29 @@ public class TestText extends TestCase {
     }        
   }
 
+  @Test
   public void testReadWithKnownLength() throws IOException {
     String line = "hello world";
-    byte[] inputBytes = line.getBytes(Charsets.UTF_8);
+    byte[] inputBytes = line.getBytes(StandardCharsets.UTF_8);
     DataInputBuffer in = new DataInputBuffer();
     Text text = new Text();
 
     in.reset(inputBytes, inputBytes.length);
     text.readWithKnownLength(in, 5);
     assertEquals("hello", text.toString());
+    assertEquals(5, text.getTextLength());
 
     // Read longer length, make sure it lengthens
     in.reset(inputBytes, inputBytes.length);
     text.readWithKnownLength(in, 7);
     assertEquals("hello w", text.toString());
+    assertEquals(7, text.getTextLength());
 
     // Read shorter length, make sure it shortens
     in.reset(inputBytes, inputBytes.length);
     text.readWithKnownLength(in, 2);
     assertEquals("he", text.toString());
+    assertEquals(2, text.getTextLength());
   }
   
   /**
@@ -391,18 +418,20 @@ public class TestText extends TestCase {
    * with {@code BufferUnderflowException}
    * 
    */
+  @Test
   public void testBytesToCodePoint() {
     try {
       ByteBuffer bytes = ByteBuffer.wrap(new byte[] {-2, 45, 23, 12, 76, 89});                                      
-      Text.bytesToCodePoint(bytes);      
-      assertTrue("testBytesToCodePoint error !!!", bytes.position() == 6 );                      
+      Text.bytesToCodePoint(bytes);
+      assertTrue(bytes.position() == 6, "testBytesToCodePoint error !!!");
     } catch (BufferUnderflowException ex) {
       fail("testBytesToCodePoint unexp exception");
     } catch (Exception e) {
       fail("testBytesToCodePoint unexp exception");
     }    
   }
-  
+
+  @Test
   public void testbytesToCodePointWithInvalidUTF() {
     try {                 
       Text.bytesToCodePoint(ByteBuffer.wrap(new byte[] {-2}));
@@ -412,30 +441,39 @@ public class TestText extends TestCase {
       fail("testbytesToCodePointWithInvalidUTF error unexp exception !!!");
     }
   }
-  
+
+  @Test
   public void testUtf8Length() {
-    assertEquals("testUtf8Length1 error   !!!",
-            1, Text.utf8Length(new String(new char[]{(char)1})));
-    assertEquals("testUtf8Length127 error !!!",
-            1, Text.utf8Length(new String(new char[]{(char)127})));
-    assertEquals("testUtf8Length128 error !!!",
-            2, Text.utf8Length(new String(new char[]{(char)128})));
-    assertEquals("testUtf8Length193 error !!!",
-            2, Text.utf8Length(new String(new char[]{(char)193})));
-    assertEquals("testUtf8Length225 error !!!",
-            2, Text.utf8Length(new String(new char[]{(char)225})));
-    assertEquals("testUtf8Length254 error !!!",
-            2, Text.utf8Length(new String(new char[]{(char)254})));
+    assertEquals(1, Text.utf8Length(new String(new char[]{(char) 1})),
+        "testUtf8Length1 error !!!");
+    assertEquals(1, Text.utf8Length(new String(new char[]{(char) 127})),
+        "testUtf8Length127 error !!!");
+    assertEquals(2, Text.utf8Length(new String(new char[]{(char) 128})),
+        "testUtf8Length128 error !!!");
+    assertEquals(2, Text.utf8Length(new String(new char[]{(char) 193})),
+        "testUtf8Length193 error !!!");
+    assertEquals(2, Text.utf8Length(new String(new char[]{(char) 225})),
+        "testUtf8Length225 error !!!");
+    assertEquals(2, Text.utf8Length(new String(new char[]{(char)254})),
+        "testUtf8Length254 error !!!");
   }
-  
-  public static void main(String[] args)  throws Exception
-  {
-    TestText test = new TestText("main");
-    test.testIO();
-    test.testCompare();
-    test.testCoding();
-    test.testWritable();
-    test.testFind();
-    test.testValidate();
+
+  @Test
+  public void testSetBytes(){
+    Text a = new Text(new byte[100]);
+    assertEquals(100, a.getLength(),
+        "testSetBytes100 getLength error !");
+    assertEquals(100, a.getBytes().length,
+        "testSetBytes100 getBytes.length error !");
+    assertEquals(100, a.getTextLength(),
+        "testSetBytes100 getTextLength error !");
+
+    a.set(new byte[0]);
+    assertEquals(0, a.getLength(),
+        "testSetBytes0 getLength error !");
+    assertEquals(0, a.getBytes().length,
+        "testSetBytes0 getBytes.length error !");
+    assertEquals(0, a.getTextLength(),
+        "testSetBytes0 getTextLength error !");
   }
 }

@@ -30,6 +30,9 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.NoSuchElementException;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import org.apache.hadoop.fs.CreateFlag;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
@@ -44,10 +47,17 @@ import org.apache.hadoop.fs.PathOperationException;
 import org.apache.hadoop.fs.permission.AclEntry;
 import org.apache.hadoop.fs.permission.AclUtil;
 import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.fs.viewfs.NotInMountpointException;
 import org.apache.hadoop.io.IOUtils;
 
+import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.IO_FILE_BUFFER_SIZE_DEFAULT;
+import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.IO_FILE_BUFFER_SIZE_KEY;
 import static org.apache.hadoop.fs.CreateFlag.CREATE;
 import static org.apache.hadoop.fs.CreateFlag.LAZY_PERSIST;
+import static org.apache.hadoop.fs.CreateFlag.OVERWRITE;
+import static org.apache.hadoop.fs.Options.OpenFileOptions.FS_OPTION_OPENFILE_READ_POLICY;
+import static org.apache.hadoop.fs.Options.OpenFileOptions.FS_OPTION_OPENFILE_READ_POLICY_WHOLE_FILE;
+import static org.apache.hadoop.util.functional.FutureIO.awaitFuture;
 
 /**
  * Provides: argument processing to ensure the destination is valid
@@ -55,13 +65,18 @@ import static org.apache.hadoop.fs.CreateFlag.LAZY_PERSIST;
  * a source and resolved target.  Sources are resolved as children of
  * a destination directory.
  */
-abstract class CommandWithDestination extends FsCommand {  
+abstract class CommandWithDestination extends FsCommand {
+
+  protected static final Logger LOG = LoggerFactory.getLogger(
+      CommandWithDestination.class);
+
   protected PathData dst;
   private boolean overwrite = false;
   private boolean verifyChecksum = true;
   private boolean writeChecksum = true;
   private boolean lazyPersist = false;
-  
+  private boolean direct = false;
+
   /**
    * The name of the raw xattr namespace. It would be nice to use
    * XAttr.RAW.name() but we can't reference the hadoop-hdfs project.
@@ -94,12 +109,18 @@ abstract class CommandWithDestination extends FsCommand {
   protected void setWriteChecksum(boolean flag) {
     writeChecksum = flag;
   }
-  
+
+  protected void setDirectWrite(boolean flag) {
+    direct = flag;
+  }
+
   /**
    * If true, the last modified time, last access time,
    * owner, group and permission information of the source
    * file will be preserved as far as target {@link FileSystem}
    * implementation allows.
+   *
+   * @param preserve preserve.
    */
   protected void setPreserve(boolean preserve) {
     if (preserve) {
@@ -111,7 +132,7 @@ abstract class CommandWithDestination extends FsCommand {
     }
   }
   
-  protected static enum FileAttribute {
+  protected enum FileAttribute {
     TIMESTAMPS, OWNERSHIP, PERMISSION, ACL, XATTR;
 
     public static FileAttribute getAttribute(char symbol) {
@@ -156,6 +177,7 @@ abstract class CommandWithDestination extends FsCommand {
    *  The last arg is expected to be a local path, if only one argument is
    *  given then the destination will be the current directory 
    *  @param args is the list of arguments
+   * @throws IOException raised on errors performing I/O.
    */
   protected void getLocalDestination(LinkedList<String> args)
   throws IOException {
@@ -212,10 +234,12 @@ abstract class CommandWithDestination extends FsCommand {
       }
     } else if (dst.exists) {
       if (!dst.stat.isDirectory() && !overwrite) {
+        LOG.debug("Destination file exists: {}", dst.stat);
         throw new PathExistsException(dst.toString());
       }
     } else if (!dst.parentExists()) {
-      throw new PathNotFoundException(dst.toString());
+      throw new PathNotFoundException(dst.toString())
+          .withFullyQualifiedPath(dst.path.toUri().toString());
     }
     super.processArguments(args);
   }
@@ -233,7 +257,13 @@ abstract class CommandWithDestination extends FsCommand {
         e.setTargetPath(dstPath.toString());
         throw e;
       }
-      if (dstPath.startsWith(srcPath+Path.SEPARATOR)) {
+      // When a path is normalized, all trailing slashes are removed
+      // except for the root
+      if(!srcPath.endsWith(Path.SEPARATOR)) {
+        srcPath += Path.SEPARATOR;
+      }
+
+      if(dstPath.startsWith(srcPath)) {
         PathIOException e = new PathIOException(src.toString(),
             "is a subdirectory of itself");
         e.setTargetPath(target.toString());
@@ -324,7 +354,11 @@ abstract class CommandWithDestination extends FsCommand {
     src.fs.setVerifyChecksum(verifyChecksum);
     InputStream in = null;
     try {
-      in = src.fs.open(src.path);
+      in = awaitFuture(src.fs.openFile(src.path)
+          .withFileStatus(src.stat)
+          .opt(FS_OPTION_OPENFILE_READ_POLICY,
+              FS_OPTION_OPENFILE_READ_POLICY_WHOLE_FILE)
+          .build());
       copyStreamToTarget(in, target);
       preserveAttributes(src, target, preserveRawXattrs);
     } finally {
@@ -372,10 +406,12 @@ abstract class CommandWithDestination extends FsCommand {
   }
 
   /**
-   * Copies the stream contents to a temporary file.  If the copy is
-   * successful, the temporary file will be renamed to the real path,
-   * else the temporary file will be deleted.
-   * @param in the input stream for the copy
+   * If direct write is disabled ,copies the stream contents to a temporary
+   * file "target._COPYING_". If the copy is successful, the temporary file
+   * will be renamed to the real path, else the temporary file will be deleted.
+   * if direct write is enabled , then creation temporary file is skipped.
+   *
+   * @param in     the input stream for the copy
    * @param target where to store the contents of the stream
    * @throws IOException if copy fails
    */ 
@@ -386,10 +422,12 @@ abstract class CommandWithDestination extends FsCommand {
     }
     TargetFileSystem targetFs = new TargetFileSystem(target.fs);
     try {
-      PathData tempTarget = target.suffix("._COPYING_");
+      PathData tempTarget = direct ? target : target.suffix("._COPYING_");
       targetFs.setWriteChecksum(writeChecksum);
-      targetFs.writeStreamToFile(in, tempTarget, lazyPersist);
-      targetFs.rename(tempTarget, target);
+      targetFs.writeStreamToFile(in, tempTarget, lazyPersist, direct);
+      if (!direct) {
+        targetFs.rename(tempTarget, target);
+      }
     } finally {
       targetFs.close(); // last ditch effort to ensure temp file is removed
     }
@@ -426,8 +464,8 @@ abstract class CommandWithDestination extends FsCommand {
           src.stat.getPermission());
     }
     if (shouldPreserve(FileAttribute.ACL)) {
-      FsPermission perm = src.stat.getPermission();
-      if (perm.getAclBit()) {
+      if (src.stat.hasAcl()) {
+        FsPermission perm = src.stat.getPermission();
         List<AclEntry> srcEntries =
             src.fs.getAclStatus(src.path).getEntries();
         List<AclEntry> srcFullEntries =
@@ -459,12 +497,16 @@ abstract class CommandWithDestination extends FsCommand {
     }
 
     void writeStreamToFile(InputStream in, PathData target,
-                           boolean lazyPersist) throws IOException {
+        boolean lazyPersist, boolean direct)
+        throws IOException {
       FSDataOutputStream out = null;
       try {
         out = create(target, lazyPersist);
         IOUtils.copyBytes(in, out, getConf(), true);
       } finally {
+        if (!direct) {
+          deleteOnExit(target.path);
+        }
         IOUtils.closeStream(out); // just in case copyBytes didn't
       }
     }
@@ -472,23 +514,32 @@ abstract class CommandWithDestination extends FsCommand {
     // tag created files as temp files
     FSDataOutputStream create(PathData item, boolean lazyPersist)
         throws IOException {
-      try {
-        if (lazyPersist) {
-          EnumSet<CreateFlag> createFlags = EnumSet.of(CREATE, LAZY_PERSIST);
-          return create(item.path,
-                        FsPermission.getFileDefault().applyUMask(
-                            FsPermission.getUMask(getConf())),
-                        createFlags,
-                        getConf().getInt("io.file.buffer.size", 4096),
-                        lazyPersist ? 1 : getDefaultReplication(item.path),
-                        getDefaultBlockSize(),
-                        null,
-                        null);
-        } else {
-          return create(item.path, true);
+      if (lazyPersist) {
+        long defaultBlockSize;
+        try {
+          defaultBlockSize = getDefaultBlockSize();
+        } catch (NotInMountpointException ex) {
+          // ViewFileSystem#getDefaultBlockSize() throws an exception as it
+          // needs a target FS to retrive the default block size from.
+          // Hence, for ViewFs, we should call getDefaultBlockSize with the
+          // target path.
+          defaultBlockSize = getDefaultBlockSize(item.path);
         }
-      } finally { // might have been created but stream was interrupted
-        deleteOnExit(item.path);
+
+        EnumSet<CreateFlag> createFlags =
+            EnumSet.of(CREATE, LAZY_PERSIST, OVERWRITE);
+        return create(item.path,
+                      FsPermission.getFileDefault().applyUMask(
+                          FsPermission.getUMask(getConf())),
+                      createFlags,
+                      getConf().getInt(IO_FILE_BUFFER_SIZE_KEY,
+                          IO_FILE_BUFFER_SIZE_DEFAULT),
+                      (short) 1,
+                      defaultBlockSize,
+                      null,
+                      null);
+      } else {
+        return create(item.path, true);
       }
     }
 

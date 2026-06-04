@@ -18,36 +18,36 @@
 
 package org.apache.hadoop.hdfs.server.namenode;
 
+import org.apache.hadoop.thirdparty.protobuf.ByteString;
 import java.io.BufferedInputStream;
 import java.io.DataInputStream;
 import java.io.EOFException;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.file.Files;
 import java.security.PrivilegedExceptionAction;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.protocol.LayoutFlags;
 import org.apache.hadoop.hdfs.protocol.LayoutVersion;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
+import org.apache.hadoop.hdfs.server.common.HttpGetFailedException;
 import org.apache.hadoop.hdfs.server.common.Storage;
-import org.apache.hadoop.hdfs.server.namenode.FSEditLogLoader.EditLogValidation;
-import org.apache.hadoop.hdfs.server.namenode.TransferFsImage.HttpGetFailedException;
 import org.apache.hadoop.hdfs.web.URLConnectionFactory;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authentication.client.AuthenticationException;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
-import com.google.common.base.Throwables;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.util.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.base.Throwables;
 
 /**
  * An implementation of the abstract class {@link EditLogInputStream}, which
@@ -67,12 +67,11 @@ public class EditLogFileInputStream extends EditLogInputStream {
     CLOSED
   }
   private State state = State.UNINIT;
-  private InputStream fStream = null;
   private int logVersion = 0;
   private FSEditLogOp.Reader reader = null;
   private FSEditLogLoader.PositionTrackingInputStream tracker = null;
   private DataInputStream dataIn = null;
-  static final Log LOG = LogFactory.getLog(EditLogInputStream.class);
+  static final Logger LOG = LoggerFactory.getLogger(EditLogInputStream.class);
   
   /**
    * Open an EditLogInputStream for the given file.
@@ -120,6 +119,23 @@ public class EditLogFileInputStream extends EditLogInputStream {
     return new EditLogFileInputStream(new URLLog(connectionFactory, url),
         startTxId, endTxId, inProgress);
   }
+
+  /**
+   * Create an EditLogInputStream from a {@link ByteString}, i.e. an in-memory
+   * collection of bytes.
+   *
+   * @param bytes The byte string to read from
+   * @param startTxId the expected starting transaction ID
+   * @param endTxId the expected ending transaction ID
+   * @param inProgress whether the log is in-progress
+   * @return An edit stream to read from
+   */
+  public static EditLogInputStream fromByteString(ByteString bytes,
+      long startTxId, long endTxId, boolean inProgress) {
+    return new EditLogFileInputStream(new ByteStringLog(bytes,
+        String.format("ByteStringEditLog[%d, %d]", startTxId, endTxId)),
+        startTxId, endTxId, inProgress);
+  }
   
   private EditLogFileInputStream(LogSource log,
       long firstTxId, long lastTxId,
@@ -136,6 +152,7 @@ public class EditLogFileInputStream extends EditLogInputStream {
       throws LogHeaderCorruptException, IOException {
     Preconditions.checkState(state == State.UNINIT);
     BufferedInputStream bin = null;
+    InputStream fStream = null;
     try {
       fStream = log.getInputStream();
       bin = new BufferedInputStream(fStream);
@@ -145,6 +162,16 @@ public class EditLogFileInputStream extends EditLogInputStream {
         logVersion = readLogVersion(dataIn, verifyLayoutVersion);
       } catch (EOFException eofe) {
         throw new LogHeaderCorruptException("No header found in log");
+      }
+      if (logVersion == -1) {
+        // The edits in progress file is pre-allocated with 1MB of "-1" bytes
+        // when it is created, then the header is written. If the header is
+        // -1, it indicates the an exception occurred pre-allocating the file
+        // and the header was never written. Therefore this is effectively a
+        // corrupt and empty log.
+        throw new LogHeaderCorruptException("No header present in log (value " +
+            "is -1), probably due to disk space issues when it was created. " +
+            "The log has no transactions and will be sidelined.");
       }
       // We assume future layout will also support ADD_LAYOUT_FLAGS
       if (NameNodeLayoutVersion.supports(
@@ -157,12 +184,12 @@ public class EditLogFileInputStream extends EditLogInputStream {
               "flags from log");
         }
       }
-      reader = new FSEditLogOp.Reader(dataIn, tracker, logVersion);
+      reader = FSEditLogOp.Reader.create(dataIn, tracker, logVersion);
       reader.setMaxOpSize(maxOpSize);
       state = State.OPEN;
     } finally {
       if (reader == null) {
-        IOUtils.cleanup(LOG, dataIn, tracker, bin, fStream);
+        IOUtils.cleanupWithLogger(LOG, dataIn, tracker, bin, fStream);
         state = State.CLOSED;
       }
     }
@@ -297,69 +324,43 @@ public class EditLogFileInputStream extends EditLogInputStream {
   
   @Override
   public String toString() {
-    return getName();
+    return "EditLogFileInputStream{" +
+            "log=" + log.getName() +
+            ", firstTxId=" + firstTxId +
+            ", lastTxId=" + lastTxId +
+            ", isInProgress=" + isInProgress +
+            ", maxOpSize=" + maxOpSize +
+            ", state=" + state +
+            ", logVersion=" + logVersion +
+            '}';
   }
 
-  static FSEditLogLoader.EditLogValidation validateEditLog(File file)
-      throws IOException {
-    EditLogFileInputStream in;
-    try {
-      in = new EditLogFileInputStream(file);
-      in.getVersion(true); // causes us to read the header
-    } catch (LogHeaderCorruptException e) {
-      // If the header is malformed or the wrong value, this indicates a corruption
-      LOG.warn("Log file " + file + " has no valid header", e);
-      return new FSEditLogLoader.EditLogValidation(0,
-          HdfsServerConstants.INVALID_TXID, true);
-    }
-    
-    try {
-      return FSEditLogLoader.validateEditLog(in);
-    } finally {
-      IOUtils.closeStream(in);
-    }
-  }
-
-  static FSEditLogLoader.EditLogValidation scanEditLog(File file)
+  /**
+   * @param file          File being scanned and validated.
+   * @param maxTxIdToScan Maximum Tx ID to try to scan.
+   *                      The scan returns after reading this or a higher
+   *                      ID. The file portion beyond this ID is
+   *                      potentially being updated.
+   * @return Result of the validation
+   * @throws IOException
+   */
+  static FSEditLogLoader.EditLogValidation scanEditLog(File file,
+      long maxTxIdToScan, boolean verifyVersion)
       throws IOException {
     EditLogFileInputStream in;
     try {
       in = new EditLogFileInputStream(file);
       // read the header, initialize the inputstream, but do not check the
       // layoutversion
-      in.getVersion(false);
+      in.getVersion(verifyVersion);
     } catch (LogHeaderCorruptException e) {
       LOG.warn("Log file " + file + " has no valid header", e);
       return new FSEditLogLoader.EditLogValidation(0,
           HdfsServerConstants.INVALID_TXID, true);
     }
 
-    long lastPos = 0;
-    long lastTxId = HdfsServerConstants.INVALID_TXID;
-    long numValid = 0;
     try {
-      while (true) {
-        long txid = HdfsServerConstants.INVALID_TXID;
-        lastPos = in.getPosition();
-        try {
-          if ((txid = in.scanNextOp()) == HdfsServerConstants.INVALID_TXID) {
-            break;
-          }
-        } catch (Throwable t) {
-          FSImage.LOG.warn("Caught exception after scanning through "
-              + numValid + " ops from " + in
-              + " while determining its valid length. Position was "
-              + lastPos, t);
-          in.resync();
-          FSImage.LOG.warn("After resync, position is " + in.getPosition());
-          continue;
-        }
-        if (lastTxId == HdfsServerConstants.INVALID_TXID || txid > lastTxId) {
-          lastTxId = txid;
-        }
-        numValid++;
-      }
-      return new EditLogValidation(lastPos, lastTxId, false);
+      return FSEditLogLoader.scanEditLog(in, maxTxIdToScan);
     } finally {
       IOUtils.closeStream(in);
     }
@@ -411,6 +412,32 @@ public class EditLogFileInputStream extends EditLogInputStream {
     public long length();
     public String getName();
   }
+
+  private static class ByteStringLog implements LogSource {
+    private final ByteString bytes;
+    private final String name;
+
+    public ByteStringLog(ByteString bytes, String name) {
+      this.bytes = bytes;
+      this.name = name;
+    }
+
+    @Override
+    public InputStream getInputStream() {
+      return bytes.newInput();
+    }
+
+    @Override
+    public long length() {
+      return bytes.size();
+    }
+
+    @Override
+    public String getName() {
+      return name;
+    }
+
+  }
   
   private static class FileLog implements LogSource {
     private final File file;
@@ -421,7 +448,7 @@ public class EditLogFileInputStream extends EditLogInputStream {
 
     @Override
     public InputStream getInputStream() throws IOException {
-      return new FileInputStream(file);
+      return Files.newInputStream(file.toPath());
     }
 
     @Override

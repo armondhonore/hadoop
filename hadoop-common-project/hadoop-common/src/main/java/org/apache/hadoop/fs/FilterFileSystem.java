@@ -25,17 +25,23 @@ import java.util.Collection;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.impl.OpenFileParameters;
 import org.apache.hadoop.fs.permission.AclEntry;
 import org.apache.hadoop.fs.permission.AclStatus;
 import org.apache.hadoop.fs.permission.FsAction;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.fs.Options.ChecksumOpt;
+import org.apache.hadoop.fs.Options.HandleOpt;
+import org.apache.hadoop.fs.Options.Rename;
 import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.util.Progressable;
+
+import static org.apache.hadoop.fs.impl.PathCapabilitiesSupport.validatePathCapabilityArgs;
 
 /****************************************************************
  * A <code>FilterFileSystem</code> contains
@@ -163,6 +169,17 @@ public class FilterFileSystem extends FileSystem {
   }
 
   @Override
+  public FSDataInputStream open(PathHandle fd, int bufferSize)
+      throws IOException {
+    return fs.open(fd, bufferSize);
+  }
+
+  @Override
+  protected PathHandle createPathHandle(FileStatus stat, HandleOpt... opts) {
+    return fs.getPathHandle(stat, opts);
+  }
+
+  @Override
   public FSDataOutputStream append(Path f, int bufferSize,
       Progressable progress) throws IOException {
     return fs.append(f, bufferSize, progress);
@@ -203,7 +220,6 @@ public class FilterFileSystem extends FileSystem {
 
 
   @Override
-  @Deprecated
   public FSDataOutputStream createNonRecursive(Path f, FsPermission permission,
       EnumSet<CreateFlag> flags, int bufferSize, short replication, long blockSize,
       Progressable progress) throws IOException {
@@ -217,7 +233,7 @@ public class FilterFileSystem extends FileSystem {
    * 
    * @param src file name
    * @param replication new replication
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    * @return true if successful;
    *         false if file does not exist or is a directory
    */
@@ -233,6 +249,12 @@ public class FilterFileSystem extends FileSystem {
   @Override
   public boolean rename(Path src, Path dst) throws IOException {
     return fs.rename(src, dst);
+  }
+
+  @Override
+  protected void rename(Path src, Path dst, Rename... options)
+      throws IOException {
+    fs.rename(src, dst, options);
   }
 
   @Override
@@ -282,7 +304,7 @@ public class FilterFileSystem extends FileSystem {
    * Set the current working directory for the given file system. All relative
    * paths will be resolved relative to it.
    * 
-   * @param newDir
+   * @param newDir new dir.
    */
   @Override
   public void setWorkingDirectory(Path newDir) {
@@ -314,6 +336,10 @@ public class FilterFileSystem extends FileSystem {
     return fs.mkdirs(f, permission);
   }
 
+  @Override
+  public boolean mkdirs(Path f) throws IOException {
+    return fs.mkdirs(f);
+  }
 
   /**
    * The src file is on the local disk.  Add it to FS at
@@ -390,7 +416,13 @@ public class FilterFileSystem extends FileSystem {
   public long getUsed() throws IOException{
     return fs.getUsed();
   }
-  
+
+  /** Return the total size of all files from a specified path.*/
+  @Override
+  public long getUsed(Path path) throws IOException {
+    return fs.getUsed(path);
+  }
+
   @Override
   public long getDefaultBlockSize() {
     return fs.getDefaultBlockSize();
@@ -428,6 +460,11 @@ public class FilterFileSystem extends FileSystem {
   @Override
   public FileStatus getFileStatus(Path f) throws IOException {
     return fs.getFileStatus(f);
+  }
+
+  @Override
+  public void msync() throws IOException, UnsupportedOperationException {
+    fs.msync();
   }
 
   @Override
@@ -622,9 +659,19 @@ public class FilterFileSystem extends FileSystem {
   }
 
   @Override
+  public void satisfyStoragePolicy(Path src) throws IOException {
+    fs.satisfyStoragePolicy(src);
+  }
+
+  @Override
   public void setStoragePolicy(Path src, String policyName)
       throws IOException {
     fs.setStoragePolicy(src, policyName);
+  }
+
+  @Override
+  public void unsetStoragePolicy(Path src) throws IOException {
+    fs.unsetStoragePolicy(src);
   }
 
   @Override
@@ -638,4 +685,71 @@ public class FilterFileSystem extends FileSystem {
       throws IOException {
     return fs.getAllStoragePolicies();
   }
+
+  @Override
+  public Path getTrashRoot(Path path) {
+    return fs.getTrashRoot(path);
+  }
+
+  @Override
+  public Collection<FileStatus> getTrashRoots(boolean allUsers) {
+    return fs.getTrashRoots(allUsers);
+  }
+
+  @Override
+  public FSDataOutputStreamBuilder createFile(Path path) {
+    return fs.createFile(path);
+  }
+
+  @Override
+  public FSDataOutputStreamBuilder appendFile(Path path) {
+    return fs.appendFile(path);
+  }
+
+  @Override
+  public FutureDataInputStreamBuilder openFile(final Path path)
+      throws IOException, UnsupportedOperationException {
+    return fs.openFile(path);
+  }
+
+  @Override
+  public FutureDataInputStreamBuilder openFile(final PathHandle pathHandle)
+      throws IOException, UnsupportedOperationException {
+    return fs.openFile(pathHandle);
+  }
+
+  @Override
+  protected CompletableFuture<FSDataInputStream> openFileWithOptions(
+      final Path path,
+      final OpenFileParameters parameters) throws IOException {
+    return fs.openFileWithOptions(path, parameters);
+  }
+
+  @Override
+  protected CompletableFuture<FSDataInputStream> openFileWithOptions(
+      final PathHandle pathHandle,
+      final OpenFileParameters parameters) throws IOException {
+    return fs.openFileWithOptions(pathHandle, parameters);
+  }
+
+  @Override
+  public Path getEnclosingRoot(Path path) throws IOException {
+    return fs.getEnclosingRoot(path);
+  }
+
+  @Override
+  public boolean hasPathCapability(final Path path, final String capability)
+      throws IOException {
+    switch (validatePathCapabilityArgs(makeQualified(path), capability)) {
+    case CommonPathCapabilities.FS_MULTIPART_UPLOADER:
+    case CommonPathCapabilities.FS_EXPERIMENTAL_BATCH_LISTING:
+      // operations known to be unsupported, irrespective of what
+      // the wrapped class implements.
+      return false;
+    default:
+      // the feature is not implemented.
+      return fs.hasPathCapability(path, capability);
+    }
+  }
+
 }

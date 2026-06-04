@@ -18,47 +18,52 @@
 
 package org.apache.hadoop.hdfs;
 
-import java.io.IOException;
-import java.util.Date;
+import java.io.BufferedReader;
 import java.io.DataInputStream;
+import java.io.File;
 import java.io.FileOutputStream;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.PrintStream;
-import java.io.File;
-import java.io.BufferedReader;
-import java.util.StringTokenizer;
-import java.net.InetAddress;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Date;
 import java.util.Iterator;
+import java.util.List;
+import java.util.StringTokenizer;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
 
-import org.apache.commons.logging.LogFactory;
-import org.apache.commons.logging.Log;
-
+import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configured;
-
-import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FSDataInputStream;
+import org.apache.hadoop.fs.FSDataOutputStream;
+import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
-
-import org.apache.hadoop.io.Text;
+import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.LongWritable;
-import org.apache.hadoop.io.SequenceFile.CompressionType;
 import org.apache.hadoop.io.SequenceFile;
-
+import org.apache.hadoop.io.SequenceFile.CompressionType;
+import org.apache.hadoop.io.SequenceFile.Writer;
+import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapred.FileInputFormat;
 import org.apache.hadoop.mapred.FileOutputFormat;
-import org.apache.hadoop.mapred.Mapper;
-import org.apache.hadoop.mapred.SequenceFileInputFormat;
 import org.apache.hadoop.mapred.JobClient;
-import org.apache.hadoop.mapred.MapReduceBase;
-import org.apache.hadoop.mapred.Reporter;
-import org.apache.hadoop.mapred.OutputCollector;
 import org.apache.hadoop.mapred.JobConf;
+import org.apache.hadoop.mapred.MapReduceBase;
+import org.apache.hadoop.mapred.Mapper;
+import org.apache.hadoop.mapred.OutputCollector;
 import org.apache.hadoop.mapred.Reducer;
-import org.apache.hadoop.mapreduce.MRJobConfig;
-import org.apache.hadoop.mapreduce.TaskAttemptID;
+import org.apache.hadoop.mapred.Reporter;
+import org.apache.hadoop.mapred.SequenceFileInputFormat;
+import org.apache.hadoop.util.Tool;
+import org.apache.hadoop.util.ToolRunner;
+import org.apache.hadoop.util.concurrent.HadoopExecutors;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * This program executes a specified operation that applies load to 
@@ -79,49 +84,47 @@ import org.apache.hadoop.mapreduce.TaskAttemptID;
  *       must be run before running the other operations.
  */
 
-public class NNBench {
-  private static final Log LOG = LogFactory.getLog(
-          "org.apache.hadoop.hdfs.NNBench");
+public class NNBench extends Configured implements Tool {
+  private static final Logger LOG = LoggerFactory.getLogger(NNBench.class);
   
-  protected static String CONTROL_DIR_NAME = "control";
-  protected static String OUTPUT_DIR_NAME = "output";
-  protected static String DATA_DIR_NAME = "data";
-  protected static final String DEFAULT_RES_FILE_NAME = "NNBench_results.log";
-  protected static final String NNBENCH_VERSION = "NameNode Benchmark 0.4";
-  
-  public static String operation = "none";
-  public static long numberOfMaps = 1l; // default is 1
-  public static long numberOfReduces = 1l; // default is 1
-  public static long startTime = 
+  private static String CONTROL_DIR_NAME = "control";
+  private static String OUTPUT_DIR_NAME = "output";
+  private static String DATA_DIR_NAME = "data";
+  static final String DEFAULT_RES_FILE_NAME = "NNBench_results.log";
+  private static final String NNBENCH_VERSION = "NameNode Benchmark 0.4";
+
+  private String operation = "none";
+  private long numberOfMaps = 1l; // default is 1
+  private long numberOfReduces = 1l; // default is 1
+  private long startTime =
           System.currentTimeMillis() + (120 * 1000); // default is 'now' + 2min
-  public static long blockSize = 1l; // default is 1
-  public static int bytesToWrite = 0; // default is 0
-  public static long bytesPerChecksum = 1l; // default is 1
-  public static long numberOfFiles = 1l; // default is 1
-  public static short replicationFactorPerFile = 1; // default is 1
-  public static String baseDir = "/benchmarks/NNBench";  // default
-  public static boolean readFileAfterOpen = false; // default is to not read
-  
+  private long blockSize = 1l; // default is 1
+  private int bytesToWrite = 0; // default is 0
+  private long bytesPerChecksum = 1l; // default is 1
+  private long numberOfFiles = 1l; // default is 1
+  private short replicationFactorPerFile = 1; // default is 1
+  private String baseDir = "/benchmarks/NNBench";  // default
+  private boolean readFileAfterOpen = false; // default is to not read
+  private boolean isHelpMessage = false;
   // Supported operations
   private static final String OP_CREATE_WRITE = "create_write";
   private static final String OP_OPEN_READ = "open_read";
   private static final String OP_RENAME = "rename";
   private static final String OP_DELETE = "delete";
+  private static final int MAX_OPERATION_EXCEPTIONS = 1000;
   
   // To display in the format that matches the NN and DN log format
   // Example: 2007-10-26 00:01:19,853
   static SimpleDateFormat sdf = 
           new SimpleDateFormat("yyyy-MM-dd' 'HH:mm:ss','S");
-
-  private static Configuration config = new Configuration();
   
   /**
    * Clean up the files before a test run
    * 
    * @throws IOException on error
    */
-  private static void cleanupBeforeTestrun() throws IOException {
-    FileSystem tempFS = FileSystem.get(config);
+  private void cleanupBeforeTestrun() throws IOException {
+    FileSystem tempFS = FileSystem.get(new Path(baseDir).toUri(), getConf());
     
     // Delete the data directory only if it is the create/write operation
     if (operation.equals(OP_CREATE_WRITE)) {
@@ -138,27 +141,61 @@ public class NNBench {
    * 
    * @throws IOException on error
    */
-  private static void createControlFiles() throws IOException {
-    FileSystem tempFS = FileSystem.get(config);
+  private void createControlFiles() {
     LOG.info("Creating " + numberOfMaps + " control files");
 
+    ExecutorService executorService =
+        HadoopExecutors.newFixedThreadPool(2 * Runtime.getRuntime().availableProcessors());
+    List<Future<Void>> list = new ArrayList<>();
     for (int i = 0; i < numberOfMaps; i++) {
       String strFileName = "NNBench_Controlfile_" + i;
       Path filePath = new Path(new Path(baseDir, CONTROL_DIR_NAME),
               strFileName);
 
+      Future<Void> future = executorService.submit(new CreateControlFile(strFileName, filePath, i));
+      list.add(future);
+    }
+
+    for (int i = 0; i < list.size(); i++) {
+      try {
+        list.get(i).get();
+      } catch (InterruptedException | ExecutionException e) {
+        LOG.error("Creating control files Error.", e);
+      }
+    }
+
+    executorService.shutdown();
+  }
+
+  private class CreateControlFile implements Callable<Void> {
+    private String strFileName;
+    private Path filePath;
+    private int order;
+
+    CreateControlFile(String strFileName, Path filePath, int order) {
+      this.strFileName = strFileName;
+      this.filePath = filePath;
+      this.order = order;
+    }
+
+    @Override
+    public Void call() throws Exception {
       SequenceFile.Writer writer = null;
       try {
-        writer = SequenceFile.createWriter(tempFS, config, filePath, Text.class, 
-                LongWritable.class, CompressionType.NONE);
-        writer.append(new Text(strFileName), new LongWritable(0l));
+        writer = SequenceFile.createWriter(getConf(), Writer.file(filePath),
+            Writer.keyClass(Text.class), Writer.valueClass(LongWritable.class),
+            Writer.compression(CompressionType.NONE));
+        writer.append(new Text(strFileName), new LongWritable(order));
       } finally {
         if (writer != null) {
           writer.close();
         }
       }
+      return null;
     }
+
   }
+
   /**
    * Display version
    */
@@ -197,7 +234,8 @@ public class NNBench {
       "\t-replicationFactorPerFile <Replication factor for the files." +
         " default is 1. This is not mandatory>\n" +
       "\t-baseDir <base DFS path. default is /benchmarks/NNBench. " +
-      "This is not mandatory>\n" +
+        "Supports cross-cluster access by using full path with schema and " +
+        "cluster. This is not mandatory>\n" +
       "\t-readFileAfterOpen <true or false. if true, it reads the file and " +
       "reports the average time to read. This is valid with the open_read " +
       "operation. default is false. This is not mandatory>\n" +
@@ -213,23 +251,23 @@ public class NNBench {
    *   line's arguments
    * @param length total number of arguments
    */
-  public static void checkArgs(final int index, final int length) {
+  private static void checkArgs(final int index, final int length) {
     if (index == length) {
       displayUsage();
-      System.exit(-1);
+      throw new HadoopIllegalArgumentException("Not enough arguments");
     }
   }
   
   /**
    * Parse input arguments
+   *  @param args array of command line's parameters to be parsed
    *
-   * @param args array of command line's parameters to be parsed
    */
-  public static void parseInputs(final String[] args) {
+  private void parseInputs(final String[] args) {
     // If there are no command line arguments, exit
     if (args.length == 0) {
       displayUsage();
-      System.exit(-1);
+      throw new HadoopIllegalArgumentException("Give valid inputs");
     }
     
     // Parse command line args
@@ -268,7 +306,7 @@ public class NNBench {
         readFileAfterOpen = Boolean.parseBoolean(args[++i]);
       } else if (args[i].equals("-help")) {
         displayUsage();
-        System.exit(-1);
+        isHelpMessage = true;
       }
     }
     
@@ -286,39 +324,31 @@ public class NNBench {
     LOG.info("     Read file after open: " + readFileAfterOpen);
     
     // Set user-defined parameters, so the map method can access the values
-    config.set("test.nnbench.operation", operation);
-    config.setLong("test.nnbench.maps", numberOfMaps);
-    config.setLong("test.nnbench.reduces", numberOfReduces);
-    config.setLong("test.nnbench.starttime", startTime);
-    config.setLong("test.nnbench.blocksize", blockSize);
-    config.setInt("test.nnbench.bytestowrite", bytesToWrite);
-    config.setLong("test.nnbench.bytesperchecksum", bytesPerChecksum);
-    config.setLong("test.nnbench.numberoffiles", numberOfFiles);
-    config.setInt("test.nnbench.replicationfactor", 
+    getConf().set("test.nnbench.operation", operation);
+    getConf().setLong("test.nnbench.maps", numberOfMaps);
+    getConf().setLong("test.nnbench.reduces", numberOfReduces);
+    getConf().setLong("test.nnbench.starttime", startTime);
+    getConf().setLong("test.nnbench.blocksize", blockSize);
+    getConf().setInt("test.nnbench.bytestowrite", bytesToWrite);
+    getConf().setLong("test.nnbench.bytesperchecksum", bytesPerChecksum);
+    getConf().setLong("test.nnbench.numberoffiles", numberOfFiles);
+    getConf().setInt("test.nnbench.replicationfactor",
             (int) replicationFactorPerFile);
-    config.set("test.nnbench.basedir", baseDir);
-    config.setBoolean("test.nnbench.readFileAfterOpen", readFileAfterOpen);
+    getConf().set("test.nnbench.basedir", baseDir);
+    getConf().setBoolean("test.nnbench.readFileAfterOpen", readFileAfterOpen);
 
-    config.set("test.nnbench.datadir.name", DATA_DIR_NAME);
-    config.set("test.nnbench.outputdir.name", OUTPUT_DIR_NAME);
-    config.set("test.nnbench.controldir.name", CONTROL_DIR_NAME);
+    getConf().set("test.nnbench.datadir.name", DATA_DIR_NAME);
+    getConf().set("test.nnbench.outputdir.name", OUTPUT_DIR_NAME);
+    getConf().set("test.nnbench.controldir.name", CONTROL_DIR_NAME);
   }
   
   /**
    * Analyze the results
-   * 
    * @throws IOException on error
    */
-  private static void analyzeResults() throws IOException {
-    final FileSystem fs = FileSystem.get(config);
-    Path reduceFile = new Path(new Path(baseDir, OUTPUT_DIR_NAME),
-            "part-00000");
-
-    DataInputStream in;
-    in = new DataInputStream(fs.open(reduceFile));
-
-    BufferedReader lines;
-    lines = new BufferedReader(new InputStreamReader(in));
+  private int analyzeResults() throws IOException {
+    final FileSystem fs = FileSystem.get(new Path(baseDir).toUri(), getConf());
+    Path reduceDir = new Path(baseDir, OUTPUT_DIR_NAME);
 
     long totalTimeAL1 = 0l;
     long totalTimeAL2 = 0l;
@@ -329,32 +359,37 @@ public class NNBench {
     
     long mapStartTimeTPmS = 0l;
     long mapEndTimeTPmS = 0l;
-    
-    String resultTPSLine1 = null;
-    String resultTPSLine2 = null;
-    String resultALLine1 = null;
-    String resultALLine2 = null;
-    
-    String line;
-    while((line = lines.readLine()) != null) {
-      StringTokenizer tokens = new StringTokenizer(line, " \t\n\r\f%;");
-      String attr = tokens.nextToken();
-      if (attr.endsWith(":totalTimeAL1")) {
-        totalTimeAL1 = Long.parseLong(tokens.nextToken());
-      } else if (attr.endsWith(":totalTimeAL2")) {
-        totalTimeAL2 = Long.parseLong(tokens.nextToken());
-      } else if (attr.endsWith(":totalTimeTPmS")) {
-        totalTimeTPmS = Long.parseLong(tokens.nextToken());
-      } else if (attr.endsWith(":latemaps")) {
-        lateMaps = Long.parseLong(tokens.nextToken());
-      } else if (attr.endsWith(":numOfExceptions")) {
-        numOfExceptions = Long.parseLong(tokens.nextToken());
-      } else if (attr.endsWith(":successfulFileOps")) {
-        successfulFileOps = Long.parseLong(tokens.nextToken());
-      } else if (attr.endsWith(":mapStartTimeTPmS")) {
-        mapStartTimeTPmS = Long.parseLong(tokens.nextToken());
-      } else if (attr.endsWith(":mapEndTimeTPmS")) {
-        mapEndTimeTPmS = Long.parseLong(tokens.nextToken());
+
+    FileStatus[] fss = fs.listStatus(reduceDir);
+    for (FileStatus status : fss) {
+
+      Path reduceFile = status.getPath();
+      try (DataInputStream in = new DataInputStream(fs.open(reduceFile));
+          BufferedReader lines =
+              new BufferedReader(new InputStreamReader(in))) {
+
+        String line;
+        while ((line = lines.readLine()) != null) {
+          StringTokenizer tokens = new StringTokenizer(line, " \t\n\r\f%;");
+          String attr = tokens.nextToken();
+          if (attr.endsWith(":totalTimeAL1")) {
+            totalTimeAL1 = Long.parseLong(tokens.nextToken());
+          } else if (attr.endsWith(":totalTimeAL2")) {
+            totalTimeAL2 = Long.parseLong(tokens.nextToken());
+          } else if (attr.endsWith(":totalTimeTPmS")) {
+            totalTimeTPmS = Long.parseLong(tokens.nextToken());
+          } else if (attr.endsWith(":latemaps")) {
+            lateMaps = Long.parseLong(tokens.nextToken());
+          } else if (attr.endsWith(":numOfExceptions")) {
+            numOfExceptions = Long.parseLong(tokens.nextToken());
+          } else if (attr.endsWith(":successfulFileOps")) {
+            successfulFileOps = Long.parseLong(tokens.nextToken());
+          } else if (attr.endsWith(":mapStartTimeTPmS")) {
+            mapStartTimeTPmS = Long.parseLong(tokens.nextToken());
+          } else if (attr.endsWith(":mapEndTimeTPmS")) {
+            mapEndTimeTPmS = Long.parseLong(tokens.nextToken());
+          }
+        }
       }
     }
     
@@ -379,6 +414,11 @@ public class NNBench {
         (double) successfulFileOps : 
         (double) totalTimeTPmS / successfulFileOps;
             
+    String resultTPSLine1 = null;
+    String resultTPSLine2 = null;
+    String resultALLine1 = null;
+    String resultALLine2 = null;
+
     if (operation.equals(OP_CREATE_WRITE)) {
       // For create/write/close, it is treated as two transactions,
       // since a file create from a client perspective involves create and close
@@ -445,25 +485,29 @@ public class NNBench {
     "             RAW DATA: # of exceptions: " + numOfExceptions,
     "" };
 
-    PrintStream res = new PrintStream(new FileOutputStream(
-            new File(DEFAULT_RES_FILE_NAME), true));
-    
-    // Write to a file and also dump to log
-    for(int i = 0; i < resultLines.length; i++) {
-      LOG.info(resultLines[i]);
-      res.println(resultLines[i]);
+    try (PrintStream res = new PrintStream(
+        new FileOutputStream(new File(DEFAULT_RES_FILE_NAME), true))) {
+      // Write to a file and also dump to log
+      for (String resultLine : resultLines) {
+        LOG.info(resultLine);
+        res.println(resultLine);
+      }
     }
+    if(numOfExceptions >= MAX_OPERATION_EXCEPTIONS){
+      return -1;
+    }
+    return 0;
   }
-  
+
   /**
    * Run the test
    * 
    * @throws IOException on error
    */
-  public static void runTests() throws IOException {
-    config.setLong("io.bytes.per.checksum", bytesPerChecksum);
+  private void runTests() throws IOException {
+    getConf().setLong("io.bytes.per.checksum", bytesPerChecksum);
     
-    JobConf job = new JobConf(config, NNBench.class);
+    JobConf job = new JobConf(getConf(), NNBench.class);
 
     job.setJobName("NNBench-" + operation);
     FileInputFormat.setInputPaths(job, new Path(baseDir, CONTROL_DIR_NAME));
@@ -488,7 +532,7 @@ public class NNBench {
   /**
    * Validate the inputs
    */
-  public static void validateInputs() {
+  private void validateInputs() {
     // If it is not one of the four operations, then fail
     if (!operation.equals(OP_CREATE_WRITE) &&
             !operation.equals(OP_OPEN_READ) &&
@@ -496,7 +540,8 @@ public class NNBench {
             !operation.equals(OP_DELETE)) {
       System.err.println("Error: Unknown operation: " + operation);
       displayUsage();
-      System.exit(-1);
+      throw new HadoopIllegalArgumentException(
+          "Error: Unknown operation: " + operation);
     }
     
     // If number of maps is a negative number, then fail
@@ -504,57 +549,66 @@ public class NNBench {
     if (numberOfMaps < 0) {
       System.err.println("Error: Number of maps must be a positive number");
       displayUsage();
-      System.exit(-1);
+      throw new HadoopIllegalArgumentException(
+          "Error: Number of maps must be a positive number");
     }
     
     // If number of reduces is a negative number or 0, then fail
     if (numberOfReduces <= 0) {
       System.err.println("Error: Number of reduces must be a positive number");
       displayUsage();
-      System.exit(-1);
+      throw new HadoopIllegalArgumentException(
+          "Error: Number of reduces must be a positive number");
     }
 
     // If blocksize is a negative number or 0, then fail
     if (blockSize <= 0) {
       System.err.println("Error: Block size must be a positive number");
       displayUsage();
-      System.exit(-1);
+      throw new HadoopIllegalArgumentException(
+          "Error: Block size must be a positive number");
     }
     
     // If bytes to write is a negative number, then fail
     if (bytesToWrite < 0) {
       System.err.println("Error: Bytes to write must be a positive number");
       displayUsage();
-      System.exit(-1);
+      throw new HadoopIllegalArgumentException(
+          "Error: Bytes to write must be a positive number");
     }
     
     // If bytes per checksum is a negative number, then fail
     if (bytesPerChecksum < 0) {
       System.err.println("Error: Bytes per checksum must be a positive number");
       displayUsage();
-      System.exit(-1);
+      throw new HadoopIllegalArgumentException(
+          "Error: Bytes per checksum must be a positive number");
     }
     
     // If number of files is a negative number, then fail
     if (numberOfFiles < 0) {
       System.err.println("Error: Number of files must be a positive number");
       displayUsage();
-      System.exit(-1);
+      throw new HadoopIllegalArgumentException(
+          "Error: Number of files must be a positive number");
     }
     
     // If replication factor is a negative number, then fail
     if (replicationFactorPerFile < 0) {
       System.err.println("Error: Replication factor must be a positive number");
       displayUsage();
-      System.exit(-1);
+      throw new HadoopIllegalArgumentException(
+          "Error: Replication factor must be a positive number");
     }
     
     // If block size is not a multiple of bytesperchecksum, fail
     if (blockSize % bytesPerChecksum != 0) {
-      System.err.println("Error: Block Size in bytes must be a multiple of " +
-              "bytes per checksum: ");
+      System.err.println("Error: Block Size in bytes must be a multiple of "
+          + "bytes per checksum: ");
       displayUsage();
-      System.exit(-1);
+      throw new HadoopIllegalArgumentException(
+          "Error: Block Size in bytes must be a multiple of "
+              + "bytes per checksum:");
     }
   }
   /**
@@ -563,13 +617,22 @@ public class NNBench {
   * @param args array of command line arguments
   * @throws IOException indicates a problem with test startup
   */
-  public static void main(String[] args) throws IOException {
+  public static void main(String[] args) throws Exception {
+    int res = ToolRunner.run(new NNBench(), args);
+    System.exit(res);
+  }
+
+  @Override
+  public int run(String[] args) throws Exception {
     // Display the application version string
     displayVersion();
 
     // Parse the inputs
     parseInputs(args);
-    
+    if (isHelpMessage) {
+      return 0;
+    }
+
     // Validate inputs
     validateInputs();
     
@@ -583,7 +646,7 @@ public class NNBench {
     runTests();
     
     // Analyze results
-    analyzeResults();
+    return analyzeResults();
   }
 
   
@@ -593,7 +656,6 @@ public class NNBench {
   static class NNBenchMapper extends Configured
           implements Mapper<Text, LongWritable, Text, Text> {
     FileSystem filesystem = null;
-    private String hostName = null;
 
     long numberOfFiles = 1l;
     long blkSize = 1l;
@@ -603,7 +665,6 @@ public class NNBench {
     String dataDirName = null;
     String op = null;
     boolean readFile = false;
-    final int MAX_OPERATION_EXCEPTIONS = 1000;
     
     // Data to collect from the operation
     int numOfExceptions = 0;
@@ -623,17 +684,12 @@ public class NNBench {
      */
     public void configure(JobConf conf) {
       setConf(conf);
-      
+
       try {
-        filesystem = FileSystem.get(conf);
+        String dir = conf.get("test.nnbench.basedir");
+        filesystem = FileSystem.get(new Path(dir).toUri(), conf);
       } catch(Exception e) {
         throw new RuntimeException("Cannot get file system.", e);
-      }
-      
-      try {
-        hostName = InetAddress.getLocalHost().getHostName();
-      } catch(Exception e) {
-        throw new RuntimeException("Error getting hostname", e);
       }
     }
     
@@ -655,7 +711,7 @@ public class NNBench {
       long startTime = getConf().getLong("test.nnbench.starttime", 0l);
       long currentTime = System.currentTimeMillis();
       long sleepTime = startTime - currentTime;
-      boolean retVal = false;
+      boolean retVal = true;
       
       // If the sleep time is greater than 0, then sleep and return
       if (sleepTime > 0) {
@@ -679,7 +735,7 @@ public class NNBench {
             LongWritable value,
             OutputCollector<Text, Text> output,
             Reporter reporter) throws IOException {
-      Configuration conf = filesystem.getConf();
+      Configuration conf = getConf();
       
       numberOfFiles = conf.getLong("test.nnbench.numberoffiles", 1l);
       blkSize = conf.getLong("test.nnbench.blocksize", 1l);
@@ -689,9 +745,6 @@ public class NNBench {
       dataDirName = conf.get("test.nnbench.datadir.name");
       op = conf.get("test.nnbench.operation");
       readFile = conf.getBoolean("test.nnbench.readFileAfterOpen", false);
-      int taskId =
-          TaskAttemptID.forName(conf.get(MRJobConfig.TASK_ATTEMPT_ID))
-              .getTaskID().getId();
       
       long totalTimeTPmS = 0l;
       long startTimeTPmS = 0l;
@@ -704,19 +757,22 @@ public class NNBench {
       successfulFileOps = 0l;
       
       if (barrier()) {
-        String filePrefix = "file_" + taskId + "_";
+        String fileName = "file_" + value;
         if (op.equals(OP_CREATE_WRITE)) {
           startTimeTPmS = System.currentTimeMillis();
-          doCreateWriteOp(filePrefix, reporter);
+          doCreateWriteOp(fileName, reporter);
         } else if (op.equals(OP_OPEN_READ)) {
           startTimeTPmS = System.currentTimeMillis();
-          doOpenReadOp(filePrefix, reporter);
+          doOpenReadOp(fileName, reporter);
         } else if (op.equals(OP_RENAME)) {
           startTimeTPmS = System.currentTimeMillis();
-          doRenameOp(filePrefix, reporter);
+          doRenameOp(fileName, reporter);
         } else if (op.equals(OP_DELETE)) {
           startTimeTPmS = System.currentTimeMillis();
-          doDeleteOp(filePrefix, reporter);
+          doDeleteOp(fileName, reporter);
+        } else {
+          throw new IllegalArgumentException(
+              "unsupported operation [" + op + "]");
         }
         
         endTimeTPms = System.currentTimeMillis();
@@ -783,9 +839,8 @@ public class NNBench {
 
             reporter.setStatus("Finish "+ l + " files");
           } catch (IOException e) {
-            LOG.info("Exception recorded in op: " +
-                    "Create/Write/Close");
- 
+            LOG.error("Exception recorded in op: Create/Write/Close, "
+                + "file: \"" + filePath + "\"", e);
             numOfExceptions++;
           }
         }
@@ -828,7 +883,8 @@ public class NNBench {
 
             reporter.setStatus("Finish "+ l + " files");
           } catch (IOException e) {
-            LOG.info("Exception recorded in op: OpenRead " + e);
+            LOG.error("Exception recorded in op: OpenRead, " + "file: \""
+                + filePath + "\"", e);
             numOfExceptions++;
           }
         }
@@ -854,7 +910,10 @@ public class NNBench {
           try {
             // Set up timer for measuring AL
             startTimeAL = System.currentTimeMillis();
-            filesystem.rename(filePath, filePathR);
+            boolean result = filesystem.rename(filePath, filePathR);
+            if (!result) {
+              throw new IOException("rename failed for " + filePath);
+            }
             totalTimeAL1 += (System.currentTimeMillis() - startTimeAL);
             
             successfulOp = true;
@@ -862,8 +921,8 @@ public class NNBench {
 
             reporter.setStatus("Finish "+ l + " files");
           } catch (IOException e) {
-            LOG.info("Exception recorded in op: Rename");
-
+            LOG.error("Exception recorded in op: Rename, " + "file: \""
+                + filePath + "\"", e);
             numOfExceptions++;
           }
         }
@@ -887,7 +946,10 @@ public class NNBench {
           try {
             // Set up timer for measuring AL
             startTimeAL = System.currentTimeMillis();
-            filesystem.delete(filePath, true);
+            boolean result = filesystem.delete(filePath, true);
+            if (!result) {
+              throw new IOException("delete failed for " + filePath);
+            }
             totalTimeAL1 += (System.currentTimeMillis() - startTimeAL);
             
             successfulOp = true;
@@ -895,8 +957,8 @@ public class NNBench {
 
             reporter.setStatus("Finish "+ l + " files");
           } catch (IOException e) {
-            LOG.info("Exception in recorded op: Delete");
-
+            LOG.error("Exception recorded in op: Delete, " + "file: \""
+                + filePath + "\"", e);
             numOfExceptions++;
           }
         }

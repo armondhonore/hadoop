@@ -17,7 +17,9 @@
  */
 package org.apache.hadoop.hdfs.server.blockmanagement;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.ArrayList;
 
@@ -30,21 +32,28 @@ import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.server.common.GenerationStamp;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.BlockUCState;
-import org.apache.hadoop.hdfs.server.datanode.DataNodeTestUtils;
+import org.apache.hadoop.hdfs.server.datanode.InternalDataNodeTestUtils;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
 import org.apache.hadoop.hdfs.server.namenode.NameNodeAdapter;
+import org.apache.hadoop.hdfs.server.namenode.Namesystem;
 import org.apache.hadoop.hdfs.server.protocol.BlockCommand;
 import org.apache.hadoop.hdfs.server.protocol.BlockRecoveryCommand;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeCommand;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeProtocol;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeRegistration;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage;
-import org.junit.Test;
+import org.apache.hadoop.hdfs.util.RwLockMode;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.mockito.Mockito;
 
 /**
  * Test if FSNamesystem handles heartbeat right
+ * Set a timeout for every test case.
  */
+@Timeout(300)
 public class TestHeartbeatHandling {
+
   /**
    * Test if
    * {@link FSNamesystem#handleHeartbeat}
@@ -62,7 +71,8 @@ public class TestHeartbeatHandling {
           ).getDatanodeManager().getHeartbeatManager();
       final String poolId = namesystem.getBlockPoolId();
       final DatanodeRegistration nodeReg =
-        DataNodeTestUtils.getDNRegistrationForBP(cluster.getDataNodes().get(0), poolId);
+        InternalDataNodeTestUtils.
+        getDNRegistrationForBP(cluster.getDataNodes().get(0), poolId);
       final DatanodeDescriptor dd = NameNodeAdapter.getDatanode(namesystem, nodeReg);
       final String storageID = DatanodeStorage.generateUuid();
       dd.updateStorage(new DatanodeStorage(storageID));
@@ -76,7 +86,7 @@ public class TestHeartbeatHandling {
       final DatanodeStorageInfo[] ONE_TARGET = {dd.getStorageInfo(storageID)};
 
       try {
-        namesystem.writeLock();
+        namesystem.writeLock(RwLockMode.BM);
         synchronized(hm) {
           for (int i=0; i<MAX_REPLICATE_BLOCKS; i++) {
             dd.addBlockToBeReplicated(
@@ -121,7 +131,7 @@ public class TestHeartbeatHandling {
           assertEquals(0, cmds.length);
         }
       } finally {
-        namesystem.writeUnlock();
+        namesystem.writeUnlock(RwLockMode.BM, "testHeartbeat");
       }
     } finally {
       cluster.shutdown();
@@ -145,20 +155,23 @@ public class TestHeartbeatHandling {
           ).getDatanodeManager().getHeartbeatManager();
       final String poolId = namesystem.getBlockPoolId();
       final DatanodeRegistration nodeReg1 =
-        DataNodeTestUtils.getDNRegistrationForBP(cluster.getDataNodes().get(0), poolId);
+        InternalDataNodeTestUtils.
+        getDNRegistrationForBP(cluster.getDataNodes().get(0), poolId);
       final DatanodeDescriptor dd1 = NameNodeAdapter.getDatanode(namesystem, nodeReg1);
       dd1.updateStorage(new DatanodeStorage(DatanodeStorage.generateUuid()));
       final DatanodeRegistration nodeReg2 =
-        DataNodeTestUtils.getDNRegistrationForBP(cluster.getDataNodes().get(1), poolId);
+        InternalDataNodeTestUtils.
+        getDNRegistrationForBP(cluster.getDataNodes().get(1), poolId);
       final DatanodeDescriptor dd2 = NameNodeAdapter.getDatanode(namesystem, nodeReg2);
       dd2.updateStorage(new DatanodeStorage(DatanodeStorage.generateUuid()));
       final DatanodeRegistration nodeReg3 = 
-        DataNodeTestUtils.getDNRegistrationForBP(cluster.getDataNodes().get(2), poolId);
+        InternalDataNodeTestUtils.
+        getDNRegistrationForBP(cluster.getDataNodes().get(2), poolId);
       final DatanodeDescriptor dd3 = NameNodeAdapter.getDatanode(namesystem, nodeReg3);
       dd3.updateStorage(new DatanodeStorage(DatanodeStorage.generateUuid()));
 
       try {
-        namesystem.writeLock();
+        namesystem.writeLock(RwLockMode.BM);
         synchronized(hm) {
           NameNodeAdapter.sendHeartBeat(nodeReg1, dd1, namesystem);
           NameNodeAdapter.sendHeartBeat(nodeReg2, dd2, namesystem);
@@ -237,10 +250,33 @@ public class TestHeartbeatHandling {
           assertEquals(recoveringNodes[2], dd3);
         }
       } finally {
-        namesystem.writeUnlock();
+        namesystem.writeUnlock(RwLockMode.BM, "testHeartbeat");
       }
     } finally {
       cluster.shutdown();
     }
+  }
+
+  @Test
+  public void testHeartbeatStopWatch() throws Exception {
+   Namesystem ns = Mockito.mock(Namesystem.class);
+   BlockManager bm = Mockito.mock(BlockManager.class);
+   Configuration conf = new Configuration();
+   long recheck = 2000;
+   conf.setLong(
+       DFSConfigKeys.DFS_NAMENODE_HEARTBEAT_RECHECK_INTERVAL_KEY, recheck);
+   HeartbeatManager monitor = new HeartbeatManager(ns, bm, conf);
+   monitor.restartHeartbeatStopWatch();
+   assertFalse(monitor.shouldAbortHeartbeatCheck(0));
+   // sleep shorter than recheck and verify shouldn't abort
+   Thread.sleep(100);
+   assertFalse(monitor.shouldAbortHeartbeatCheck(0));
+   // sleep longer than recheck and verify should abort unless ignore delay
+   Thread.sleep(recheck);
+   assertTrue(monitor.shouldAbortHeartbeatCheck(0));
+   assertFalse(monitor.shouldAbortHeartbeatCheck(-recheck*3));
+   // ensure it resets properly
+   monitor.restartHeartbeatStopWatch();
+   assertFalse(monitor.shouldAbortHeartbeatCheck(0));
   }
 }

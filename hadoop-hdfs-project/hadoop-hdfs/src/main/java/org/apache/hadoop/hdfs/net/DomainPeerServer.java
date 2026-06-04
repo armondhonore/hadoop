@@ -21,14 +21,14 @@ package org.apache.hadoop.hdfs.net;
 import java.io.IOException;
 import java.net.SocketTimeoutException;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.net.unix.DomainSocket;
 
 @InterfaceAudience.Private
 public class DomainPeerServer implements PeerServer {
-  static final Log LOG = LogFactory.getLog(DomainPeerServer.class);
+  static final Logger LOG = LoggerFactory.getLogger(DomainPeerServer.class);
   private final DomainSocket sock;
 
   DomainPeerServer(DomainSocket sock) {
@@ -47,6 +47,11 @@ public class DomainPeerServer implements PeerServer {
   @Override
   public void setReceiveBufferSize(int size) throws IOException {
     sock.setAttribute(DomainSocket.RECEIVE_BUFFER_SIZE, size);
+  }
+
+  @Override
+  public int getReceiveBufferSize() throws IOException {
+    return sock.getAttribute(DomainSocket.RECEIVE_BUFFER_SIZE);
   }
 
   @Override

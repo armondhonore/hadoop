@@ -18,20 +18,25 @@
 
 package org.apache.hadoop.fs.shell.find;
 
-import static org.junit.Assert.*;
-import static org.mockito.Mockito.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.when;
 
 import java.io.IOException;
 import java.util.Deque;
 import java.util.LinkedList;
 
 import org.apache.hadoop.fs.shell.PathData;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
+@Timeout(10)
 public class TestAnd {
 
   // test all expressions passing
-  @Test(timeout = 1000)
+  @Test
   public void testPass() throws IOException {
     And and = new And();
 
@@ -56,7 +61,7 @@ public class TestAnd {
   }
 
   // test the first expression failing
-  @Test(timeout = 1000)
+  @Test
   public void testFailFirst() throws IOException {
     And and = new And();
 
@@ -80,7 +85,7 @@ public class TestAnd {
   }
 
   // test the second expression failing
-  @Test(timeout = 1000)
+  @Test
   public void testFailSecond() throws IOException {
     And and = new And();
 
@@ -105,7 +110,7 @@ public class TestAnd {
   }
 
   // test both expressions failing
-  @Test(timeout = 1000)
+  @Test
   public void testFailBoth() throws IOException {
     And and = new And();
 
@@ -129,7 +134,7 @@ public class TestAnd {
   }
 
   // test the first expression stopping
-  @Test(timeout = 1000)
+  @Test
   public void testStopFirst() throws IOException {
     And and = new And();
 
@@ -154,7 +159,7 @@ public class TestAnd {
   }
 
   // test the second expression stopping
-  @Test(timeout = 1000)
+  @Test
   public void testStopSecond() throws IOException {
     And and = new And();
 
@@ -179,7 +184,7 @@ public class TestAnd {
   }
 
   // test first expression stopping and second failing
-  @Test(timeout = 1000)
+  @Test
   public void testStopFail() throws IOException {
     And and = new And();
 
@@ -204,7 +209,7 @@ public class TestAnd {
   }
 
   // test setOptions is called on child
-  @Test(timeout = 1000)
+  @Test
   public void testSetOptions() throws IOException {
     And and = new And();
     Expression first = mock(Expression.class);
@@ -224,7 +229,7 @@ public class TestAnd {
   }
 
   // test prepare is called on child
-  @Test(timeout = 1000)
+  @Test
   public void testPrepare() throws IOException {
     And and = new And();
     Expression first = mock(Expression.class);
@@ -243,7 +248,7 @@ public class TestAnd {
   }
 
   // test finish is called on child
-  @Test(timeout = 1000)
+  @Test
   public void testFinish() throws IOException {
     And and = new And();
     Expression first = mock(Expression.class);

@@ -20,15 +20,22 @@ package org.apache.hadoop.yarn.server.resourcemanager.rmnode;
 
 
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.apache.hadoop.net.Node;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
+import org.apache.hadoop.yarn.api.records.Container;
 import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.NodeState;
 import org.apache.hadoop.yarn.api.records.Resource;
+import org.apache.hadoop.yarn.api.records.ResourceUtilization;
+import org.apache.hadoop.yarn.api.records.NodeAttribute;
 import org.apache.hadoop.yarn.server.api.protocolrecords.NodeHeartbeatResponse;
+import org.apache.hadoop.yarn.server.api.records.OpportunisticContainersStatus;
+import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
+import org.apache.hadoop.yarn.util.resource.Resources;
 
 /**
  * Node managers information on available resources 
@@ -37,9 +44,6 @@ import org.apache.hadoop.yarn.server.api.protocolrecords.NodeHeartbeatResponse;
  */
 public interface RMNode {
 
-  /** negative value means no timeout */
-  public static final int OVER_COMMIT_TIMEOUT_MILLIS_DEFAULT = -1;
-  
   /**
    * the node id of of this node.
    * @return the node id of this node.
@@ -91,7 +95,8 @@ public interface RMNode {
 
   /**
    * the node manager version of the node received as part of the
-   * registration with the resource manager
+   * registration with the resource manager.
+   * @return node manager version.
    */
   public String getNodeManagerVersion();
 
@@ -100,7 +105,47 @@ public interface RMNode {
    * @return the total available resource.
    */
   public Resource getTotalCapability();
-  
+
+  /**
+   * The total allocated resources to containers.
+   * This will include the sum of Guaranteed and Opportunistic
+   * containers queued + running + paused on the node.
+   * @return the total allocated resources, including all Guaranteed and
+   * Opportunistic containers in queued, running and paused states.
+   */
+  default Resource getAllocatedContainerResource() {
+    return Resources.none();
+  }
+
+  /**
+   * If the total available resources has been updated.
+   * @return If the capability has been updated.
+   */
+  boolean isUpdatedCapability();
+
+  /**
+   * Mark that the updated event has been processed.
+   */
+  void resetUpdatedCapability();
+
+  /**
+   * the aggregated resource utilization of the containers.
+   * @return the aggregated resource utilization of the containers.
+   */
+  public ResourceUtilization getAggregatedContainersUtilization();
+
+  /**
+   * the total resource utilization of the node.
+   * @return the total resource utilization of the node.
+   */
+  public ResourceUtilization getNodeUtilization();
+
+  /**
+   * the physical resources in the node.
+   * @return the physical resources in the node.
+   */
+  Resource getPhysicalResource();
+
   /**
    * The rack name for this node manager.
    * @return the rack name.
@@ -123,10 +168,11 @@ public interface RMNode {
 
   /**
    * Update a {@link NodeHeartbeatResponse} with the list of containers and
-   * applications to clean up for this node.
+   * applications to clean up for this node, and the containers to be updated.
+   *
    * @param response the {@link NodeHeartbeatResponse} to update
    */
-  public void updateNodeHeartbeatResponseForCleanup(NodeHeartbeatResponse response);
+  void setAndUpdateNodeHeartbeatResponse(NodeHeartbeatResponse response);
 
   public NodeHeartbeatResponse getLastNodeHeartBeatResponse();
 
@@ -149,4 +195,38 @@ public interface RMNode {
    * @return labels in this node
    */
   public Set<String> getNodeLabels();
+
+  public List<Container> pullNewlyIncreasedContainers();
+
+  OpportunisticContainersStatus getOpportunisticContainersStatus();
+
+  long getUntrackedTimeStamp();
+
+  void setUntrackedTimeStamp(long timeStamp);
+  /*
+   * Optional decommissioning timeout in second
+   * (null indicates absent timeout).
+   * @return the decommissioning timeout in second.
+   */
+  Integer getDecommissioningTimeout();
+
+  /**
+   * Get the allocation tags and their counts associated with this node.
+   * @return a map of each allocation tag and its count.
+   */
+  Map<String, Long> getAllocationTagsWithCount();
+
+  /**
+   * @return the RM context associated with this RM node.
+   */
+  RMContext getRMContext();
+
+  /**
+   * @return all node attributes as a Set.
+   */
+  Set<NodeAttribute> getAllNodeAttributes();
+
+  long calculateHeartBeatInterval(long defaultInterval,
+      long minInterval, long maxInterval, float speedupFactor,
+      float slowdownFactor);
 }

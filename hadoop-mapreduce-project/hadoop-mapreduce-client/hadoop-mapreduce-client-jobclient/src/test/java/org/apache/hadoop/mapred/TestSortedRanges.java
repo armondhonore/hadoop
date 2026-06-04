@@ -17,18 +17,20 @@
  */
 package org.apache.hadoop.mapred;
 
+import org.apache.hadoop.mapred.SortedRanges.Range;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.Iterator;
 
-import junit.framework.TestCase;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.mapred.SortedRanges.Range;
+public class TestSortedRanges {
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestSortedRanges.class);
 
-public class TestSortedRanges extends TestCase {
-  private static final Log LOG = 
-    LogFactory.getLog(TestSortedRanges.class);
-  
+  @Test
   public void testAdd() {
     SortedRanges sr = new SortedRanges();
     sr.add(new Range(2,9));
@@ -54,7 +56,7 @@ public class TestSortedRanges extends TestCase {
     sr.add(new Range(21,50));
     assertEquals(70, sr.getIndicesCount());
     
-    LOG.debug(sr);
+    LOG.debug(sr.toString());
     
     Iterator<Long> it = sr.skipRangeIterator();
     int i = 0;
@@ -66,7 +68,8 @@ public class TestSortedRanges extends TestCase {
     assertEquals(77, it.next().longValue());
     
   }
-  
+
+  @Test
   public void testRemove() {
     SortedRanges sr = new SortedRanges();
     sr.add(new Range(2,19));
@@ -93,7 +96,7 @@ public class TestSortedRanges extends TestCase {
     sr.remove(new SortedRanges.Range(5,1));
     assertEquals(3, sr.getIndicesCount());
     
-    LOG.debug(sr);
+    LOG.debug(sr.toString());
   }
 
 }

@@ -21,15 +21,15 @@ function hadoop_usage
 }
 
 # let's locate libexec...
-if [[ -n "${HADOOP_PREFIX}" ]]; then
-  DEFAULT_LIBEXEC_DIR="${HADOOP_PREFIX}/libexec"
+if [[ -n "${HADOOP_HOME}" ]]; then
+  HADOOP_DEFAULT_LIBEXEC_DIR="${HADOOP_HOME}/libexec"
 else
   this="${BASH_SOURCE-$0}"
   bin=$(cd -P -- "$(dirname -- "${this}")" >/dev/null && pwd -P)
-  DEFAULT_LIBEXEC_DIR="${bin}/../libexec"
+  HADOOP_DEFAULT_LIBEXEC_DIR="${bin}/../libexec"
 fi
 
-HADOOP_LIBEXEC_DIR="${HADOOP_LIBEXEC_DIR:-$DEFAULT_LIBEXEC_DIR}"
+HADOOP_LIBEXEC_DIR="${HADOOP_LIBEXEC_DIR:-$HADOOP_DEFAULT_LIBEXEC_DIR}"
 # shellcheck disable=SC2034
 HADOOP_NEW_CONFIG=true
 if [[ -f "${HADOOP_LIBEXEC_DIR}/hdfs-config.sh" ]]; then
@@ -47,7 +47,7 @@ daemonmode=$1
 shift
 
 if [[ -z "${HADOOP_HDFS_HOME}" ]]; then
-  hdfsscript="${HADOOP_PREFIX}/bin/hdfs"
+  hdfsscript="${HADOOP_HOME}/bin/hdfs"
 else
   hdfsscript="${HADOOP_HDFS_HOME}/bin/hdfs"
 fi

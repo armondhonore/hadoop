@@ -6,9 +6,9 @@
  *   to you under the Apache License, Version 2.0 (the
  *   "License"); you may not use this file except in compliance
  *   with the License.  You may obtain a copy of the License at
- *  
+ *
  *       http://www.apache.org/licenses/LICENSE-2.0
- *  
+ *
  *   Unless required by applicable law or agreed to in writing, software
  *   distributed under the License is distributed on an "AS IS" BASIS,
  *   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -17,13 +17,17 @@
  *******************************************************************************/
 package org.apache.hadoop.yarn.server.resourcemanager.reservation.planning;
 
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.Mockito.mock;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -37,6 +41,7 @@ import org.apache.hadoop.yarn.api.records.ReservationRequests;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.api.records.impl.pb.ReservationDefinitionPBImpl;
 import org.apache.hadoop.yarn.api.records.impl.pb.ReservationRequestsPBImpl;
+import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
 import org.apache.hadoop.yarn.server.resourcemanager.reservation.CapacityOverTimePolicy;
 import org.apache.hadoop.yarn.server.resourcemanager.reservation.InMemoryPlan;
 import org.apache.hadoop.yarn.server.resourcemanager.reservation.InMemoryReservationAllocation;
@@ -50,11 +55,22 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.Capacity
 import org.apache.hadoop.yarn.util.resource.DefaultResourceCalculator;
 import org.apache.hadoop.yarn.util.resource.ResourceCalculator;
 import org.apache.hadoop.yarn.util.resource.Resources;
-import org.junit.Before;
-import org.junit.Test;
-import org.mortbay.log.Log;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+
+@SuppressWarnings("VisibilityModifier")
 public class TestGreedyReservationAgent {
+
+
+  public boolean allocateLeft;
+
+  public String recurrenceExpression;
+
+  private static final Logger LOG = LoggerFactory
+      .getLogger(TestGreedyReservationAgent.class);
 
   ReservationAgent agent;
   InMemoryPlan plan;
@@ -64,19 +80,36 @@ public class TestGreedyReservationAgent {
   Random rand = new Random();
   long step;
 
-  @Before
+  public static Collection<Object[]> data() {
+      return Arrays.asList(new Object[][] {
+              {true, "0"},
+              {false, "0"},
+              {true, "7200000"},
+              {false, "7200000"},
+              {true, "86400000"},
+              {false, "86400000"}
+      });
+  }
+
+  public void initTestGreedyReservationAgent(boolean pAllocateLeft,
+      String pRecurrenceExpression) throws Exception {
+    this.allocateLeft = pAllocateLeft;
+    this.recurrenceExpression = pRecurrenceExpression;
+    setup();
+  }
+
   public void setup() throws Exception {
 
     long seed = rand.nextLong();
     rand.setSeed(seed);
-    Log.info("Running with seed: " + seed);
+    LOG.info("Running with seed: " + seed);
 
     // setting completely loose quotas
     long timeWindow = 1000000L;
     Resource clusterCapacity = Resource.newInstance(100 * 1024, 100);
     step = 1000L;
-    ReservationSystemTestUtil testUtil = new ReservationSystemTestUtil();
-    String reservationQ = testUtil.getFullReservationQueueName();
+    String reservationQ =
+        ReservationSystemTestUtil.getFullReservationQueueName();
 
     float instConstraint = 100;
     float avgConstraint = 100;
@@ -86,24 +119,34 @@ public class TestGreedyReservationAgent {
             instConstraint, avgConstraint);
     CapacityOverTimePolicy policy = new CapacityOverTimePolicy();
     policy.init(reservationQ, conf);
+
+    // setting conf to
+    conf.setBoolean(GreedyReservationAgent.FAVOR_EARLY_ALLOCATION,
+        allocateLeft);
     agent = new GreedyReservationAgent();
+    agent.init(conf);
 
     QueueMetrics queueMetrics = mock(QueueMetrics.class);
+    RMContext context = ReservationSystemTestUtil.createMockRMContext();
 
     plan = new InMemoryPlan(queueMetrics, policy, agent, clusterCapacity, step,
-        res, minAlloc, maxAlloc, "dedicated", null, true);
+        res, minAlloc, maxAlloc, "dedicated", null, true, context);
   }
 
   @SuppressWarnings("javadoc")
-  @Test
-  public void testSimple() throws PlanningException {
-
+  @ParameterizedTest(name = "Testing: allocateLeft {0}," +
+      " recurrenceExpression {1}")
+  @MethodSource("data")
+  public void testSimple(boolean pAllocateLeft,
+      String pRecurrenceExpression) throws Exception {
+    initTestGreedyReservationAgent(pAllocateLeft, pRecurrenceExpression);
     prepareBasicPlan();
 
     // create a request with a single atomic ask
     ReservationDefinition rr = new ReservationDefinitionPBImpl();
     rr.setArrival(5 * step);
     rr.setDeadline(20 * step);
+    rr.setRecurrenceExpression(recurrenceExpression);
     ReservationRequest r = ReservationRequest.newInstance(
         Resource.newInstance(2048, 2), 10, 5, 10 * step);
     ReservationRequests reqs = new ReservationRequestsPBImpl();
@@ -114,9 +157,9 @@ public class TestGreedyReservationAgent {
         .getNewReservationId();
     agent.createReservation(reservationID, "u1", plan, rr);
 
-    assertTrue("Agent-based allocation failed", reservationID != null);
-    assertTrue("Agent-based allocation failed", plan.getAllReservations()
-        .size() == 3);
+    assertTrue(reservationID != null, "Agent-based allocation failed");
+    assertTrue(plan.getAllReservations()
+        .size() == 3, "Agent-based allocation failed");
 
     ReservationAllocation cs = plan.getReservationById(reservationID);
 
@@ -125,33 +168,144 @@ public class TestGreedyReservationAgent {
     System.out.println(plan.toString());
     System.out.println(plan.toCumulativeString());
 
-    for (long i = 10 * step; i < 20 * step; i++) {
-      assertTrue(
-          "Agent-based allocation unexpected",
-          Resources.equals(cs.getResourcesAtTime(i),
-              Resource.newInstance(2048 * 10, 2 * 10)));
+    if(allocateLeft){
+      for (long i = 5 * step; i < 15 * step; i++) {
+        assertTrue(Resources.equals(cs.getResourcesAtTime(i),
+            Resource.newInstance(2048 * 10, 2 * 10)), "Agent-based allocation unexpected");
+      }
+    } else {
+      for (long i = 10 * step; i < 20 * step; i++) {
+        assertTrue(Resources.equals(cs.getResourcesAtTime(i),
+            Resource.newInstance(2048 * 10, 2 * 10)), "Agent-based allocation unexpected");
+      }
     }
-
   }
 
-  @Test
-  public void testOrder() throws PlanningException {
+  @SuppressWarnings("javadoc")
+  @ParameterizedTest(name = "Testing: allocateLeft {0}," +
+      " recurrenceExpression {1}")
+  @MethodSource("data")
+  public void testSharingPolicyFeedback(boolean pAllocateLeft,
+      String pRecurrenceExpression) throws Exception {
+    initTestGreedyReservationAgent(pAllocateLeft, pRecurrenceExpression);
+    prepareBasicPlan();
+
+    // let's constraint the instantaneous allocation and see the
+    // policy kicking in during planning
+    float instConstraint = 40;
+    float avgConstraint = 40;
+
+    ReservationSchedulerConfiguration conf =
+        ReservationSystemTestUtil.createConf(plan.getQueueName(), 100000,
+            instConstraint, avgConstraint);
+
+    plan.getSharingPolicy().init(plan.getQueueName(), conf);
+
+    // create a request with a single atomic ask
+    ReservationDefinition rr = new ReservationDefinitionPBImpl();
+    rr.setArrival(5 * step);
+    rr.setDeadline(100 * step);
+    rr.setRecurrenceExpression(recurrenceExpression);
+    ReservationRequest r =
+        ReservationRequest.newInstance(Resource.newInstance(2048, 2), 20, 20,
+            10 * step);
+    ReservationRequests reqs = new ReservationRequestsPBImpl();
+    reqs.setReservationResources(Collections.singletonList(r));
+    rr.setReservationRequests(reqs);
+
+    ReservationId reservationID =
+        ReservationSystemTestUtil.getNewReservationId();
+    agent.createReservation(reservationID, "u3", plan, rr);
+
+    ReservationId reservationID2 =
+        ReservationSystemTestUtil.getNewReservationId();
+    agent.createReservation(reservationID2, "u3", plan, rr);
+
+    ReservationDefinition rr3 = new ReservationDefinitionPBImpl();
+    rr3.setArrival(5 * step);
+    rr3.setDeadline(100 * step);
+    ReservationRequest r3 =
+        ReservationRequest.newInstance(Resource.newInstance(2048, 2), 45, 45,
+            10 * step);
+    ReservationRequests reqs3 = new ReservationRequestsPBImpl();
+    reqs3.setReservationResources(Collections.singletonList(r3));
+    rr3.setReservationRequests(reqs3);
+
+    ReservationId reservationID3 =
+        ReservationSystemTestUtil.getNewReservationId();
+    try {
+      // RR3 is simply too big to fit
+      agent.createReservation(reservationID3, "u3", plan, rr3);
+      fail();
+    } catch (PlanningException pe) {
+      // expected
+    }
+
+    assertTrue(reservationID != null, "Agent-based allocation failed");
+    assertTrue(plan.getAllReservations()
+        .size() == 4, "Agent-based allocation failed");
+
+    ReservationAllocation cs = plan.getReservationById(reservationID);
+    ReservationAllocation cs2 = plan.getReservationById(reservationID2);
+    ReservationAllocation cs3 = plan.getReservationById(reservationID3);
+
+    assertNotNull(cs);
+    assertNotNull(cs2);
+    assertNull(cs3);
+
+    System.out.println("--------AFTER SIMPLE ALLOCATION (queue: "
+        + reservationID + ")----------");
+    System.out.println(plan.toString());
+    System.out.println(plan.toCumulativeString());
+
+    if (allocateLeft) {
+      for (long i = 5 * step; i < 15 * step; i++) {
+        assertTrue(Resources.equals(cs.getResourcesAtTime(i),
+            Resource.newInstance(2048 * 20, 2 * 20)), "Agent-based allocation unexpected");
+      }
+      for (long i = 15 * step; i < 25 * step; i++) {
+        // RR2 is pushed out by the presence of RR
+        assertTrue(Resources.equals(cs2.getResourcesAtTime(i),
+            Resource.newInstance(2048 * 20, 2 * 20)), "Agent-based allocation unexpected");
+      }
+    } else {
+      for (long i = 90 * step; i < 100 * step; i++) {
+        assertTrue(Resources.equals(cs.getResourcesAtTime(i),
+            Resource.newInstance(2048 * 20, 2 * 20)), "Agent-based allocation unexpected");
+      }
+      for (long i = 80 * step; i < 90 * step; i++) {
+        assertTrue(Resources.equals(cs2.getResourcesAtTime(i),
+            Resource.newInstance(2048 * 20, 2 * 20)), "Agent-based allocation unexpected");
+      }
+    }
+  }
+
+  @ParameterizedTest(name = "Testing: allocateLeft {0}," +
+      " recurrenceExpression {1}")
+  @MethodSource("data")
+  public void testOrder(boolean pAllocateLeft,
+      String pRecurrenceExpression) throws Exception {
+    initTestGreedyReservationAgent(pAllocateLeft, pRecurrenceExpression);
     prepareBasicPlan();
 
     // create a completely utilized segment around time 30
     int[] f = { 100, 100 };
 
-    assertTrue(plan.toString(),
-        plan.addReservation(new InMemoryReservationAllocation(
-            ReservationSystemTestUtil.getNewReservationId(), null, "u1",
-            "dedicated", 30 * step, 30 * step + f.length * step,
-            ReservationSystemTestUtil.generateAllocation(30 * step, step, f),
-            res, minAlloc)));
+    ReservationDefinition rDef =
+        ReservationSystemTestUtil.createSimpleReservationDefinition(30 * step,
+            30 * step + f.length * step, f.length * step, 1,
+            recurrenceExpression);
+    assertTrue(plan.addReservation(new InMemoryReservationAllocation(
+        ReservationSystemTestUtil.getNewReservationId(), rDef, "u1",
+        "dedicated", 30 * step, 30 * step + f.length * step,
+        ReservationSystemTestUtil.generateAllocation(30 * step, step, f),
+        res, minAlloc), false), plan.toString());
 
     // create a chain of 4 RR, mixing gang and non-gang
     ReservationDefinition rr = new ReservationDefinitionPBImpl();
     rr.setArrival(0 * step);
     rr.setDeadline(70 * step);
+    rr.setRecurrenceExpression(recurrenceExpression);
     ReservationRequests reqs = new ReservationRequestsPBImpl();
     reqs.setInterpreter(ReservationRequestInterpreter.R_ORDER);
     ReservationRequest r = ReservationRequest.newInstance(
@@ -172,17 +326,24 @@ public class TestGreedyReservationAgent {
     agent.createReservation(reservationID, "u1", plan, rr);
 
     // validate
-    assertTrue("Agent-based allocation failed", reservationID != null);
-    assertTrue("Agent-based allocation failed", plan.getAllReservations()
-        .size() == 4);
+    assertTrue(reservationID != null, "Agent-based allocation failed");
+    assertTrue(plan.getAllReservations()
+        .size() == 4, "Agent-based allocation failed");
 
     ReservationAllocation cs = plan.getReservationById(reservationID);
 
-    assertTrue(cs.toString(), check(cs, 0 * step, 10 * step, 20, 1024, 1));
-    assertTrue(cs.toString(), check(cs, 10 * step, 30 * step, 10, 1024, 1));
-    assertTrue(cs.toString(), check(cs, 40 * step, 50 * step, 20, 1024, 1));
-    assertTrue(cs.toString(), check(cs, 50 * step, 70 * step, 10, 1024, 1));
+    if (allocateLeft) {
+      assertTrue(check(cs, 0 * step, 10 * step, 20, 1024, 1), cs.toString());
+      assertTrue(check(cs, 10 * step, 30 * step, 10, 1024, 1), cs.toString());
+      assertTrue(check(cs, 32 * step, 42 * step, 20, 1024, 1), cs.toString());
+      assertTrue(check(cs, 42 * step, 62 * step, 10, 1024, 1), cs.toString());
 
+    } else {
+      assertTrue(check(cs, 0 * step, 10 * step, 20, 1024, 1), cs.toString());
+      assertTrue(check(cs, 10 * step, 30 * step, 10, 1024, 1), cs.toString());
+      assertTrue(check(cs, 40 * step, 50 * step, 20, 1024, 1), cs.toString());
+      assertTrue(check(cs, 50 * step, 70 * step, 10, 1024, 1), cs.toString());
+    }
     System.out.println("--------AFTER ORDER ALLOCATION (queue: "
         + reservationID + ")----------");
     System.out.println(plan.toString());
@@ -190,18 +351,23 @@ public class TestGreedyReservationAgent {
 
   }
 
-  @Test
-  public void testOrderNoGapImpossible() throws PlanningException {
+  @ParameterizedTest(name = "Testing: allocateLeft {0}," +
+      " recurrenceExpression {1}")
+  @MethodSource("data")
+  public void testOrderNoGapImpossible(boolean pAllocateLeft,
+      String pRecurrenceExpression) throws Exception {
+    initTestGreedyReservationAgent(pAllocateLeft, pRecurrenceExpression);
     prepareBasicPlan();
     // create a completely utilized segment at time 30
     int[] f = { 100, 100 };
-
-    assertTrue(plan.toString(),
-        plan.addReservation(new InMemoryReservationAllocation(
-            ReservationSystemTestUtil.getNewReservationId(), null, "u1",
-            "dedicated", 30 * step, 30 * step + f.length * step,
-            ReservationSystemTestUtil.generateAllocation(30 * step, step, f),
-            res, minAlloc)));
+    ReservationDefinition rDef = ReservationSystemTestUtil
+        .createSimpleReservationDefinition(30, 30 * step + f.length * step,
+            f.length * step, 1, recurrenceExpression);
+    assertTrue(plan.addReservation(new InMemoryReservationAllocation(
+        ReservationSystemTestUtil.getNewReservationId(), rDef, "u1",
+        "dedicated", 30 * step, 30 * step + f.length * step,
+        ReservationSystemTestUtil.generateAllocation(30 * step, step, f),
+        res, minAlloc), false), plan.toString());
 
     // create a chain of 4 RR, mixing gang and non-gang
     ReservationDefinition rr = new ReservationDefinitionPBImpl();
@@ -234,9 +400,9 @@ public class TestGreedyReservationAgent {
     }
 
     // validate
-    assertFalse("Agent-based allocation should have failed", result);
-    assertTrue("Agent-based allocation should have failed", plan
-        .getAllReservations().size() == 3);
+    assertFalse(result, "Agent-based allocation should have failed");
+    assertTrue(plan.getAllReservations().size() == 3,
+        "Agent-based allocation should have failed");
 
     System.out
         .println("--------AFTER ORDER_NO_GAP IMPOSSIBLE ALLOCATION (queue: "
@@ -246,13 +412,18 @@ public class TestGreedyReservationAgent {
 
   }
 
-  @Test
-  public void testOrderNoGap() throws PlanningException {
+  @ParameterizedTest(name = "Testing: allocateLeft {0}," +
+      " recurrenceExpression {1}")
+  @MethodSource("data")
+  public void testOrderNoGap(boolean pAllocateLeft,
+      String pRecurrenceExpression) throws Exception {
+    initTestGreedyReservationAgent(pAllocateLeft, pRecurrenceExpression);
     prepareBasicPlan();
     // create a chain of 4 RR, mixing gang and non-gang
     ReservationDefinition rr = new ReservationDefinitionPBImpl();
     rr.setArrival(0 * step);
     rr.setDeadline(60 * step);
+    rr.setRecurrenceExpression(recurrenceExpression);
     ReservationRequests reqs = new ReservationRequestsPBImpl();
     reqs.setInterpreter(ReservationRequestInterpreter.R_ORDER_NO_GAP);
     ReservationRequest r = ReservationRequest.newInstance(
@@ -279,27 +450,32 @@ public class TestGreedyReservationAgent {
     System.out.println(plan.toCumulativeString());
 
     // validate
-    assertTrue("Agent-based allocation failed", reservationID != null);
-    assertTrue("Agent-based allocation failed", plan.getAllReservations()
-        .size() == 3);
+    assertTrue(reservationID != null, "Agent-based allocation failed");
+    assertTrue(plan.getAllReservations()
+        .size() == 3, "Agent-based allocation failed");
 
     ReservationAllocation cs = plan.getReservationById(reservationID);
 
-    assertTrue(cs.toString(), check(cs, 0 * step, 10 * step, 20, 1024, 1));
-    assertTrue(cs.toString(), check(cs, 10 * step, 30 * step, 10, 1024, 1));
-    assertTrue(cs.toString(), check(cs, 30 * step, 40 * step, 20, 1024, 1));
-    assertTrue(cs.toString(), check(cs, 40 * step, 60 * step, 10, 1024, 1));
+    assertTrue(check(cs, 0 * step, 10 * step, 20, 1024, 1), cs.toString());
+    assertTrue(check(cs, 10 * step, 30 * step, 10, 1024, 1), cs.toString());
+    assertTrue(check(cs, 30 * step, 40 * step, 20, 1024, 1), cs.toString());
+    assertTrue(check(cs, 40 * step, 60 * step, 10, 1024, 1), cs.toString());
 
   }
 
-  @Test
-  public void testSingleSliding() throws PlanningException {
+  @ParameterizedTest(name = "Testing: allocateLeft {0}," +
+      " recurrenceExpression {1}")
+  @MethodSource("data")
+  public void testSingleSliding(boolean pAllocateLeft,
+      String pRecurrenceExpression) throws Exception {
+    initTestGreedyReservationAgent(pAllocateLeft, pRecurrenceExpression);
     prepareBasicPlan();
 
     // create a single request for which we need subsequent (tight) packing.
     ReservationDefinition rr = new ReservationDefinitionPBImpl();
     rr.setArrival(100 * step);
     rr.setDeadline(120 * step);
+    rr.setRecurrenceExpression(recurrenceExpression);
     ReservationRequests reqs = new ReservationRequestsPBImpl();
     reqs.setInterpreter(ReservationRequestInterpreter.R_ALL);
     ReservationRequest r = ReservationRequest.newInstance(
@@ -316,13 +492,13 @@ public class TestGreedyReservationAgent {
     agent.createReservation(reservationID, "u1", plan, rr);
 
     // validate results, we expect the second one to be accepted
-    assertTrue("Agent-based allocation failed", reservationID != null);
-    assertTrue("Agent-based allocation failed", plan.getAllReservations()
-        .size() == 3);
+    assertTrue(reservationID != null, "Agent-based allocation failed");
+    assertTrue(plan.getAllReservations()
+        .size() == 3, "Agent-based allocation failed");
 
     ReservationAllocation cs = plan.getReservationById(reservationID);
 
-    assertTrue(cs.toString(), check(cs, 100 * step, 120 * step, 100, 1024, 1));
+    assertTrue(check(cs, 100 * step, 120 * step, 100, 1024, 1), cs.toString());
 
     System.out.println("--------AFTER packed ALLOCATION (queue: "
         + reservationID + ")----------");
@@ -331,8 +507,12 @@ public class TestGreedyReservationAgent {
 
   }
 
-  @Test
-  public void testAny() throws PlanningException {
+  @ParameterizedTest(name = "Testing: allocateLeft {0}," +
+      " recurrenceExpression {1}")
+  @MethodSource("data")
+  public void testAny(boolean pAllocateLeft,
+      String pRecurrenceExpression) throws Exception {
+    initTestGreedyReservationAgent(pAllocateLeft, pRecurrenceExpression);
     prepareBasicPlan();
     // create an ANY request, with an impossible step (last in list, first
     // considered),
@@ -341,6 +521,7 @@ public class TestGreedyReservationAgent {
     ReservationDefinition rr = new ReservationDefinitionPBImpl();
     rr.setArrival(100 * step);
     rr.setDeadline(120 * step);
+    rr.setRecurrenceExpression(recurrenceExpression);
     ReservationRequests reqs = new ReservationRequestsPBImpl();
     reqs.setInterpreter(ReservationRequestInterpreter.R_ANY);
     ReservationRequest r = ReservationRequest.newInstance(
@@ -363,13 +544,17 @@ public class TestGreedyReservationAgent {
     boolean res = agent.createReservation(reservationID, "u1", plan, rr);
 
     // validate results, we expect the second one to be accepted
-    assertTrue("Agent-based allocation failed", res);
-    assertTrue("Agent-based allocation failed", plan.getAllReservations()
-        .size() == 3);
+    assertTrue(res, "Agent-based allocation failed");
+    assertTrue(plan.getAllReservations()
+        .size() == 3, "Agent-based allocation failed");
 
     ReservationAllocation cs = plan.getReservationById(reservationID);
 
-    assertTrue(cs.toString(), check(cs, 110 * step, 120 * step, 20, 1024, 1));
+    if (allocateLeft) {
+      assertTrue(check(cs, 100 * step, 110 * step, 5, 1024, 1), cs.toString());
+    } else {
+      assertTrue(check(cs, 110 * step, 120 * step, 20, 1024, 1), cs.toString());
+    }
 
     System.out.println("--------AFTER ANY ALLOCATION (queue: " + reservationID
         + ")----------");
@@ -378,13 +563,18 @@ public class TestGreedyReservationAgent {
 
   }
 
-  @Test
-  public void testAnyImpossible() throws PlanningException {
+  @ParameterizedTest(name = "Testing: allocateLeft {0}," +
+      " recurrenceExpression {1}")
+  @MethodSource("data")
+  public void testAnyImpossible(boolean pAllocateLeft,
+      String pRecurrenceExpression) throws Exception {
+    initTestGreedyReservationAgent(pAllocateLeft, pRecurrenceExpression);
     prepareBasicPlan();
     // create an ANY request, with all impossible alternatives
     ReservationDefinition rr = new ReservationDefinitionPBImpl();
     rr.setArrival(100L);
     rr.setDeadline(120L);
+    rr.setRecurrenceExpression(recurrenceExpression);
     ReservationRequests reqs = new ReservationRequestsPBImpl();
     reqs.setInterpreter(ReservationRequestInterpreter.R_ANY);
 
@@ -412,9 +602,9 @@ public class TestGreedyReservationAgent {
       // expected
     }
     // validate results, we expect the second one to be accepted
-    assertFalse("Agent-based allocation should have failed", result);
-    assertTrue("Agent-based allocation should have failed", plan
-        .getAllReservations().size() == 2);
+    assertFalse(result, "Agent-based allocation should have failed");
+    assertTrue(plan.getAllReservations().size() == 2,
+        "Agent-based allocation should have failed");
 
     System.out.println("--------AFTER ANY IMPOSSIBLE ALLOCATION (queue: "
         + reservationID + ")----------");
@@ -423,13 +613,18 @@ public class TestGreedyReservationAgent {
 
   }
 
-  @Test
-  public void testAll() throws PlanningException {
+  @ParameterizedTest(name = "Testing: allocateLeft {0}," +
+      " recurrenceExpression {1}")
+  @MethodSource("data")
+  public void testAll(boolean pAllocateLeft,
+      String pRecurrenceExpression) throws Exception {
+    initTestGreedyReservationAgent(pAllocateLeft, pRecurrenceExpression);
     prepareBasicPlan();
     // create an ALL request
     ReservationDefinition rr = new ReservationDefinitionPBImpl();
     rr.setArrival(100 * step);
     rr.setDeadline(120 * step);
+    rr.setRecurrenceExpression(recurrenceExpression);
     ReservationRequests reqs = new ReservationRequestsPBImpl();
     reqs.setInterpreter(ReservationRequestInterpreter.R_ALL);
     ReservationRequest r = ReservationRequest.newInstance(
@@ -449,14 +644,19 @@ public class TestGreedyReservationAgent {
     agent.createReservation(reservationID, "u1", plan, rr);
 
     // validate results, we expect the second one to be accepted
-    assertTrue("Agent-based allocation failed", reservationID != null);
-    assertTrue("Agent-based allocation failed", plan.getAllReservations()
-        .size() == 3);
+    assertTrue(reservationID != null, "Agent-based allocation failed");
+    assertTrue(plan.getAllReservations()
+        .size() == 3, "Agent-based allocation failed");
 
     ReservationAllocation cs = plan.getReservationById(reservationID);
 
-    assertTrue(cs.toString(), check(cs, 100 * step, 110 * step, 20, 1024, 1));
-    assertTrue(cs.toString(), check(cs, 110 * step, 120 * step, 25, 1024, 1));
+    if (allocateLeft) {
+      assertTrue(check(cs, 100 * step, 110 * step, 25, 1024, 1), cs.toString());
+      assertTrue(check(cs, 110 * step, 120 * step, 20, 1024, 1), cs.toString());
+    } else {
+      assertTrue(check(cs, 100 * step, 110 * step, 20, 1024, 1), cs.toString());
+      assertTrue(check(cs, 110 * step, 120 * step, 25, 1024, 1), cs.toString());
+    }
 
     System.out.println("--------AFTER ALL ALLOCATION (queue: " + reservationID
         + ")----------");
@@ -465,14 +665,19 @@ public class TestGreedyReservationAgent {
 
   }
 
-  @Test
-  public void testAllImpossible() throws PlanningException {
+  @ParameterizedTest(name = "Testing: allocateLeft {0}," +
+      " recurrenceExpression {1}")
+  @MethodSource("data")
+  public void testAllImpossible(boolean pAllocateLeft,
+      String pRecurrenceExpression) throws Exception {
+    initTestGreedyReservationAgent(pAllocateLeft, pRecurrenceExpression);
     prepareBasicPlan();
     // create an ALL request, with an impossible combination, it should be
     // rejected, and allocation remain unchanged
     ReservationDefinition rr = new ReservationDefinitionPBImpl();
     rr.setArrival(100L);
     rr.setDeadline(120L);
+    rr.setRecurrenceExpression(recurrenceExpression);
     ReservationRequests reqs = new ReservationRequestsPBImpl();
     reqs.setInterpreter(ReservationRequestInterpreter.R_ALL);
     ReservationRequest r = ReservationRequest.newInstance(
@@ -498,9 +703,9 @@ public class TestGreedyReservationAgent {
     }
 
     // validate results, we expect the second one to be accepted
-    assertFalse("Agent-based allocation failed", result);
-    assertTrue("Agent-based allocation failed", plan.getAllReservations()
-        .size() == 2);
+    assertFalse(result, "Agent-based allocation failed");
+    assertTrue(plan.getAllReservations().size() == 2,
+        "Agent-based allocation failed");
 
     System.out.println("--------AFTER ALL IMPOSSIBLE ALLOCATION (queue: "
         + reservationID + ")----------");
@@ -515,20 +720,21 @@ public class TestGreedyReservationAgent {
     // conditions for assignment that are non-empty
 
     int[] f = { 10, 10, 20, 20, 20, 10, 10 };
-
-    assertTrue(plan.toString(),
-        plan.addReservation(new InMemoryReservationAllocation(
-            ReservationSystemTestUtil.getNewReservationId(), null, "u1",
-            "dedicated", 0L, 0L + f.length * step, ReservationSystemTestUtil
-                .generateAllocation(0, step, f), res, minAlloc)));
+    ReservationDefinition rDef =
+        ReservationSystemTestUtil.createSimpleReservationDefinition(
+            0, 0 + f.length * step, f.length * step);
+    assertTrue(plan.addReservation(new InMemoryReservationAllocation(
+        ReservationSystemTestUtil.getNewReservationId(), rDef, "u1",
+        "dedicated", 0L, 0L + f.length * step, ReservationSystemTestUtil
+        .generateAllocation(0, step, f), res, minAlloc), false), plan.toString());
 
     int[] f2 = { 5, 5, 5, 5, 5, 5, 5 };
     Map<ReservationInterval, Resource> alloc =
         ReservationSystemTestUtil.generateAllocation(5000, step, f2);
-    assertTrue(plan.toString(),
-        plan.addReservation(new InMemoryReservationAllocation(
-            ReservationSystemTestUtil.getNewReservationId(), null, "u1",
-            "dedicated", 5000, 5000 + f2.length * step, alloc, res, minAlloc)));
+    assertTrue(plan.addReservation(new InMemoryReservationAllocation(
+        ReservationSystemTestUtil.getNewReservationId(), rDef, "u1",
+        "dedicated", 5000, 5000 + f2.length * step, alloc, res, minAlloc),
+        false), plan.toString());
 
     System.out.println("--------BEFORE AGENT----------");
     System.out.println(plan.toString());
@@ -554,7 +760,8 @@ public class TestGreedyReservationAgent {
     step = 1000L;
     ReservationSystemTestUtil testUtil = new ReservationSystemTestUtil();
     CapacityScheduler scheduler = testUtil.mockCapacityScheduler(500 * 100);
-    String reservationQ = testUtil.getFullReservationQueueName();
+    String reservationQ =
+        ReservationSystemTestUtil.getFullReservationQueueName();
     float instConstraint = 100;
     float avgConstraint = 100;
     ReservationSchedulerConfiguration conf =
@@ -562,9 +769,11 @@ public class TestGreedyReservationAgent {
             instConstraint, avgConstraint);
     CapacityOverTimePolicy policy = new CapacityOverTimePolicy();
     policy.init(reservationQ, conf);
+    RMContext context = ReservationSystemTestUtil.createMockRMContext();
 
     plan = new InMemoryPlan(scheduler.getRootQueueMetrics(), policy, agent,
-      clusterCapacity, step, res, minAlloc, maxAlloc, "dedicated", null, true);
+      clusterCapacity, step, res, minAlloc, maxAlloc, "dedicated", null,
+        true, context);
 
     int acc = 0;
     List<ReservationDefinition> list = new ArrayList<ReservationDefinition>();
@@ -589,23 +798,6 @@ public class TestGreedyReservationAgent {
     long end = System.currentTimeMillis();
     System.out.println("Submitted " + numJobs + " jobs " + " accepted " + acc
         + " in " + (end - start) + "ms");
-  }
-
-  public static void main(String[] arg) {
-
-    // run a stress test with by default 1000 random jobs
-    int numJobs = 1000;
-    if (arg.length > 0) {
-      numJobs = Integer.parseInt(arg[0]);
-    }
-
-    try {
-      TestGreedyReservationAgent test = new TestGreedyReservationAgent();
-      test.setup();
-      test.testStress(numJobs);
-    } catch (Exception e) {
-      e.printStackTrace();
-    }
   }
 
 }

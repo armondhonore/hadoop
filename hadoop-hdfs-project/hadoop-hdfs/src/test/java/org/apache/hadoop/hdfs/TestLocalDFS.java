@@ -17,8 +17,8 @@
  */
 package org.apache.hadoop.hdfs;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
@@ -27,7 +27,9 @@ import java.io.IOException;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.junit.Test;
+import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /**
  * This class tests the DFS class via the FileSystem interface in a single node
@@ -65,7 +67,8 @@ public class TestLocalDFS {
   /**
    * Tests get/set working directory in DFS.
    */
-  @Test(timeout=20000)
+  @Test
+  @Timeout(value = 20)
   public void testWorkingDirectory() throws IOException {
     Configuration conf = new HdfsConfiguration();
     MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).build();
@@ -91,8 +94,8 @@ public class TestLocalDFS {
       // test home directory
       Path home = 
         fileSys.makeQualified(
-            new Path(DFSConfigKeys.DFS_USER_HOME_DIR_PREFIX_DEFAULT
-                + "/" + getUserName(fileSys))); 
+            new Path(HdfsClientConfigKeys.DFS_USER_HOME_DIR_PREFIX_DEFAULT
+                + "/" + getUserName(fileSys)));
       Path fsHome = fileSys.getHomeDirectory();
       assertEquals(home, fsHome);
 
@@ -105,12 +108,13 @@ public class TestLocalDFS {
   /**
    * Tests get/set working directory in DFS.
    */
-  @Test(timeout=30000)
+  @Test
+  @Timeout(value = 30)
   public void testHomeDirectory() throws IOException {
     final String[] homeBases = new String[] {"/home", "/home/user"};
     Configuration conf = new HdfsConfiguration();
     for (final String homeBase : homeBases) {
-      conf.set(DFSConfigKeys.DFS_USER_HOME_DIR_PREFIX_KEY, homeBase);
+      conf.set(HdfsClientConfigKeys.DFS_USER_HOME_DIR_PREFIX_KEY, homeBase);
       MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).build();
       FileSystem fileSys = cluster.getFileSystem();
       try {    

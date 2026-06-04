@@ -17,7 +17,9 @@
  */
 package org.apache.hadoop.mapreduce.v2.hs.webapp.dao;
 
+import java.text.DateFormat;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 
@@ -26,6 +28,7 @@ import javax.xml.bind.annotation.XmlAccessorType;
 import javax.xml.bind.annotation.XmlRootElement;
 import javax.xml.bind.annotation.XmlTransient;
 
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.mapreduce.JobACL;
 import org.apache.hadoop.mapreduce.v2.api.records.JobReport;
 import org.apache.hadoop.mapreduce.v2.api.records.TaskAttemptId;
@@ -43,6 +46,8 @@ import org.apache.hadoop.security.authorize.AccessControlList;
 @XmlRootElement(name = "job")
 @XmlAccessorType(XmlAccessType.FIELD)
 public class JobInfo {
+  @VisibleForTesting
+  static final String NA = "N/A";
 
   protected long submitTime;
   protected long startTime;
@@ -112,7 +117,7 @@ public class JobInfo {
       this.diagnostics = "";
       List<String> diagnostics = job.getDiagnostics();
       if (diagnostics != null && !diagnostics.isEmpty()) {
-        StringBuffer b = new StringBuffer();
+        StringBuilder b = new StringBuilder();
         for (String diag : diagnostics) {
           b.append(diag);
         }
@@ -224,6 +229,26 @@ public class JobInfo {
 
   public long getStartTime() {
     return this.startTime;
+  }
+
+  public String getFormattedStartTimeStr(final DateFormat dateFormat) {
+    String str = NA;
+
+    if (startTime >= 0) {
+      str = dateFormat.format(new Date(startTime));
+    }
+
+    return str;
+  }
+
+  public String getStartTimeStr() {
+    String str = NA;
+
+    if (startTime >= 0) {
+      str = new Date(startTime).toString();
+    }
+
+    return str;
   }
 
   public long getFinishTime() {

@@ -18,10 +18,6 @@
 
 package org.apache.hadoop.mapred;
 
-import junit.extensions.TestSetup;
-import junit.framework.Test;
-import junit.framework.TestCase;
-import junit.framework.TestSuite;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -30,7 +26,10 @@ import org.apache.hadoop.io.NullWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.WritableComparator;
 import org.apache.hadoop.mapreduce.TaskCounter;
-import org.apache.hadoop.mapreduce.MRConfig;
+import org.apache.hadoop.mapreduce.task.reduce.Fetcher;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.io.DataInput;
 import java.io.DataOutput;
@@ -39,34 +38,28 @@ import java.util.Arrays;
 import java.util.Formatter;
 import java.util.Iterator;
 
-public class TestReduceFetchFromPartialMem extends TestCase {
+import static org.apache.hadoop.mapreduce.task.reduce.Fetcher.SHUFFLE_ERR_GRP_NAME;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+
+public class TestReduceFetchFromPartialMem {
 
   protected static MiniMRCluster mrCluster = null;
   protected static MiniDFSCluster dfsCluster = null;
-  protected static TestSuite mySuite;
 
-  protected static void setSuite(Class<? extends TestCase> klass) {
-    mySuite  = new TestSuite(klass);
+  @BeforeEach
+  public void setUp() throws Exception {
+    Configuration conf = new Configuration();
+    dfsCluster = new MiniDFSCluster.Builder(conf).numDataNodes(2).build();
+    mrCluster = new MiniMRCluster(2,
+      dfsCluster.getFileSystem().getUri().toString(), 1);
   }
 
-  static {
-    setSuite(TestReduceFetchFromPartialMem.class);
-  }
-  
-  public static Test suite() {
-    TestSetup setup = new TestSetup(mySuite) {
-      protected void setUp() throws Exception {
-        Configuration conf = new Configuration();
-        dfsCluster = new MiniDFSCluster.Builder(conf).numDataNodes(2).build();
-        mrCluster = new MiniMRCluster(2,
-            dfsCluster.getFileSystem().getUri().toString(), 1);
-      }
-      protected void tearDown() throws Exception {
-        if (dfsCluster != null) { dfsCluster.shutdown(); }
-        if (mrCluster != null) { mrCluster.shutdown(); }
-      }
-    };
-    return setup;
+  @AfterEach
+  public void tearDown() throws Exception {
+    if (dfsCluster != null) { dfsCluster.shutdown(); }
+    if (mrCluster != null) { mrCluster.shutdown(); }
   }
 
   private static final String tagfmt = "%04d";
@@ -78,6 +71,7 @@ public class TestReduceFetchFromPartialMem extends TestCase {
   }
 
   /** Verify that at least one segment does not hit disk */
+  @Test
   public void testReduceFromPartialMem() throws Exception {
     final int MAP_TASKS = 7;
     JobConf job = mrCluster.createJobConf();
@@ -93,8 +87,12 @@ public class TestReduceFetchFromPartialMem extends TestCase {
     Counters c = runJob(job);
     final long out = c.findCounter(TaskCounter.MAP_OUTPUT_RECORDS).getCounter();
     final long spill = c.findCounter(TaskCounter.SPILLED_RECORDS).getCounter();
-    assertTrue("Expected some records not spilled during reduce" + spill + ")",
-        spill < 2 * out); // spilled map records, some records at the reduce
+    assertTrue(spill < 2 * out,
+        "Expected some records not spilled during reduce" + spill + ")");
+    // spilled map records, some records at the reduce
+    long shuffleIoErrors =
+        c.getGroup(SHUFFLE_ERR_GRP_NAME).getCounter(Fetcher.ShuffleErrors.IO_ERROR.toString());
+    assertEquals(0, shuffleIoErrors);
   }
 
   /**
@@ -229,8 +227,8 @@ public class TestReduceFetchFromPartialMem extends TestCase {
         out.collect(key, val);
         ++nRec;
       }
-      assertEquals("Bad rec count for " + key, recCheck, nRec - preRec);
-      assertEquals("Bad rec group for " + key, vcCheck, vc);
+      assertEquals(recCheck, nRec - preRec, "Bad rec count for " + key);
+      assertEquals(vcCheck, vc, "Bad rec group for " + key);
     }
 
     @Override
@@ -238,7 +236,7 @@ public class TestReduceFetchFromPartialMem extends TestCase {
       assertEquals(4095, nKey);
       assertEquals(nMaps - 1, aKey);
       assertEquals(nMaps - 1, bKey);
-      assertEquals("Bad record count", nMaps * (4096 + 2), nRec);
+      assertEquals(nMaps * (4096 + 2), nRec, "Bad record count");
     }
   }
 

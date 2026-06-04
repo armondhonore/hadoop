@@ -18,37 +18,45 @@
 
 package org.apache.hadoop.hdfs.server.namenode;
 
+import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.HADOOP_CALLER_CONTEXT_ENABLED_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_EDITS_DIR_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_NAME_DIR_KEY;
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.File;
 import java.io.IOException;
+import java.net.InetAddress;
 import java.net.URI;
 import java.util.Collection;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileUtil;
+import org.apache.hadoop.ha.HAServiceProtocol;
+import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
+import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.NamenodeRole;
 import org.apache.hadoop.hdfs.server.namenode.ha.HAContext;
 import org.apache.hadoop.hdfs.server.namenode.ha.HAState;
 import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Test;
+import org.apache.hadoop.hdfs.server.namenode.top.TopAuditLogger;
+import org.apache.hadoop.hdfs.server.protocol.NamespaceInfo;
+import org.apache.hadoop.hdfs.util.RwLockMode;
+import org.apache.hadoop.test.Whitebox;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.mockito.Mockito;
-import org.mockito.internal.util.reflection.Whitebox;
 
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.List;
 
 public class TestFSNamesystem {
 
-  @After
+  @AfterEach
   public void cleanUp() {
     FileUtil.fullyDeleteContents(new File(MiniDFSCluster.getBaseDirectory()));
   }
@@ -83,7 +91,7 @@ public class TestFSNamesystem {
     LeaseManager leaseMan = fsn.getLeaseManager();
     leaseMan.addLease("client1", fsn.getFSDirectory().allocateNewInodeId());
     assertEquals(1, leaseMan.countLease());
-    fsn.clear();
+    clearNamesystem(fsn);
     leaseMan = fsn.getLeaseManager();
     assertEquals(0, leaseMan.countLease());
   }
@@ -100,17 +108,18 @@ public class TestFSNamesystem {
     Mockito.when(fsImage.getEditLog()).thenReturn(fsEditLog);
     FSNamesystem fsn = new FSNamesystem(conf, fsImage);
 
-    fsn.leaveSafeMode();
-    assertTrue("After leaving safemode FSNamesystem.isInStartupSafeMode still "
-      + "returned true", !fsn.isInStartupSafeMode());
-    assertTrue("After leaving safemode FSNamesystem.isInSafeMode still returned"
-      + " true", !fsn.isInSafeMode());
+    fsn.leaveSafeMode(false);
+    assertTrue(!fsn.isInStartupSafeMode(),
+        "After leaving safemode FSNamesystem.isInStartupSafeMode still " + "returned true");
+    assertTrue(!fsn.isInSafeMode(),
+        "After leaving safemode FSNamesystem.isInSafeMode still returned" + " true");
 
     fsn.enterSafeMode(true);
-    assertTrue("After entering safemode due to low resources FSNamesystem."
-      + "isInStartupSafeMode still returned true", !fsn.isInStartupSafeMode());
-    assertTrue("After entering safemode due to low resources FSNamesystem."
-      + "isInSafeMode still returned false",  fsn.isInSafeMode());
+    assertTrue(!fsn.isInStartupSafeMode(),
+        "After entering safemode due to low resources FSNamesystem."
+            + "isInStartupSafeMode still returned true");
+    assertTrue(fsn.isInSafeMode(), "After entering safemode due to low resources FSNamesystem."
+        + "isInSafeMode still returned false");
   }
 
   @Test
@@ -123,82 +132,50 @@ public class TestFSNamesystem {
 
     FSNamesystem fsNamesystem = new FSNamesystem(conf, fsImage);
     FSNamesystem fsn = Mockito.spy(fsNamesystem);
+    BlockManager bm = fsn.getBlockManager();
+    Whitebox.setInternalState(bm, "namesystem", fsn);
 
     //Make shouldPopulaeReplQueues return true
     HAContext haContext = Mockito.mock(HAContext.class);
     HAState haState = Mockito.mock(HAState.class);
     Mockito.when(haContext.getState()).thenReturn(haState);
     Mockito.when(haState.shouldPopulateReplQueues()).thenReturn(true);
-    Whitebox.setInternalState(fsn, "haContext", haContext);
+    Mockito.when(fsn.getHAContext()).thenReturn(haContext);
 
     //Make NameNode.getNameNodeMetrics() not return null
     NameNode.initMetrics(conf, NamenodeRole.NAMENODE);
 
     fsn.enterSafeMode(false);
-    assertTrue("FSNamesystem didn't enter safemode", fsn.isInSafeMode());
-    assertTrue("Replication queues were being populated during very first "
-        + "safemode", !fsn.isPopulatingReplQueues());
-    fsn.leaveSafeMode();
-    assertTrue("FSNamesystem didn't leave safemode", !fsn.isInSafeMode());
-    assertTrue("Replication queues weren't being populated even after leaving "
-      + "safemode", fsn.isPopulatingReplQueues());
+    assertTrue(fsn.isInSafeMode(), "FSNamesystem didn't enter safemode");
+    assertTrue(!bm.isPopulatingReplQueues(),
+        "Replication queues were being populated during very first " + "safemode");
+    fsn.leaveSafeMode(false);
+    assertTrue(!fsn.isInSafeMode(), "FSNamesystem didn't leave safemode");
+    assertTrue(bm.isPopulatingReplQueues(),
+        "Replication queues weren't being populated even after leaving " + "safemode");
     fsn.enterSafeMode(false);
-    assertTrue("FSNamesystem didn't enter safemode", fsn.isInSafeMode());
-    assertTrue("Replication queues weren't being populated after entering "
-      + "safemode 2nd time", fsn.isPopulatingReplQueues());
+    assertTrue(fsn.isInSafeMode(), "FSNamesystem didn't enter safemode");
+    assertTrue(bm.isPopulatingReplQueues(),
+        "Replication queues weren't being populated after entering " + "safemode 2nd time");
   }
-  
+
   @Test
-  public void testFsLockFairness() throws IOException, InterruptedException{
+  public void testHAStateInNamespaceInfo() throws IOException {
     Configuration conf = new Configuration();
 
     FSEditLog fsEditLog = Mockito.mock(FSEditLog.class);
     FSImage fsImage = Mockito.mock(FSImage.class);
     Mockito.when(fsImage.getEditLog()).thenReturn(fsEditLog);
+    NNStorage nnStorage = Mockito.mock(NNStorage.class);
+    Mockito.when(fsImage.getStorage()).thenReturn(nnStorage);
 
-    conf.setBoolean("dfs.namenode.fslock.fair", true);
     FSNamesystem fsNamesystem = new FSNamesystem(conf, fsImage);
-    assertTrue(fsNamesystem.getFsLockForTests().isFair());
-    
-    conf.setBoolean("dfs.namenode.fslock.fair", false);
-    fsNamesystem = new FSNamesystem(conf, fsImage);
-    assertFalse(fsNamesystem.getFsLockForTests().isFair());
-  }  
-  
-  @Test
-  public void testFSNamesystemLockCompatibility() {
-    FSNamesystemLock rwLock = new FSNamesystemLock(true);
+    FSNamesystem fsn = Mockito.spy(fsNamesystem);
+    Mockito.when(fsn.getState()).thenReturn(
+        HAServiceProtocol.HAServiceState.ACTIVE);
 
-    assertEquals(0, rwLock.getReadHoldCount());
-    rwLock.readLock().lock();
-    assertEquals(1, rwLock.getReadHoldCount());
-
-    rwLock.readLock().lock();
-    assertEquals(2, rwLock.getReadHoldCount());
-
-    rwLock.readLock().unlock();
-    assertEquals(1, rwLock.getReadHoldCount());
-
-    rwLock.readLock().unlock();
-    assertEquals(0, rwLock.getReadHoldCount());
-
-    assertFalse(rwLock.isWriteLockedByCurrentThread());
-    assertEquals(0, rwLock.getWriteHoldCount());
-    rwLock.writeLock().lock();
-    assertTrue(rwLock.isWriteLockedByCurrentThread());
-    assertEquals(1, rwLock.getWriteHoldCount());
-    
-    rwLock.writeLock().lock();
-    assertTrue(rwLock.isWriteLockedByCurrentThread());
-    assertEquals(2, rwLock.getWriteHoldCount());
-
-    rwLock.writeLock().unlock();
-    assertTrue(rwLock.isWriteLockedByCurrentThread());
-    assertEquals(1, rwLock.getWriteHoldCount());
-
-    rwLock.writeLock().unlock();
-    assertFalse(rwLock.isWriteLockedByCurrentThread());
-    assertEquals(0, rwLock.getWriteHoldCount());
+    NamespaceInfo nsInfo = fsn.unprotectedGetNamespaceInfo();
+    assertNotNull(nsInfo.getState());
   }
 
   @Test
@@ -210,8 +187,7 @@ public class TestFSNamesystem {
     FSNamesystem fsn = new FSNamesystem(conf, fsImage);
     fsn.imageLoadComplete();
     assertTrue(fsn.isImageLoaded());
-    fsn.clear();
-    assertFalse(fsn.isImageLoaded());
+    clearNamesystem(fsn);
     final INodeDirectory root = (INodeDirectory) fsn.getFSDirectory()
             .getINode("/");
     assertTrue(root.getChildrenList(Snapshot.CURRENT_STATE_ID).isEmpty());
@@ -219,46 +195,126 @@ public class TestFSNamesystem {
     assertTrue(fsn.isImageLoaded());
   }
 
-  @Test
-  public void testGetEffectiveLayoutVersion() {
-    assertEquals(-63,
-        FSNamesystem.getEffectiveLayoutVersion(true, -60, -61, -63));
-    assertEquals(-61,
-        FSNamesystem.getEffectiveLayoutVersion(true, -61, -61, -63));
-    assertEquals(-62,
-        FSNamesystem.getEffectiveLayoutVersion(true, -62, -61, -63));
-    assertEquals(-63,
-        FSNamesystem.getEffectiveLayoutVersion(true, -63, -61, -63));
-    assertEquals(-63,
-        FSNamesystem.getEffectiveLayoutVersion(false, -60, -61, -63));
-    assertEquals(-63,
-        FSNamesystem.getEffectiveLayoutVersion(false, -61, -61, -63));
-    assertEquals(-63,
-        FSNamesystem.getEffectiveLayoutVersion(false, -62, -61, -63));
-    assertEquals(-63,
-        FSNamesystem.getEffectiveLayoutVersion(false, -63, -61, -63));
+  private void clearNamesystem(FSNamesystem fsn) {
+    fsn.writeLock(RwLockMode.GLOBAL);
+    try {
+      fsn.clear();
+      assertFalse(fsn.isImageLoaded());
+    } finally {
+      fsn.writeUnlock(RwLockMode.GLOBAL, "clearNamesystem");
+    }
   }
 
   @Test
-  public void testFSLockGetWaiterCount() throws InterruptedException {
-    final int threadCount = 3;
-    final CountDownLatch latch = new CountDownLatch(threadCount);
-    final FSNamesystemLock rwLock = new FSNamesystemLock(true);
-    rwLock.writeLock().lock();
-    ExecutorService helper = Executors.newFixedThreadPool(threadCount);
+  public void testGetEffectiveLayoutVersion() {
+    assertEquals(-63, FSNamesystem.getEffectiveLayoutVersion(true, -60, -61, -63));
+    assertEquals(-61, FSNamesystem.getEffectiveLayoutVersion(true, -61, -61, -63));
+    assertEquals(-62, FSNamesystem.getEffectiveLayoutVersion(true, -62, -61, -63));
+    assertEquals(-63, FSNamesystem.getEffectiveLayoutVersion(true, -63, -61, -63));
+    assertEquals(-63, FSNamesystem.getEffectiveLayoutVersion(false, -60, -61, -63));
+    assertEquals(-63, FSNamesystem.getEffectiveLayoutVersion(false, -61, -61, -63));
+    assertEquals(-63, FSNamesystem.getEffectiveLayoutVersion(false, -62, -61, -63));
+    assertEquals(-63, FSNamesystem.getEffectiveLayoutVersion(false, -63, -61, -63));
+  }
 
-    for (int x = 0; x < threadCount; x++) {
-      helper.execute(new Runnable() {
-        @Override
-        public void run() {
-          latch.countDown();
-          rwLock.readLock().lock();
-        }
-      });
+  @Test
+  public void testSafemodeReplicationConf() throws IOException {
+    Configuration conf = new Configuration();
+    FSImage fsImage = Mockito.mock(FSImage.class);
+    FSEditLog fsEditLog = Mockito.mock(FSEditLog.class);
+    Mockito.when(fsImage.getEditLog()).thenReturn(fsEditLog);
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_MIN_KEY, 2);
+    FSNamesystem fsn = new FSNamesystem(conf, fsImage);
+
+    Object bmSafeMode = Whitebox.getInternalState(fsn.getBlockManager(),
+        "bmSafeMode");
+    int safeReplication = (int)Whitebox.getInternalState(bmSafeMode,
+        "safeReplication");
+    assertEquals(2, safeReplication);
+  }
+
+  @Test
+  @Timeout(value = 30)
+  public void testInitAuditLoggers() throws IOException {
+    Configuration conf = new Configuration();
+    FSImage fsImage = Mockito.mock(FSImage.class);
+    FSEditLog fsEditLog = Mockito.mock(FSEditLog.class);
+    Mockito.when(fsImage.getEditLog()).thenReturn(fsEditLog);
+    FSNamesystem fsn;
+    List<AuditLogger> auditLoggers;
+
+    // Not to specify any audit loggers in config
+    conf.set(DFSConfigKeys.DFS_NAMENODE_AUDIT_LOGGERS_KEY, "");
+    // Disable top logger
+    conf.setBoolean(DFSConfigKeys.NNTOP_ENABLED_KEY, false);
+    conf.setBoolean(HADOOP_CALLER_CONTEXT_ENABLED_KEY, true);
+    fsn = new FSNamesystem(conf, fsImage);
+    auditLoggers = fsn.getAuditLoggers();
+    assertTrue(auditLoggers.size() == 1);
+    assertTrue(
+        auditLoggers.get(0) instanceof FSNamesystem.FSNamesystemAuditLogger);
+    FSNamesystem.FSNamesystemAuditLogger defaultAuditLogger =
+        (FSNamesystem.FSNamesystemAuditLogger) auditLoggers.get(0);
+    assertTrue(defaultAuditLogger.getCallerContextEnabled());
+
+    // Not to specify any audit loggers in config
+    conf.set(DFSConfigKeys.DFS_NAMENODE_AUDIT_LOGGERS_KEY, "");
+    // Enable top logger
+    conf.setBoolean(DFSConfigKeys.NNTOP_ENABLED_KEY, true);
+    fsn = new FSNamesystem(conf, fsImage);
+    auditLoggers = fsn.getAuditLoggers();
+    assertTrue(auditLoggers.size() == 2);
+    // the audit loggers order is not defined
+    for (AuditLogger auditLogger : auditLoggers) {
+      assertThat(auditLogger)
+          .isInstanceOfAny(FSNamesystem.FSNamesystemAuditLogger.class,
+              TopAuditLogger.class);
     }
 
-    latch.await();
-    Assert.assertEquals("Expected number of blocked thread not found",
-                        threadCount, rwLock.getQueueLength());
+    // Configure default audit loggers in config
+    conf.set(DFSConfigKeys.DFS_NAMENODE_AUDIT_LOGGERS_KEY, "default");
+    // Enable top logger
+    conf.setBoolean(DFSConfigKeys.NNTOP_ENABLED_KEY, true);
+    fsn = new FSNamesystem(conf, fsImage);
+    auditLoggers = fsn.getAuditLoggers();
+    assertTrue(auditLoggers.size() == 2);
+    for (AuditLogger auditLogger : auditLoggers) {
+      assertThat(auditLogger)
+          .isInstanceOfAny(FSNamesystem.FSNamesystemAuditLogger.class,
+              TopAuditLogger.class);
+    }
+
+    // Configure default and customized audit loggers in config with whitespaces
+    conf.set(DFSConfigKeys.DFS_NAMENODE_AUDIT_LOGGERS_KEY,
+        " default, org.apache.hadoop.hdfs.server.namenode.TestFSNamesystem$DummyAuditLogger  ");
+    // Enable top logger
+    conf.setBoolean(DFSConfigKeys.NNTOP_ENABLED_KEY, true);
+    fsn = new FSNamesystem(conf, fsImage);
+    auditLoggers = fsn.getAuditLoggers();
+    assertTrue(auditLoggers.size() == 3);
+    for (AuditLogger auditLogger : auditLoggers) {
+      assertThat(auditLogger)
+          .isInstanceOfAny(FSNamesystem.FSNamesystemAuditLogger.class,
+              TopAuditLogger.class, DummyAuditLogger.class);
+    }
+
+    // Test Configuring TopAuditLogger.
+    conf.set(DFSConfigKeys.DFS_NAMENODE_AUDIT_LOGGERS_KEY,
+        "org.apache.hadoop.hdfs.server.namenode.top.TopAuditLogger");
+    fsn = new FSNamesystem(conf, fsImage);
+    auditLoggers = fsn.getAuditLoggers();
+    assertEquals(1, auditLoggers.size());
+    assertThat(auditLoggers.get(0)).isInstanceOf(TopAuditLogger.class);
+  }
+
+  static class DummyAuditLogger implements AuditLogger {
+    @Override
+    public void initialize(Configuration conf) {
+    }
+
+    @Override
+    public void logAuditEvent(boolean succeeded, String userName,
+        InetAddress addr, String cmd, String src, String dst, FileStatus stat) {
+    }
   }
 }

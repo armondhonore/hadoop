@@ -18,15 +18,14 @@
 
 package org.apache.hadoop.hdfs;
 
-import static org.junit.Assert.assertArrayEquals;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.File;
 import java.io.IOException;
 import java.util.Random;
 
-import org.apache.commons.logging.impl.Log4JLogger;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.fs.FSDataInputStream;
@@ -35,18 +34,18 @@ import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption;
 import org.apache.hadoop.hdfs.server.namenode.FSImage;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
-import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.test.PathUtils;
-import org.apache.log4j.Level;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.slf4j.event.Level;
 
 /**
  * A JUnit test for checking if restarting DFS preserves the
@@ -54,8 +53,8 @@ import org.junit.Test;
  */
 public class TestPersistBlocks {
   static {
-    ((Log4JLogger)FSImage.LOG).getLogger().setLevel(Level.ALL);
-    ((Log4JLogger)FSNamesystem.LOG).getLogger().setLevel(Level.ALL);
+    GenericTestUtils.setLogLevel(FSImage.LOG, Level.TRACE);
+    GenericTestUtils.setLogLevel(FSNamesystem.LOG, Level.TRACE);
   }
   
   private static final int BLOCK_SIZE = 4096;
@@ -78,14 +77,15 @@ public class TestPersistBlocks {
   /** check if DFS remains in proper condition after a restart 
    **/
   @Test  
-  public void TestRestartDfsWithFlush() throws Exception {
+  public void testRestartDfsWithFlush() throws Exception {
     testRestartDfs(true);
   }
   
   
   /** check if DFS remains in proper condition after a restart 
    **/
-  public void TestRestartDfsWithSync() throws Exception {
+  @Test
+  public void testRestartDfsWithSync() throws Exception {
     testRestartDfs(false);
   }
   
@@ -98,12 +98,14 @@ public class TestPersistBlocks {
     conf.setInt(
         CommonConfigurationKeysPublic.IPC_CLIENT_CONNECTION_MAXIDLETIME_KEY,
         0);
+    conf.setBoolean(HdfsClientConfigKeys.Retry.POLICY_ENABLED_KEY, true);
     MiniDFSCluster cluster = null;
 
     long len = 0;
     FSDataOutputStream stream;
     try {
       cluster = new MiniDFSCluster.Builder(conf).numDataNodes(3).build();
+      cluster.waitActive();
       FileSystem fs = cluster.getFileSystem();
       // Creating a file with 4096 blockSize to write multiple blocks
       stream = fs.create(FILE_PATH, true, BLOCK_SIZE, (short) 1, BLOCK_SIZE);
@@ -126,8 +128,7 @@ public class TestPersistBlocks {
       // Check that the file has no less bytes than before the restart
       // This would mean that blocks were successfully persisted to the log
       FileStatus status = fs.getFileStatus(FILE_PATH);
-      assertTrue("Length too short: " + status.getLen(),
-          status.getLen() >= len);
+      assertTrue(status.getLen() >= len, "Length too short: " + status.getLen());
       
       // And keep writing (ensures that leases are also persisted correctly)
       stream.write(DATA_AFTER_RESTART);
@@ -192,8 +193,8 @@ public class TestPersistBlocks {
       // Check that the file has no less bytes than before the restart
       // This would mean that blocks were successfully persisted to the log
       FileStatus status = fs.getFileStatus(FILE_PATH);
-      assertTrue("Length incorrect: " + status.getLen(),
-          status.getLen() == len - BLOCK_SIZE);
+      assertTrue(status.getLen() == len - BLOCK_SIZE,
+          "Length incorrect: " + status.getLen());
 
       // Verify the data showed up from before restart, sans abandoned block.
       FSDataInputStream readStream = fs.open(FILE_PATH);
@@ -225,7 +226,7 @@ public class TestPersistBlocks {
     try {
       cluster = new MiniDFSCluster.Builder(conf).numDataNodes(3).build();
       FileSystem fs = cluster.getFileSystem();
-      NameNode.getAddress(conf).getPort();
+      DFSUtilClient.getNNAddress(conf).getPort();
       // Creating a file with 4096 blockSize to write multiple blocks
       stream = fs.create(FILE_PATH, true, BLOCK_SIZE, (short) 1, BLOCK_SIZE);
       stream.write(DATA_BEFORE_RESTART);
@@ -274,7 +275,7 @@ public class TestPersistBlocks {
     try {
       cluster = new MiniDFSCluster.Builder(conf).numDataNodes(3).build();
       FileSystem fs = cluster.getFileSystem();
-      NameNode.getAddress(conf).getPort();
+      DFSUtilClient.getNNAddress(conf).getPort();
       // Creating a file with 4096 blockSize to write multiple blocks
       stream = fs.create(FILE_PATH, true, BLOCK_SIZE, (short) 1, BLOCK_SIZE);
       stream.write(DATA_BEFORE_RESTART, 0, DATA_BEFORE_RESTART.length / 2);

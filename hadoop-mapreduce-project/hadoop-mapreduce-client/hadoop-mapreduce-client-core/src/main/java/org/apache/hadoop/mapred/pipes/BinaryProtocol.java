@@ -32,10 +32,9 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.io.BytesWritable;
 import org.apache.hadoop.io.DataOutputBuffer;
+import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
@@ -43,6 +42,9 @@ import org.apache.hadoop.io.WritableUtils;
 import org.apache.hadoop.mapred.InputSplit;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.util.StringUtils;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * This protocol is a binary implementation of the Pipes protocol.
@@ -59,15 +61,15 @@ class BinaryProtocol<K1 extends WritableComparable, V1 extends Writable,
 
   private DataOutputStream stream;
   private DataOutputBuffer buffer = new DataOutputBuffer();
-  private static final Log LOG = 
-    LogFactory.getLog(BinaryProtocol.class.getName());
+  private static final Logger LOG =
+      LoggerFactory.getLogger(BinaryProtocol.class.getName());
   private UplinkReaderThread uplink;
 
   /**
    * The integer codes to represent the different messages. These must match
    * the C++ codes or massive confusion will result.
    */
-  private static enum MessageType { START(0),
+  private enum MessageType { START(0),
                                     SET_JOB_CONF(1),
                                     SET_INPUT_TYPES(2),
                                     RUN_MAP(3),
@@ -94,7 +96,7 @@ class BinaryProtocol<K1 extends WritableComparable, V1 extends Writable,
 
   private static class UplinkReaderThread<K2 extends WritableComparable,
                                           V2 extends Writable>  
-    extends Thread {
+    extends SubjectInheritingThread {
     
     private DataInputStream inStream;
     private UpwardProtocol<K2, V2> handler;
@@ -116,7 +118,7 @@ class BinaryProtocol<K1 extends WritableComparable, V1 extends Writable,
       inStream.close();
     }
 
-    public void run() {
+    public void work() {
       while (true) {
         try {
           if (Thread.currentThread().isInterrupted()) {
@@ -200,8 +202,8 @@ class BinaryProtocol<K1 extends WritableComparable, V1 extends Writable,
       file = new FileOutputStream(filename);
     }
     public void write(byte b[], int off, int len) throws IOException {
-      file.write(b,off,len);
-      out.write(b,off,len);
+      file.write(b, off, len);
+      out.write(b, off, len);
     }
 
     public void write(int b) throws IOException {
@@ -215,9 +217,12 @@ class BinaryProtocol<K1 extends WritableComparable, V1 extends Writable,
     }
 
     public void close() throws IOException {
-      flush();
-      file.close();
-      out.close();
+      try {
+        flush();
+      } finally {
+        IOUtils.closeStream(file);
+        IOUtils.closeStream(out);
+      }
     }
   }
 

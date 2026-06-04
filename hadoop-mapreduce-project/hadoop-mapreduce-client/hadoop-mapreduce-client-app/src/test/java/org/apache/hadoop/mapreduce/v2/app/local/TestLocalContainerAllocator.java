@@ -17,8 +17,15 @@
 */
 package org.apache.hadoop.mapreduce.v2.app.local;
 
-import static org.mockito.Matchers.isA;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.ArgumentMatchers.isA;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.io.IOException;
@@ -29,13 +36,19 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.v2.api.records.JobId;
+import org.apache.hadoop.mapreduce.v2.api.records.TaskAttemptId;
+import org.apache.hadoop.mapreduce.v2.api.records.TaskId;
 import org.apache.hadoop.mapreduce.v2.app.AppContext;
 import org.apache.hadoop.mapreduce.v2.app.ClusterInfo;
 import org.apache.hadoop.mapreduce.v2.app.client.ClientService;
 import org.apache.hadoop.mapreduce.v2.app.job.Job;
+import org.apache.hadoop.mapreduce.v2.app.job.event.TaskAttemptContainerAssignedEvent;
+import org.apache.hadoop.mapreduce.v2.app.rm.ContainerAllocator;
+import org.apache.hadoop.mapreduce.v2.app.rm.ContainerAllocatorEvent;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.TokenIdentifier;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 import org.apache.hadoop.yarn.api.ApplicationMasterProtocol;
 import org.apache.hadoop.yarn.api.protocolrecords.AllocateRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.AllocateResponse;
@@ -46,21 +59,23 @@ import org.apache.hadoop.yarn.api.protocolrecords.RegisterApplicationMasterRespo
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.Container;
-import org.apache.hadoop.yarn.api.records.ContainerResourceDecrease;
-import org.apache.hadoop.yarn.api.records.ContainerResourceIncrease;
+import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.ContainerStatus;
 import org.apache.hadoop.yarn.api.records.NMToken;
 import org.apache.hadoop.yarn.api.records.NodeReport;
+import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.Resource;
+import org.apache.hadoop.yarn.api.records.UpdatedContainer;
 import org.apache.hadoop.yarn.client.ClientRMProxy;
+import org.apache.hadoop.yarn.event.Event;
 import org.apache.hadoop.yarn.event.EventHandler;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 import org.apache.hadoop.yarn.ipc.RPCUtil;
 import org.apache.hadoop.yarn.security.AMRMTokenIdentifier;
 import org.apache.hadoop.yarn.util.resource.Resources;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 public class TestLocalContainerAllocator {
 
@@ -79,7 +94,7 @@ public class TestLocalContainerAllocator {
     lca.start();
     try {
       lca.heartbeat();
-      Assert.fail("heartbeat was supposed to throw");
+      fail("heartbeat was supposed to throw");
     } catch (YarnException e) {
       // YarnException is expected
     } finally {
@@ -93,7 +108,7 @@ public class TestLocalContainerAllocator {
     lca.start();
     try {
       lca.heartbeat();
-      Assert.fail("heartbeat was supposed to throw");
+      fail("heartbeat was supposed to throw");
     } catch (YarnRuntimeException e) {
       // YarnRuntimeException is expected
     } finally {
@@ -161,14 +176,46 @@ public class TestLocalContainerAllocator {
       }
     }
 
-    Assert.assertEquals("too many AMRM tokens", 1, tokenCount);
-    Assert.assertArrayEquals("token identifier not updated",
-        newToken.getIdentifier(), ugiToken.getIdentifier());
-    Assert.assertArrayEquals("token password not updated",
-        newToken.getPassword(), ugiToken.getPassword());
-    Assert.assertEquals("AMRM token service not updated",
-        new Text(ClientRMProxy.getAMRMTokenService(conf)),
-        ugiToken.getService());
+    assertEquals(1, tokenCount, "too many AMRM tokens");
+    assertArrayEquals(newToken.getIdentifier(), ugiToken.getIdentifier(),
+        "token identifier not updated");
+    assertArrayEquals(newToken.getPassword(), ugiToken.getPassword(),
+        "token password not updated");
+    assertEquals(new Text(ClientRMProxy.getAMRMTokenService(conf)),
+        ugiToken.getService(), "AMRM token service not updated");
+  }
+
+  @Test
+  public void testAllocatedContainerResourceIsNotNull() {
+    ArgumentCaptor<TaskAttemptContainerAssignedEvent> containerAssignedCaptor
+        = ArgumentCaptor.forClass(TaskAttemptContainerAssignedEvent.class);
+    @SuppressWarnings("unchecked")
+    EventHandler<Event> eventHandler = mock(EventHandler.class);
+    AppContext context = mock(AppContext.class) ;
+    when(context.getEventHandler()).thenReturn(eventHandler);
+    ContainerId containerId = ContainerId.fromString(
+        "container_1427562107907_0002_01_000001");
+    LocalContainerAllocator containerAllocator = new LocalContainerAllocator(
+        mock(ClientService.class), context, "localhost", -1, -1, containerId);
+
+    ContainerAllocatorEvent containerAllocatorEvent =
+        createContainerRequestEvent();
+    containerAllocator.handle(containerAllocatorEvent);
+
+    verify(eventHandler, times(1)).handle(containerAssignedCaptor.capture());
+    Container container = containerAssignedCaptor.getValue().getContainer();
+    Resource containerResource = container.getResource();
+    assertNotNull(containerResource);
+    assertThat(containerResource.getMemorySize()).isEqualTo(0);
+    assertThat(containerResource.getVirtualCores()).isEqualTo(0);
+  }
+
+  private static ContainerAllocatorEvent createContainerRequestEvent() {
+    TaskAttemptId taskAttemptId = mock(TaskAttemptId.class);
+    TaskId taskId = mock(TaskId.class);
+    when(taskAttemptId.getTaskId()).thenReturn(taskId);
+    return new ContainerAllocatorEvent(taskAttemptId,
+        ContainerAllocator.EventType.CONTAINER_REQ);
   }
 
   private static class StubbedLocalContainerAllocator
@@ -191,7 +238,7 @@ public class TestLocalContainerAllocator {
 
     @Override
     protected void startAllocatorThread() {
-      allocatorThread = new Thread();
+      allocatorThread = new SubjectInheritingThread();
     }
 
     @Override
@@ -204,8 +251,8 @@ public class TestLocalContainerAllocator {
       ApplicationAttemptId attemptId =
           ApplicationAttemptId.newInstance(appId, 1);
       Job job = mock(Job.class);
-      @SuppressWarnings("rawtypes")
-      EventHandler eventHandler = mock(EventHandler.class);
+      @SuppressWarnings("unchecked")
+      EventHandler<Event> eventHandler = mock(EventHandler.class);
       AppContext ctx = mock(AppContext.class);
       when(ctx.getApplicationID()).thenReturn(appId);
       when(ctx.getApplicationAttemptId()).thenReturn(attemptId);
@@ -238,8 +285,7 @@ public class TestLocalContainerAllocator {
     @Override
     public AllocateResponse allocate(AllocateRequest request)
         throws YarnException, IOException {
-      Assert.assertEquals("response ID mismatch",
-          responseId, request.getResponseId());
+      assertEquals(responseId, request.getResponseId(), "response ID mismatch");
       ++responseId;
       org.apache.hadoop.yarn.api.records.Token yarnToken = null;
       if (amToken != null) {
@@ -247,15 +293,16 @@ public class TestLocalContainerAllocator {
             amToken.getIdentifier(), amToken.getKind().toString(),
             amToken.getPassword(), amToken.getService().toString());
       }
-      return AllocateResponse.newInstance(responseId,
+      AllocateResponse response = AllocateResponse.newInstance(responseId,
           Collections.<ContainerStatus>emptyList(),
           Collections.<Container>emptyList(),
           Collections.<NodeReport>emptyList(),
           Resources.none(), null, 1, null,
           Collections.<NMToken>emptyList(),
           yarnToken,
-          Collections.<ContainerResourceIncrease>emptyList(),
-          Collections.<ContainerResourceDecrease>emptyList());
+          Collections.<UpdatedContainer>emptyList());
+      response.setApplicationPriority(Priority.newInstance(0));
+      return response;
     }
   }
 }

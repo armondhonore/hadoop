@@ -18,15 +18,23 @@
 
 package org.apache.hadoop.tools.util;
 
+import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.tools.util.ProducerConsumer;
 import org.apache.hadoop.tools.util.WorkReport;
 import org.apache.hadoop.tools.util.WorkRequest;
 import org.apache.hadoop.tools.util.WorkRequestProcessor;
-import org.junit.Assert;
-import org.junit.Test;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.lang.Exception;
 import java.lang.Integer;
+import java.util.concurrent.TimeoutException;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestProducerConsumer {
   public class CopyProcessor implements WorkRequestProcessor<Integer, Integer> {
@@ -60,10 +68,11 @@ public class TestProducerConsumer {
     worker.put(new WorkRequest<Integer>(42));
     try {
       WorkReport<Integer> report = worker.take();
-      Assert.assertEquals(42, report.getItem().intValue());
+      assertEquals(42, report.getItem().intValue());
     } catch (InterruptedException ie) {
-      Assert.assertTrue(false);
+      assertTrue(false);
     }
+    worker.shutdown();
   }
 
   @Test
@@ -87,8 +96,9 @@ public class TestProducerConsumer {
       sum -= report.getItem().intValue();
       numReports++;
     }
-    Assert.assertEquals(0, sum);
-    Assert.assertEquals(numRequests, numReports);
+    assertEquals(0, sum);
+    assertEquals(numRequests, numReports);
+    workers.shutdown();
   }
 
   @Test
@@ -99,11 +109,92 @@ public class TestProducerConsumer {
     worker.put(new WorkRequest<Integer>(42));
     try {
       WorkReport<Integer> report = worker.take();
-      Assert.assertEquals(42, report.getItem().intValue());
-      Assert.assertFalse(report.getSuccess());
-      Assert.assertNotNull(report.getException());
+      assertEquals(42, report.getItem().intValue());
+      assertFalse(report.getSuccess());
+      assertNotNull(report.getException());
     } catch (InterruptedException ie) {
-      Assert.assertTrue(false);
+      assertTrue(false);
     }
+    worker.shutdown();
+  }
+
+  @Test
+  public void testSimpleProducerConsumerShutdown() throws InterruptedException,
+      TimeoutException {
+    // create a producer-consumer thread pool with one thread.
+    ProducerConsumer<Integer, Integer> worker =
+        new ProducerConsumer<Integer, Integer>(1);
+    worker.addWorker(new CopyProcessor());
+    // interrupt worker threads
+    worker.shutdown();
+    // Regression test for HDFS-9612
+    // Periodically check, and make sure that worker threads are ultimately
+    // terminated after interrupts
+    GenericTestUtils.waitForThreadTermination("pool-.*-thread.*",100,10000);
+  }
+
+  @Test
+  @Timeout(value = 10)
+  public void testMultipleProducerConsumerShutdown()
+      throws InterruptedException, TimeoutException {
+    int numWorkers = 10;
+    // create a producer consumer thread pool with 10 threads.
+    final ProducerConsumer<Integer, Integer> worker =
+        new ProducerConsumer<Integer, Integer>(numWorkers);
+    for (int i=0; i< numWorkers; i++) {
+      worker.addWorker(new CopyProcessor());
+    }
+
+    // starts two thread: a source thread which put in work, and a sink thread
+    // which takes a piece of work from ProducerConsumer
+    class SourceThread extends SubjectInheritingThread {
+      public void work() {
+        while (true) {
+          try {
+            worker.put(new WorkRequest<Integer>(42));
+            Thread.sleep(1);
+          } catch (InterruptedException ie) {
+            return;
+          }
+        }
+      }
+    };
+    // The source thread put requests into producer-consumer.
+    SourceThread source = new SourceThread();
+    source.start();
+    class SinkThread extends SubjectInheritingThread {
+      public void work() {
+        try {
+          while (true) {
+            WorkReport<Integer> report = worker.take();
+            assertEquals(42, report.getItem().intValue());
+          }
+        } catch (InterruptedException ie) {
+          return;
+        }
+      }
+    };
+    // The sink thread gets proceessed items from producer-consumer
+    SinkThread sink = new SinkThread();
+    sink.start();
+    // sleep 1 second and then shut down source.
+    // This makes sure producer consumer gets some work to do
+    Thread.sleep(1000);
+    // after 1 second, stop source thread to stop pushing items.
+    source.interrupt();
+    // wait until all work is consumed by sink
+    while (worker.hasWork()) {
+      Thread.sleep(1);
+    }
+    worker.shutdown();
+    // Regression test for HDFS-9612
+    // make sure worker threads are terminated after workers are asked to
+    // shutdown.
+    GenericTestUtils.waitForThreadTermination("pool-.*-thread.*",100,10000);
+
+    sink.interrupt();
+
+    source.join();
+    sink.join();
   }
 }

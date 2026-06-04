@@ -21,28 +21,29 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 
-import junit.framework.TestCase;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.*;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.ToolRunner;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
-import org.junit.Ignore;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * check for the job submission  options of 
  * -libjars -files -archives
  */
-@Ignore
-public class TestCommandLineJobSubmission extends TestCase {
-  // Input output paths for this.. 
+@Disabled
+public class TestCommandLineJobSubmission {
+  // Input output paths for this..
   // these are all dummy and does not test
   // much in map reduce except for the command line
   // params 
   static final Path input = new Path("/test/input/");
   static final Path output = new Path("/test/output");
   File buildDir = new File(System.getProperty("test.build.data", "/tmp"));
+  @Test
   public void testJobShell() throws Exception {
     MiniDFSCluster dfs = null;
     MiniMRCluster mr = null;
@@ -58,7 +59,7 @@ public class TestCommandLineJobSubmission extends TestCase {
       stream.close();
       mr = new MiniMRCluster(2, fs.getUri().toString(), 1);
       File thisbuildDir = new File(buildDir, "jobCommand");
-      assertTrue("create build dir", thisbuildDir.mkdirs()); 
+      assertTrue(thisbuildDir.mkdirs(), "create build dir");
       File f = new File(thisbuildDir, "files_tmp");
       FileOutputStream fstream = new FileOutputStream(f);
       fstream.write("somestrings".getBytes());
@@ -119,13 +120,13 @@ public class TestCommandLineJobSubmission extends TestCase {
       
       JobConf jobConf = mr.createJobConf();
       //before running the job, verify that libjar is not in client classpath
-      assertTrue("libjar not in client classpath", loadLibJar(jobConf)==null);
+      assertTrue(loadLibJar(jobConf)==null, "libjar not in client classpath");
       int ret = ToolRunner.run(jobConf,
                                new testshell.ExternalMapReduce(), args);
       //after running the job, verify that libjar is in the client classpath
-      assertTrue("libjar added to client classpath", loadLibJar(jobConf)!=null);
+      assertTrue(loadLibJar(jobConf)!=null, "libjar added to client classpath");
       
-      assertTrue("not failed ", ret != -1);
+      assertTrue(ret != -1, "not failed ");
       f.delete();
       thisbuildDir.delete();
     } finally {

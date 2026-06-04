@@ -17,24 +17,34 @@
  */
 package org.apache.hadoop.yarn.server.nodemanager;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 
+import org.apache.hadoop.thirdparty.protobuf.BlockingService;
+import org.apache.hadoop.thirdparty.protobuf.RpcController;
+import org.apache.hadoop.thirdparty.protobuf.ServiceException;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.ipc.ClientId;
+import org.apache.hadoop.ipc.ProtobufRpcEngine2;
 import org.apache.hadoop.ipc.RPC;
 import org.apache.hadoop.ipc.Server;
 import org.apache.hadoop.ipc.TestRPC.TestImpl;
+import org.apache.hadoop.ipc.TestRpcBase.TestRpcService;
 import org.apache.hadoop.ipc.TestRPC.TestProtocol;
+import org.apache.hadoop.ipc.TestRpcBase;
+import org.apache.hadoop.ipc.protobuf.TestProtos;
+import org.apache.hadoop.ipc.protobuf.TestRpcServiceProtos;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.server.nodemanager.NMAuditLogger.Keys;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 /**
  * Tests {@link NMAuditLogger}.
@@ -48,7 +58,7 @@ public class TestNMAuditLogger {
   private static final ApplicationId APPID = mock(ApplicationId.class);
   private static final ContainerId CONTAINERID = mock(ContainerId.class);
 
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     when(APPID.toString()).thenReturn("app_1");
     when(CONTAINERID.toString()).thenReturn("container_1");
@@ -188,12 +198,19 @@ public class TestNMAuditLogger {
    * A special extension of {@link TestImpl} RPC server with 
    * {@link TestImpl#ping()} testing the audit logs.
    */
-  private class MyTestRPCServer extends TestImpl {
+  private class MyTestRPCServer extends TestRpcBase.PBServerImpl {
     @Override
-    public void ping() {
+    public TestProtos.EmptyResponseProto ping(
+        RpcController unused, TestProtos.EmptyRequestProto request)
+        throws ServiceException {
+      // Ensure clientId is received
+      byte[] clientId = Server.getClientId();
+      assertNotNull(clientId);
+      assertEquals(ClientId.BYTE_LENGTH, clientId.length);
       // test with ip set
       testSuccessLogFormat(true);
       testFailureLogFormat(true);
+      return TestProtos.EmptyResponseProto.newBuilder().build();
     }
   }
 
@@ -203,9 +220,17 @@ public class TestNMAuditLogger {
   @Test  
   public void testNMAuditLoggerWithIP() throws Exception {
     Configuration conf = new Configuration();
+    RPC.setProtocolEngine(conf, TestRpcService.class, ProtobufRpcEngine2.class);
+
+    // Create server side implementation
+    MyTestRPCServer serverImpl = new MyTestRPCServer();
+    BlockingService service = TestRpcServiceProtos.TestProtobufRpcProto
+        .newReflectiveBlockingService(serverImpl);
+
     // start the IPC server
-    Server server = new RPC.Builder(conf).setProtocol(TestProtocol.class)
-        .setInstance(new MyTestRPCServer()).setBindAddress("0.0.0.0")
+    Server server = new RPC.Builder(conf)
+        .setProtocol(TestRpcBase.TestRpcService.class)
+        .setInstance(service).setBindAddress("0.0.0.0")
         .setPort(0).setNumHandlers(5).setVerbose(true).build();
 
     server.start();
@@ -213,11 +238,14 @@ public class TestNMAuditLogger {
     InetSocketAddress addr = NetUtils.getConnectAddress(server);
 
     // Make a client connection and test the audit log
-    TestProtocol proxy = (TestProtocol)RPC.getProxy(TestProtocol.class,
+    TestRpcService proxy = RPC.getProxy(TestRpcService.class,
                            TestProtocol.versionID, addr, conf);
     // Start the testcase
-    proxy.ping();
+    TestProtos.EmptyRequestProto pingRequest =
+        TestProtos.EmptyRequestProto.newBuilder().build();
+    proxy.ping(null, pingRequest);
 
     server.stop();
+    RPC.stopProxy(proxy);
   }
 }

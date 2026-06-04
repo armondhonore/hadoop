@@ -18,18 +18,23 @@
 
 package org.apache.hadoop.yarn.server.nodemanager.containermanager.monitor;
 
+import org.apache.hadoop.metrics2.AbstractMetric;
 import org.apache.hadoop.metrics2.MetricsRecord;
-import org.apache.hadoop.metrics2.MetricsSystem;
 import org.apache.hadoop.metrics2.impl.MetricsCollectorImpl;
 import org.apache.hadoop.metrics2.impl.MetricsRecords;
+import org.apache.hadoop.metrics2.impl.MetricsSystemImpl;
+import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
+import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ContainerId;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.anyString;
-import static org.mockito.Mockito.doReturn;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 
 public class TestContainerMetrics {
@@ -38,51 +43,47 @@ public class TestContainerMetrics {
   public void testContainerMetricsFlow() throws InterruptedException {
     final String ERR = "Error in number of records";
 
-    // Create a dummy MetricsSystem
-    MetricsSystem system = mock(MetricsSystem.class);
-    doReturn(this).when(system).register(anyString(), anyString(), any());
-
     MetricsCollectorImpl collector = new MetricsCollectorImpl();
     ContainerId containerId = mock(ContainerId.class);
-    ContainerMetrics metrics = ContainerMetrics.forContainer(containerId, 100);
+    ContainerMetrics metrics = ContainerMetrics.forContainer(containerId,
+        100, 1);
 
     metrics.recordMemoryUsage(1024);
     metrics.getMetrics(collector, true);
-    assertEquals(ERR, 0, collector.getRecords().size());
+    assertEquals(0, collector.getRecords().size(), ERR);
 
     Thread.sleep(110);
     metrics.getMetrics(collector, true);
-    assertEquals(ERR, 1, collector.getRecords().size());
+    assertEquals(1, collector.getRecords().size(), ERR);
     collector.clear();
 
     Thread.sleep(110);
     metrics.getMetrics(collector, true);
-    assertEquals(ERR, 1, collector.getRecords().size());
+    assertEquals(1, collector.getRecords().size(), ERR);
     collector.clear();
 
-    metrics.finished();
+    metrics.finished(false);
     metrics.getMetrics(collector, true);
-    assertEquals(ERR, 1, collector.getRecords().size());
+    assertEquals(1, collector.getRecords().size(), ERR);
     collector.clear();
 
     metrics.getMetrics(collector, true);
-    assertEquals(ERR, 0, collector.getRecords().size());
+    assertEquals(1, collector.getRecords().size(), ERR);
+    collector.clear();
 
     Thread.sleep(110);
     metrics.getMetrics(collector, true);
-    assertEquals(ERR, 0, collector.getRecords().size());
+    assertEquals(1, collector.getRecords().size(), ERR);
   }
 
   @Test
   public void testContainerMetricsLimit() throws InterruptedException {
     final String ERR = "Error in number of records";
 
-    MetricsSystem system = mock(MetricsSystem.class);
-    doReturn(this).when(system).register(anyString(), anyString(), any());
-
     MetricsCollectorImpl collector = new MetricsCollectorImpl();
     ContainerId containerId = mock(ContainerId.class);
-    ContainerMetrics metrics = ContainerMetrics.forContainer(containerId, 100);
+    ContainerMetrics metrics = ContainerMetrics.forContainer(containerId,
+        100, 1);
 
     int anyPmemLimit = 1024;
     int anyVmemLimit = 2048;
@@ -98,7 +99,7 @@ public class TestContainerMetrics {
 
     Thread.sleep(110);
     metrics.getMetrics(collector, true);
-    assertEquals(ERR, 1, collector.getRecords().size());
+    assertEquals(1, collector.getRecords().size(), ERR);
     MetricsRecord record = collector.getRecords().get(0);
 
     MetricsRecords.assertTag(record, ContainerMetrics.PROCESSID_INFO.name(),
@@ -116,5 +117,108 @@ public class TestContainerMetrics {
         anyLocalizationDuration);
 
     collector.clear();
+  }
+
+  @Test
+  public void testContainerMetricsFinished() throws InterruptedException {
+    MetricsSystemImpl system = new MetricsSystemImpl();
+    system.init("test");
+
+    ApplicationId appId = ApplicationId.newInstance(1234, 3);
+    ApplicationAttemptId appAttemptId =
+        ApplicationAttemptId.newInstance(appId, 4);
+    ContainerId containerId1 = ContainerId.newContainerId(appAttemptId, 1);
+    ContainerMetrics metrics1 = ContainerMetrics.forContainer(system,
+        containerId1, 1, 0);
+    ContainerId containerId2 = ContainerId.newContainerId(appAttemptId, 2);
+    ContainerMetrics metrics2 = ContainerMetrics.forContainer(system,
+        containerId2, 1, 0);
+    ContainerId containerId3 = ContainerId.newContainerId(appAttemptId, 3);
+    ContainerMetrics metrics3 = ContainerMetrics.forContainer(system,
+        containerId3, 1, 0);
+    metrics1.finished(false);
+    metrics2.finished(false);
+    system.sampleMetrics();
+    system.sampleMetrics();
+    Thread.sleep(100);
+    // verify metrics1 is unregistered
+    assertTrue(metrics1 != ContainerMetrics.forContainer(
+        system, containerId1, 1, 0));
+    // verify metrics2 is unregistered
+    assertTrue(metrics2 != ContainerMetrics.forContainer(
+        system, containerId2, 1, 0));
+    // verify metrics3 is still registered
+    assertTrue(metrics3 == ContainerMetrics.forContainer(
+        system, containerId3, 1, 0));
+    // YARN-5190: move stop() to the end to verify registering containerId1 and
+    // containerId2 won't get MetricsException thrown.
+    system.stop();
+    system.shutdown();
+  }
+
+  /**
+   * Run a test to submit values for actual memory usage and see if the
+   * histogram comes out correctly.
+   * @throws Exception
+   */
+  @Test
+  public void testContainerMetricsHistogram() throws Exception {
+
+    // submit 2 values - 1024 and 2048. 75th, 90th, 95th and 99th percentiles
+    // will be 2048. 50th percentile will be 1536((1024+2048)/2)
+    // if we keep recording 1024 and 2048 in a loop, the 50th percentile
+    // will tend closer to 2048
+    Map<String, Long> expectedValues = new HashMap<>();
+    expectedValues.put("PMemUsageMBHistogram50thPercentileMBs", 1536L);
+    expectedValues.put("PMemUsageMBHistogram75thPercentileMBs", 2048L);
+    expectedValues.put("PMemUsageMBHistogram90thPercentileMBs", 2048L);
+    expectedValues.put("PMemUsageMBHistogram95thPercentileMBs", 2048L);
+    expectedValues.put("PMemUsageMBHistogram99thPercentileMBs", 2048L);
+    expectedValues.put("PCpuUsagePercentHistogram50thPercentilePercents", 0L);
+    expectedValues.put("PCpuUsagePercentHistogram75thPercentilePercents", 0L);
+    expectedValues.put("PCpuUsagePercentHistogram90thPercentilePercents", 0L);
+    expectedValues.put("PCpuUsagePercentHistogram95thPercentilePercents", 0L);
+    expectedValues.put("PCpuUsagePercentHistogram99thPercentilePercents", 0L);
+    Set<String> testResults = new HashSet<>();
+    int delay = 10;
+    int rolloverDelay = 1000;
+    MetricsCollectorImpl collector = new MetricsCollectorImpl();
+    ContainerId containerId = mock(ContainerId.class);
+    ContainerMetrics metrics =
+        ContainerMetrics.forContainer(containerId, delay, 0);
+
+    metrics.recordMemoryUsage(1024);
+    metrics.recordMemoryUsage(2048);
+    Thread.sleep(rolloverDelay + 10);
+    metrics.getMetrics(collector, true);
+    for (MetricsRecord record : collector.getRecords()) {
+      for (AbstractMetric metric : record.metrics()) {
+        String metricName = metric.name();
+        if (expectedValues.containsKey(metricName)) {
+          Long expectedValue = expectedValues.get(metricName);
+          assertEquals(expectedValue, metric.value(),
+              "Metric " + metricName + " doesn't have expected value");
+          testResults.add(metricName);
+        }
+      }
+    }
+    assertEquals(expectedValues.keySet(), testResults);
+  }
+
+  @Test
+  public void testContainerMetricsUpdateContainerPid() {
+    ContainerId containerId = mock(ContainerId.class);
+    ContainerMetrics metrics = ContainerMetrics.forContainer(containerId,
+        100, 1);
+
+    String origPid = "1234";
+    metrics.recordProcessId(origPid);
+    assertEquals(origPid, metrics.registry.getTag(
+        ContainerMetrics.PROCESSID_INFO.name()).value());
+
+    String newPid = "4321";
+    metrics.recordProcessId(newPid);
+    assertEquals(newPid, metrics.registry.getTag(
+        ContainerMetrics.PROCESSID_INFO.name()).value());
   }
 }

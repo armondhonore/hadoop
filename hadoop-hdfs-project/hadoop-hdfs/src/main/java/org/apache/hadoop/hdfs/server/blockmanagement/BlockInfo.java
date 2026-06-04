@@ -18,25 +18,28 @@
 package org.apache.hadoop.hdfs.server.blockmanagement;
 
 import java.io.IOException;
+import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.protocol.Block;
+import org.apache.hadoop.hdfs.protocol.BlockType;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.BlockUCState;
-import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.util.LightWeightGSet;
 
 import static org.apache.hadoop.hdfs.server.namenode.INodeId.INVALID_INODE_ID;
 
 /**
- * BlockInfo class maintains for a given block
- * the {@link BlockCollection} it is part of and datanodes where the replicas of
- * the block are stored.
+ * For a given block (or an erasure coding block group), BlockInfo class
+ * maintains 1) the {@link BlockCollection} it is part of, and 2) datanodes
+ * where the replicas of the block, or blocks belonging to the erasure coding
+ * block group, are stored.
  */
 @InterfaceAudience.Private
-public abstract class  BlockInfo extends Block
+public abstract class BlockInfo extends Block
     implements LightWeightGSet.LinkedElement {
 
   public static final BlockInfo[] EMPTY_ARRAY = {};
@@ -49,7 +52,7 @@ public abstract class  BlockInfo extends Block
   /**
    * Block collection ID.
    */
-  private long bcId;
+  private volatile long bcId;
 
   /** For implementing {@link LightWeightGSet.LinkedElement} interface. */
   private LightWeightGSet.LinkedElement nextLinkedElement;
@@ -72,28 +75,20 @@ public abstract class  BlockInfo extends Block
 
   /**
    * Construct an entry for blocksmap
-   * @param replication the block's replication factor
+   * @param size the block's replication factor, or the total number of blocks
+   *             in the block group
    */
-  public BlockInfo(short replication) {
-    this.triplets = new Object[3*replication];
+  public BlockInfo(short size) {
+    this.triplets = new Object[3 * size];
     this.bcId = INVALID_INODE_ID;
-    this.replication = replication;
+    this.replication = isStriped() ? 0 : size;
   }
 
-  public BlockInfo(Block blk, short replication) {
+  public BlockInfo(Block blk, short size) {
     super(blk);
-    this.triplets = new Object[3*replication];
+    this.triplets = new Object[3 * size];
     this.bcId = INVALID_INODE_ID;
-    this.replication = replication;
-  }
-
-  /**
-   * Copy construction.
-   * @param from BlockInfo to copy from.
-   */
-  protected BlockInfo(BlockInfo from) {
-    this(from, from.getReplication());
-    this.bcId = from.bcId;
+    this.replication = isStriped() ? 0 : size;
   }
 
   public short getReplication() {
@@ -112,8 +107,16 @@ public abstract class  BlockInfo extends Block
     this.bcId = id;
   }
 
+  public void delete() {
+    setBlockCollectionId(INVALID_INODE_ID);
+  }
+
   public boolean isDeleted() {
     return bcId == INVALID_INODE_ID;
+  }
+
+  public Iterator<DatanodeStorageInfo> getStorageInfos() {
+    return new BlocksMap.StorageIterator(this);
   }
 
   public DatanodeDescriptor getDatanode(int index) {
@@ -123,34 +126,34 @@ public abstract class  BlockInfo extends Block
 
   DatanodeStorageInfo getStorageInfo(int index) {
     assert this.triplets != null : "BlockInfo is not initialized";
-    assert index >= 0 && index*3 < triplets.length : "Index is out of bound";
-    return (DatanodeStorageInfo)triplets[index*3];
+    assert index >= 0 && index * 3 < triplets.length : "Index is out of bound";
+    return (DatanodeStorageInfo)triplets[index * 3];
   }
 
   BlockInfo getPrevious(int index) {
     assert this.triplets != null : "BlockInfo is not initialized";
-    assert index >= 0 && index*3+1 < triplets.length : "Index is out of bound";
-    BlockInfo info = (BlockInfo)triplets[index*3+1];
+    assert index >= 0 && index * 3 + 1 < triplets.length : "Index is out of bound";
+    BlockInfo info = (BlockInfo)triplets[index * 3 + 1];
     assert info == null ||
         info.getClass().getName().startsWith(BlockInfo.class.getName()) :
-              "BlockInfo is expected at " + index*3;
+        "BlockInfo is expected at " + (index * 3 + 1);
     return info;
   }
 
   BlockInfo getNext(int index) {
     assert this.triplets != null : "BlockInfo is not initialized";
-    assert index >= 0 && index*3+2 < triplets.length : "Index is out of bound";
-    BlockInfo info = (BlockInfo)triplets[index*3+2];
+    assert index >= 0 && index * 3 + 2 < triplets.length : "Index is out of bound";
+    BlockInfo info = (BlockInfo)triplets[index * 3 + 2];
     assert info == null || info.getClass().getName().startsWith(
         BlockInfo.class.getName()) :
-        "BlockInfo is expected at " + index*3;
+        "BlockInfo is expected at " + (index * 3 + 2);
     return info;
   }
 
   void setStorageInfo(int index, DatanodeStorageInfo storage) {
     assert this.triplets != null : "BlockInfo is not initialized";
-    assert index >= 0 && index*3 < triplets.length : "Index is out of bound";
-    triplets[index*3] = storage;
+    assert index >= 0 && index * 3 < triplets.length : "Index is out of bound";
+    triplets[index * 3] = storage;
   }
 
   /**
@@ -163,9 +166,9 @@ public abstract class  BlockInfo extends Block
    */
   BlockInfo setPrevious(int index, BlockInfo to) {
     assert this.triplets != null : "BlockInfo is not initialized";
-    assert index >= 0 && index*3+1 < triplets.length : "Index is out of bound";
-    BlockInfo info = (BlockInfo)triplets[index*3+1];
-    triplets[index*3+1] = to;
+    assert index >= 0 && index * 3 + 1 < triplets.length : "Index is out of bound";
+    BlockInfo info = (BlockInfo) triplets[index * 3 + 1];
+    triplets[index * 3 + 1] = to;
     return info;
   }
 
@@ -175,13 +178,13 @@ public abstract class  BlockInfo extends Block
    *
    * @param index - the datanode index
    * @param to - block to be set to next on the list of blocks
-   *    * @return current next block on the list of blocks
+   * @return current next block on the list of blocks
    */
   BlockInfo setNext(int index, BlockInfo to) {
     assert this.triplets != null : "BlockInfo is not initialized";
-    assert index >= 0 && index*3+2 < triplets.length : "Index is out of bound";
-    BlockInfo info = (BlockInfo)triplets[index*3+2];
-    triplets[index*3+2] = to;
+    assert index >= 0 && index * 3 + 2 < triplets.length : "Index is out of bound";
+    BlockInfo info = (BlockInfo) triplets[index * 3 + 2];
+    triplets[index * 3 + 2] = to;
     return info;
   }
 
@@ -192,25 +195,38 @@ public abstract class  BlockInfo extends Block
   }
 
   /**
-   * Count the number of data-nodes the block belongs to.
+   * Count the number of data-nodes the block currently belongs to (i.e., NN
+   * has received block reports from the DN).
    */
   public abstract int numNodes();
 
   /**
-   * Add a {@link DatanodeStorageInfo} location for a block.
+   * Add a {@link DatanodeStorageInfo} location for a block
+   * @param storage The storage to add
+   * @param reportedBlock The block reported from the datanode. This is only
+   *                      used by erasure coded blocks, this block's id contains
+   *                      information indicating the index of the block in the
+   *                      corresponding block group.
    */
-  abstract boolean addStorage(DatanodeStorageInfo storage);
+  abstract boolean addStorage(DatanodeStorageInfo storage, Block reportedBlock);
 
   /**
    * Remove {@link DatanodeStorageInfo} location for a block
    */
   abstract boolean removeStorage(DatanodeStorageInfo storage);
 
+  public abstract boolean isStriped();
+
+  public abstract BlockType getBlockType();
+
+  /** @return true if there is no datanode storage associated with the block */
+  abstract boolean hasNoStorage();
+
   /**
-   * Replace the current BlockInfo with the new one in corresponding
-   * DatanodeStorageInfo's linked list
+   * Checks whether this block has a Provided replica.
+   * @return true if this block has a replica on Provided storage.
    */
-  abstract void replaceBlock(BlockInfo newBlock);
+  abstract boolean isProvided();
 
   /**
    * Find specified DatanodeStorageInfo.
@@ -218,14 +234,23 @@ public abstract class  BlockInfo extends Block
    */
   DatanodeStorageInfo findStorageInfo(DatanodeDescriptor dn) {
     int len = getCapacity();
+    DatanodeStorageInfo providedStorageInfo = null;
     for(int idx = 0; idx < len; idx++) {
       DatanodeStorageInfo cur = getStorageInfo(idx);
-      if(cur == null)
-        break;
-      if(cur.getDatanodeDescriptor() == dn)
-        return cur;
+      if(cur != null) {
+        if (cur.getStorageType() == StorageType.PROVIDED) {
+          // if block resides on provided storage, only match the storage ids
+          if (dn.getStorageInfo(cur.getStorageID()) != null) {
+            // do not return here as we have to check the other
+            // DatanodeStorageInfos for this block which could be local
+            providedStorageInfo = cur;
+          }
+        } else if (cur.getDatanodeDescriptor() == dn) {
+          return cur;
+        }
+      }
     }
-    return null;
+    return providedStorageInfo;
   }
 
   /**
@@ -239,9 +264,6 @@ public abstract class  BlockInfo extends Block
       if (cur == storageInfo) {
         return idx;
       }
-      if (cur == null) {
-        break;
-      }
     }
     return -1;
   }
@@ -252,16 +274,16 @@ public abstract class  BlockInfo extends Block
    * If the head is null then form a new list.
    * @return current block as the new head of the list.
    */
-  BlockInfo listInsert(BlockInfo head,
-      DatanodeStorageInfo storage) {
+  BlockInfo listInsert(BlockInfo head, DatanodeStorageInfo storage) {
     int dnIndex = this.findStorageInfo(storage);
     assert dnIndex >= 0 : "Data node is not found: current";
     assert getPrevious(dnIndex) == null && getNext(dnIndex) == null :
-            "Block is already in the list and cannot be inserted.";
+        "Block is already in the list and cannot be inserted.";
     this.setPrevious(dnIndex, null);
     this.setNext(dnIndex, head);
-    if(head != null)
+    if (head != null) {
       head.setPrevious(head.findStorageInfo(storage), this);
+    }
     return this;
   }
 
@@ -273,24 +295,28 @@ public abstract class  BlockInfo extends Block
    * @return the new head of the list or null if the list becomes
    * empy after deletion.
    */
-  BlockInfo listRemove(BlockInfo head,
-      DatanodeStorageInfo storage) {
-    if(head == null)
+  BlockInfo listRemove(BlockInfo head, DatanodeStorageInfo storage) {
+    if (head == null) {
       return null;
+    }
     int dnIndex = this.findStorageInfo(storage);
-    if(dnIndex < 0) // this block is not on the data-node list
+    if (dnIndex < 0) { // this block is not on the data-node list
       return head;
+    }
 
     BlockInfo next = this.getNext(dnIndex);
     BlockInfo prev = this.getPrevious(dnIndex);
     this.setNext(dnIndex, null);
     this.setPrevious(dnIndex, null);
-    if(prev != null)
+    if (prev != null) {
       prev.setNext(prev.findStorageInfo(storage), next);
-    if(next != null)
+    }
+    if (next != null) {
       next.setPrevious(next.findStorageInfo(storage), prev);
-    if(this == head)  // removing the head
+    }
+    if (this == head) { // removing the head
       head = next;
+    }
     return head;
   }
 
@@ -300,8 +326,8 @@ public abstract class  BlockInfo extends Block
    *
    * @return the new head of the list.
    */
-  public BlockInfo moveBlockToHead(BlockInfo head,
-      DatanodeStorageInfo storage, int curIndex, int headIndex) {
+  public BlockInfo moveBlockToHead(BlockInfo head, DatanodeStorageInfo storage,
+      int curIndex, int headIndex) {
     if (head == this) {
       return this;
     }
@@ -357,70 +383,71 @@ public abstract class  BlockInfo extends Block
     return getBlockUCState().equals(BlockUCState.COMPLETE);
   }
 
+  public boolean isUnderRecovery() {
+    return getBlockUCState().equals(BlockUCState.UNDER_RECOVERY);
+  }
+
+  public final boolean isCompleteOrCommitted() {
+    final BlockUCState state = getBlockUCState();
+    return state.equals(BlockUCState.COMPLETE) ||
+        state.equals(BlockUCState.COMMITTED);
+  }
+
   /**
    * Add/Update the under construction feature.
    */
   public void convertToBlockUnderConstruction(BlockUCState s,
       DatanodeStorageInfo[] targets) {
     if (isComplete()) {
-      uc = new BlockUnderConstructionFeature(this, s, targets);
+      uc = new BlockUnderConstructionFeature(this, s, targets,
+          this.getBlockType());
     } else {
       // the block is already under construction
       uc.setBlockUCState(s);
-      uc.setExpectedLocations(this, targets);
+      uc.setExpectedLocations(this, targets, this.getBlockType());
     }
   }
 
   /**
-   * Convert an under construction block to a complete block.
-   *
-   * @return BlockInfo - a complete block.
-   * @throws IOException if the state of the block
-   * (the generation stamp and the length) has not been committed by
-   * the client or it does not have at least a minimal number of replicas
-   * reported from data-nodes.
+   * Convert an under construction block to complete.
    */
-  BlockInfo convertToCompleteBlock() throws IOException {
+  void convertToCompleteBlock() {
     assert getBlockUCState() != BlockUCState.COMPLETE :
         "Trying to convert a COMPLETE block";
     uc = null;
-    return this;
   }
 
   /**
    * Process the recorded replicas. When about to commit or finish the
    * pipeline recovery sort out bad replicas.
    * @param genStamp  The final generation stamp for the block.
+   * @return staleReplica's List.
    */
-  public void setGenerationStampAndVerifyReplicas(long genStamp) {
+  public List<ReplicaUnderConstruction> setGenerationStampAndVerifyReplicas(
+      long genStamp) {
     Preconditions.checkState(uc != null && !isComplete());
     // Set the generation stamp for the block.
     setGenerationStamp(genStamp);
 
-    // Remove the replicas with wrong gen stamp
-    List<ReplicaUnderConstruction> staleReplicas = uc.getStaleReplicas(genStamp);
-    for (ReplicaUnderConstruction r : staleReplicas) {
-      r.getExpectedStorageLocation().removeBlock(this);
-      NameNode.blockStateChangeLog.debug("BLOCK* Removing stale replica "
-          + "from location: {}", r.getExpectedStorageLocation());
-    }
+    return uc.getStaleReplicas(genStamp);
   }
 
   /**
    * Commit block's length and generation stamp as reported by the client.
    * Set block state to {@link BlockUCState#COMMITTED}.
    * @param block - contains client reported block length and generation
+   * @return staleReplica's List.
    * @throws IOException if block ids are inconsistent.
    */
-  void commitBlock(Block block) throws IOException {
+  List<ReplicaUnderConstruction> commitBlock(Block block) throws IOException {
     if (getBlockId() != block.getBlockId()) {
       throw new IOException("Trying to commit inconsistent block: id = "
           + block.getBlockId() + ", expected id = " + getBlockId());
     }
     Preconditions.checkState(!isComplete());
     uc.commit();
-    this.set(getBlockId(), block.getNumBytes(), block.getGenerationStamp());
+    this.setNumBytes(block.getNumBytes());
     // Sort out invalid replicas.
-    setGenerationStampAndVerifyReplicas(block.getGenerationStamp());
+    return setGenerationStampAndVerifyReplicas(block.getGenerationStamp());
   }
 }

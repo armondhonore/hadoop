@@ -24,29 +24,38 @@ import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
 import java.nio.channels.OverlappingFileLockException;
 import java.util.Collection;
-import java.util.Random;
 
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.server.common.Storage;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
+import org.apache.hadoop.hdfs.server.datanode.LocalReplica;
 import org.apache.hadoop.hdfs.server.datanode.ReplicaInfo;
+import org.apache.hadoop.hdfs.server.datanode.ReplicaNotFoundException;
 import org.apache.hadoop.hdfs.server.datanode.StorageLocation;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsDatasetSpi;
-import org.apache.hadoop.io.IOUtils;
 
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.fail;
 
 public class FsDatasetTestUtil {
 
   public static File getFile(FsDatasetSpi<?> fsd, String bpid, long bid) {
-    return ((FsDatasetImpl)fsd).getFile(bpid, bid, false);
+    ReplicaInfo r;
+    try {
+      r = ((FsDatasetImpl)fsd).getReplicaInfo(bpid, bid);
+      return new File(r.getBlockURI());
+    } catch (ReplicaNotFoundException e) {
+      FsDatasetImpl.LOG.warn(String.format(
+          "Replica with id %d was not found in block pool %s.", bid, bpid), e);
+    }
+    return null;
   }
 
   public static File getBlockFile(FsDatasetSpi<?> fsd, String bpid, Block b
       ) throws IOException {
-    return ((FsDatasetImpl)fsd).getBlockFile(bpid, b.getBlockId());
+    ReplicaInfo r = ((FsDatasetImpl)fsd).getReplicaInfo(bpid, b.getBlockId());
+    return new File(r.getBlockURI());
   }
 
   public static File getMetaFile(FsDatasetSpi<?> fsd, String bpid, Block b)
@@ -54,20 +63,17 @@ public class FsDatasetTestUtil {
     return FsDatasetUtil.getMetaFile(getBlockFile(fsd, bpid, b), b
         .getGenerationStamp());
   }
-  
-  public static boolean unlinkBlock(FsDatasetSpi<?> fsd,
-      ExtendedBlock block, int numLinks) throws IOException {
-    final ReplicaInfo info = ((FsDatasetImpl)fsd).getReplicaInfo(block);
-    return info.unlinkBlock(numLinks);
+
+  public static boolean breakHardlinksIfNeeded(FsDatasetSpi<?> fsd,
+      ExtendedBlock block) throws IOException {
+    final LocalReplica info =
+        (LocalReplica) ((FsDatasetImpl)fsd).getReplicaInfo(block);
+    return info.breakHardLinksIfNeeded();
   }
 
   public static ReplicaInfo fetchReplicaInfo (final FsDatasetSpi<?> fsd,
       final String bpid, final long blockId) {
     return ((FsDatasetImpl)fsd).fetchReplicaInfo(bpid, blockId);
-  }
-
-  public static long getPendingAsyncDeletions(FsDatasetSpi<?> fsd) {
-    return ((FsDatasetImpl)fsd).asyncDiskService.countPendingDeletions();
   }
   
   public static Collection<ReplicaInfo> getReplicas(FsDatasetSpi<?> fsd,
@@ -94,13 +100,13 @@ public class FsDatasetTestUtil {
    */
   public static void assertFileLockReleased(String dir) throws IOException {
     StorageLocation sl = StorageLocation.parse(dir);
-    File lockFile = new File(sl.getFile(), Storage.STORAGE_FILE_LOCK);
+    File lockFile = new File(new File(sl.getUri()), Storage.STORAGE_FILE_LOCK);
     try (RandomAccessFile raf = new RandomAccessFile(lockFile, "rws");
         FileChannel channel = raf.getChannel()) {
       FileLock lock = channel.tryLock();
-      assertNotNull(String.format(
+      assertNotNull(lock, String.format(
           "Lock file at %s appears to be held by a different process.",
-          lockFile.getAbsolutePath()), lock);
+          lockFile.getAbsolutePath()));
       if (lock != null) {
         try {
           lock.release();

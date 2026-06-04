@@ -17,26 +17,19 @@
  */
 package org.apache.hadoop.hdfs;
 
-import org.apache.commons.logging.impl.Log4JLogger;
-import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.TestListFiles;
-import org.apache.log4j.Level;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
 
 /**
  * This class tests the FileStatus API.
  */
 public class TestListFilesInDFS extends TestListFiles {
-  {
-    ((Log4JLogger)FileSystem.LOG).getLogger().setLevel(Level.ALL);
-  }
-
 
   private static MiniDFSCluster cluster;
 
-  @BeforeClass
+  @BeforeAll
   public static void testSetUp() throws Exception {
     setTestPaths(new Path("/tmp/TestListFilesInDFS"));
     cluster = new MiniDFSCluster.Builder(conf).build();
@@ -44,10 +37,12 @@ public class TestListFilesInDFS extends TestListFiles {
     fs.delete(TEST_DIR, true);
   }
   
-  @AfterClass
+  @AfterAll
   public static void testShutdown() throws Exception {
-    fs.close();
-    cluster.shutdown();
+    if (cluster != null) {
+      fs.close();
+      cluster.shutdown();
+    }
   }
   
   protected static Path getTestDir() {

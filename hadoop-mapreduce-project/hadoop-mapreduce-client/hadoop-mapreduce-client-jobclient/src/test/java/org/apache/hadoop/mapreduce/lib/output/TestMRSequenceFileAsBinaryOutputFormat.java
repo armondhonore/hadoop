@@ -18,12 +18,15 @@
 
 package org.apache.hadoop.mapreduce.lib.output;
 
-import java.io.IOException;
-import java.util.Random;
-
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.*;
-import org.apache.hadoop.io.*;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.BooleanWritable;
+import org.apache.hadoop.io.BytesWritable;
+import org.apache.hadoop.io.DataOutputBuffer;
+import org.apache.hadoop.io.DoubleWritable;
+import org.apache.hadoop.io.FloatWritable;
+import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.SequenceFile.CompressionType;
 import org.apache.hadoop.mapred.InvalidJobConfException;
 import org.apache.hadoop.mapreduce.InputFormat;
@@ -38,16 +41,24 @@ import org.apache.hadoop.mapreduce.RecordWriter;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
 import org.apache.hadoop.mapreduce.lib.input.SequenceFileInputFormat;
 import org.apache.hadoop.mapreduce.task.MapContextImpl;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import junit.framework.TestCase;
-import org.apache.commons.logging.*;
+import java.io.IOException;
+import java.util.Random;
 
-public class TestMRSequenceFileAsBinaryOutputFormat extends TestCase {
-  private static final Log LOG =
-    LogFactory.getLog(TestMRSequenceFileAsBinaryOutputFormat.class.getName());
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.fail;
+
+public class TestMRSequenceFileAsBinaryOutputFormat {
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestMRSequenceFileAsBinaryOutputFormat.class);
 
   private static final int RECORDS = 10000;
-  
+
+  @Test
   public void testBinary() throws IOException, InterruptedException {
     Configuration conf = new Configuration();
     Job job = Job.getInstance(conf);
@@ -127,52 +138,50 @@ public class TestMRSequenceFileAsBinaryOutputFormat extends TestCase {
           sourceDouble = r.nextDouble();
           iwritable = reader.getCurrentKey();
           dwritable = reader.getCurrentValue();
-          assertEquals(
-              "Keys don't match: " + "*" + iwritable.get() + ":" + 
-                                           sourceInt + "*",
-              sourceInt, iwritable.get());
-          assertTrue(
+          assertEquals(sourceInt, iwritable.get(),
+              "Keys don't match: " + "*" + iwritable.get() + ":" + sourceInt + "*");
+          assertThat(dwritable.get()).withFailMessage(
               "Vals don't match: " + "*" + dwritable.get() + ":" +
-                                           sourceDouble + "*",
-              Double.compare(dwritable.get(), sourceDouble) == 0 );
+              sourceDouble + "*").isEqualTo(sourceDouble);
           ++count;
         }
       } finally {
         reader.close();
       }
     }
-    assertEquals("Some records not found", RECORDS, count);
+    assertEquals(RECORDS, count, "Some records not found");
   }
 
-  public void testSequenceOutputClassDefaultsToMapRedOutputClass() 
+  @Test
+  public void testSequenceOutputClassDefaultsToMapRedOutputClass()
          throws IOException {
     Job job = Job.getInstance();
     // Setting Random class to test getSequenceFileOutput{Key,Value}Class
     job.setOutputKeyClass(FloatWritable.class);
     job.setOutputValueClass(BooleanWritable.class);
 
-    assertEquals("SequenceFileOutputKeyClass should default to ouputKeyClass", 
-      FloatWritable.class,
-      SequenceFileAsBinaryOutputFormat.getSequenceFileOutputKeyClass(job));
-    assertEquals("SequenceFileOutputValueClass should default to " 
-      + "ouputValueClass", 
-      BooleanWritable.class,
-      SequenceFileAsBinaryOutputFormat.getSequenceFileOutputValueClass(job));
+    assertEquals(FloatWritable.class,
+        SequenceFileAsBinaryOutputFormat.getSequenceFileOutputKeyClass(job),
+        "SequenceFileOutputKeyClass should default to ouputKeyClass");
+    assertEquals(BooleanWritable.class,
+        SequenceFileAsBinaryOutputFormat.getSequenceFileOutputValueClass(job),
+        "SequenceFileOutputValueClass should default to ouputValueClass");
 
     SequenceFileAsBinaryOutputFormat.setSequenceFileOutputKeyClass(job, 
       IntWritable.class );
     SequenceFileAsBinaryOutputFormat.setSequenceFileOutputValueClass(job, 
       DoubleWritable.class ); 
 
-    assertEquals("SequenceFileOutputKeyClass not updated", 
-      IntWritable.class,
-      SequenceFileAsBinaryOutputFormat.getSequenceFileOutputKeyClass(job));
-    assertEquals("SequenceFileOutputValueClass not updated", 
-      DoubleWritable.class,
-      SequenceFileAsBinaryOutputFormat.getSequenceFileOutputValueClass(job));
+    assertEquals(IntWritable.class,
+        SequenceFileAsBinaryOutputFormat.getSequenceFileOutputKeyClass(job),
+        "SequenceFileOutputKeyClass not updated");
+    assertEquals(DoubleWritable.class,
+        SequenceFileAsBinaryOutputFormat.getSequenceFileOutputValueClass(job),
+        "SequenceFileOutputValueClass not updated");
   }
 
-  public void testcheckOutputSpecsForbidRecordCompression() 
+  @Test
+  public void testcheckOutputSpecsForbidRecordCompression()
       throws IOException {
     Job job = Job.getInstance();
     FileSystem fs = FileSystem.getLocal(job.getConfiguration());

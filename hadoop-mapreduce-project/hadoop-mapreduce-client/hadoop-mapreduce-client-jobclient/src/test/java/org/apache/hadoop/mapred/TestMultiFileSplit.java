@@ -25,18 +25,22 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
-import java.util.Arrays;
-
-import junit.framework.TestCase;
 
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.IOUtils;
+import org.junit.jupiter.api.Test;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 /**
  * 
  * test MultiFileSplit class
  */
-public class TestMultiFileSplit extends TestCase{
+public class TestMultiFileSplit {
 
+    @Test
     public void testReadWrite() throws Exception {
       MultiFileSplit split = new MultiFileSplit(new JobConf(), new Path[] {new Path("/test/path/1"), new Path("/test/path/2")}, new long[] {100,200});
         
@@ -61,8 +65,8 @@ public class TestMultiFileSplit extends TestCase{
       
       assertTrue(split.getLength() != 0);
       assertEquals(split.getLength(), readSplit.getLength());
-      assertTrue(Arrays.equals(split.getPaths(), readSplit.getPaths()));
-      assertTrue(Arrays.equals(split.getLengths(), readSplit.getLengths()));
+      assertThat(readSplit.getPaths()).containsExactly(split.getPaths());
+      assertThat(readSplit.getLengths()).containsExactly(split.getLengths());
       System.out.println(split.toString());
     }
     
@@ -70,6 +74,7 @@ public class TestMultiFileSplit extends TestCase{
      * test method getLocations
      * @throws IOException
      */
+    @Test
     public void testgetLocations() throws IOException{
         JobConf job= new JobConf();
       
@@ -84,7 +89,7 @@ public class TestMultiFileSplit extends TestCase{
       
       MultiFileSplit  split = new MultiFileSplit(job,path,lengths);
      String [] locations= split.getLocations();
-     assertTrue(locations.length==1);
-     assertEquals(locations[0], "localhost");
+     assertThat(locations.length).isOne();
+     assertThat(locations[0]).isEqualTo("localhost");
     }
 }

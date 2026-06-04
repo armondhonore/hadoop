@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.cli;
 
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.apache.hadoop.cli.util.CLICommand;
 import org.apache.hadoop.cli.util.CommandExecutor.Result;
@@ -28,16 +28,16 @@ import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.HDFSPolicyProvider;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.security.authorize.PolicyProvider;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 public class TestXAttrCLI  extends CLITestHelperDFS {
   protected MiniDFSCluster dfsCluster = null;
   protected FileSystem fs = null;
   protected String namenode = null;
   
-  @Before
+  @BeforeEach
   @Override
   public void setUp() throws Exception {
     super.setUp();
@@ -53,8 +53,8 @@ public class TestXAttrCLI  extends CLITestHelperDFS {
     username = System.getProperty("user.name");
 
     fs = dfsCluster.getFileSystem();
-    assertTrue("Not a HDFS: "+fs.getUri(), 
-        fs instanceof DistributedFileSystem);
+    assertTrue(fs instanceof DistributedFileSystem,
+        "Not a HDFS: " + fs.getUri());
   }
 
   @Override
@@ -62,14 +62,16 @@ public class TestXAttrCLI  extends CLITestHelperDFS {
     return "testXAttrConf.xml";
   }
   
-  @After
+  @AfterEach
   @Override
   public void tearDown() throws Exception {
     if (fs != null) {
       fs.close();
+      fs = null;
     }
     if (dfsCluster != null) {
       dfsCluster.shutdown();
+      dfsCluster = null;
     }
     Thread.sleep(2000);
     super.tearDown();
@@ -87,7 +89,7 @@ public class TestXAttrCLI  extends CLITestHelperDFS {
   
   @Override
   protected Result execute(CLICommand cmd) throws Exception {
-    return cmd.getExecutor(namenode).executeCommand(cmd.getCmd());
+    return cmd.getExecutor(namenode, conf).executeCommand(cmd.getCmd());
   }
   
   @Test

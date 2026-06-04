@@ -22,23 +22,22 @@ import java.util.HashSet;
 import java.util.Random;
 import java.util.Set;
 
-import org.apache.commons.logging.impl.Log4JLogger;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.FSDataOutputStream;
-import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.Path;
-import org.apache.log4j.Level;
+import org.apache.hadoop.test.GenericTestUtils;
 
-import static org.junit.Assert.*;
-import org.junit.Test;
-import org.junit.BeforeClass;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeAll;
+import org.slf4j.event.Level;
 
 /**
  * This class tests the FileStatus API.
  */
 public class TestListFiles {
-  {
-    ((Log4JLogger)FileSystem.LOG).getLogger().setLevel(Level.ALL);
+  static {
+    GenericTestUtils.setLogLevel(FileSystem.LOG, Level.TRACE);
   }
 
   static final long seed = 0xDEADBEEFL;
@@ -53,9 +52,8 @@ public class TestListFiles {
   private static Path FILE3;
 
   static {
-    setTestPaths(new Path(
-      System.getProperty("test.build.data", "build/test/data/work-dir/localfs"),
-      "main_"));
+    setTestPaths(new Path(GenericTestUtils.getTempPath("testlistfiles"),
+        "main_"));
   }
 
   protected static Path getTestDir() {
@@ -78,7 +76,7 @@ public class TestListFiles {
     FILE3 = new Path(DIR1, "file3");
   }
 
-  @BeforeClass
+  @BeforeAll
   public static void testSetUp() throws Exception {
     fs = FileSystem.getLocal(conf);
     fs.delete(TEST_DIR, true);
@@ -156,7 +154,7 @@ public class TestListFiles {
     writeFile(fs, FILE1, FILE_LEN);
     writeFile(fs, FILE3, FILE_LEN);
 
-    Set<Path> filesToFind = new HashSet<Path>();
+    Set<Path> filesToFind = new HashSet<>();
     filesToFind.add(fs.makeQualified(FILE1));
     filesToFind.add(fs.makeQualified(FILE2));
     filesToFind.add(fs.makeQualified(FILE3));
@@ -164,18 +162,18 @@ public class TestListFiles {
     itor = fs.listFiles(TEST_DIR, true);
     stat = itor.next();
     assertTrue(stat.isFile());
-    assertTrue("Path " + stat.getPath() + " unexpected",
-      filesToFind.remove(stat.getPath()));
+    assertTrue(filesToFind.remove(stat.getPath()),
+        "Path " + stat.getPath() + " unexpected");
 
     stat = itor.next();
     assertTrue(stat.isFile());
-    assertTrue("Path " + stat.getPath() + " unexpected",
-      filesToFind.remove(stat.getPath()));
+    assertTrue(filesToFind.remove(stat.getPath()),
+        "Path " + stat.getPath() + " unexpected");
 
     stat = itor.next();
     assertTrue(stat.isFile());
-    assertTrue("Path " + stat.getPath() + " unexpected",
-      filesToFind.remove(stat.getPath()));
+    assertTrue(filesToFind.remove(stat.getPath()),
+        "Path " + stat.getPath() + " unexpected");
     assertFalse(itor.hasNext());
     assertTrue(filesToFind.isEmpty());
     

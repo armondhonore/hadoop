@@ -28,7 +28,6 @@ import java.util.concurrent.ExecutionException;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.crypto.key.KeyProvider;
 import org.apache.hadoop.crypto.key.KeyProviderCryptoExtension;
 import org.apache.hadoop.crypto.key.kms.ValueQueue;
 import org.apache.hadoop.crypto.key.kms.ValueQueue.SyncGenerationPolicy;
@@ -105,13 +104,8 @@ public class EagerKeyGeneratorKeyProviderCryptoExtension
     }
 
     @Override
-    public void warmUpEncryptedKeys(String... keyNames) throws
-                                                        IOException {
-      try {
-        encKeyVersionQueue.initializeQueuesForKeys(keyNames);
-      } catch (ExecutionException e) {
-        throw new IOException(e);
-      }
+    public void warmUpEncryptedKeys(String... keyNames) throws IOException {
+      encKeyVersionQueue.initializeQueuesForKeys(keyNames);
     }
 
     @Override
@@ -136,6 +130,18 @@ public class EagerKeyGeneratorKeyProviderCryptoExtension
       return keyProviderCryptoExtension.decryptEncryptedKey(
           encryptedKeyVersion);
     }
+
+    @Override
+    public EncryptedKeyVersion reencryptEncryptedKey(EncryptedKeyVersion ekv)
+        throws IOException, GeneralSecurityException {
+      return keyProviderCryptoExtension.reencryptEncryptedKey(ekv);
+    }
+
+    @Override
+    public void reencryptEncryptedKeys(List<EncryptedKeyVersion> ekvs)
+        throws IOException, GeneralSecurityException {
+      keyProviderCryptoExtension.reencryptEncryptedKeys(ekvs);
+    }
   }
 
   /**
@@ -153,6 +159,16 @@ public class EagerKeyGeneratorKeyProviderCryptoExtension
         new CryptoExtension(conf, keyProviderCryptoExtension));
   }
 
+  /**
+   * Roll a new version of the given key generating the material for it.
+   * <p>
+   * Due to the caching on the ValueQueue, even after a rollNewVersion call,
+   * {@link #generateEncryptedKey(String)} may still return an old key - even
+   * when we drain the queue here, the async thread may later fill in old keys.
+   * This is acceptable since old version keys are still able to decrypt, and
+   * client shall make no assumptions that it will get a new versioned key
+   * after rollNewVersion.
+   */
   @Override
   public KeyVersion rollNewVersion(String name)
       throws NoSuchAlgorithmException, IOException {
@@ -167,5 +183,11 @@ public class EagerKeyGeneratorKeyProviderCryptoExtension
     KeyVersion keyVersion = super.rollNewVersion(name, material);
     getExtension().drain(name);
     return keyVersion;
+  }
+
+  @Override
+  public void invalidateCache(String name) throws IOException {
+    super.invalidateCache(name);
+    getExtension().drain(name);
   }
 }

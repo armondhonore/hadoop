@@ -19,14 +19,19 @@ package org.apache.hadoop.mapred;
 
 import java.util.Map;
 
-import junit.framework.TestCase;
-
 import org.apache.hadoop.mapred.StatisticsCollector.TimeWindow;
 import org.apache.hadoop.mapred.StatisticsCollector.Stat;
+import org.junit.jupiter.api.Test;
 
-public class TestStatisticsCollector extends TestCase{
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+
+public class TestStatisticsCollector {
 
   @SuppressWarnings("rawtypes")
+  @Test
   public void testMovingWindow() throws Exception {
     StatisticsCollector collector = new StatisticsCollector(1);
     TimeWindow window = new TimeWindow("test", 6, 2);
@@ -84,14 +89,14 @@ public class TestStatisticsCollector extends TestCase{
     
     //  test Stat class 
     Map updaters= collector.getUpdaters();
-    assertEquals(updaters.size(),2);
+    assertThat(updaters.size()).isEqualTo(2);
     Map<String, Stat> ststistics=collector.getStatistics();
     assertNotNull(ststistics.get("m1"));
     
    Stat newStat= collector.createStat("m2"); 
-    assertEquals(newStat.name, "m2");
+    assertThat(newStat.name).isEqualTo("m2");
     Stat st=collector.removeStat("m1");
-    assertEquals(st.name, "m1");
+    assertThat(st.name).isEqualTo("m1");
     assertEquals((10+10+10+12+13+14), stat.getValues().get(window).getValue());
     assertEquals(95, stat.getValues().get(sincStart).getValue());
      st=collector.removeStat("m1");

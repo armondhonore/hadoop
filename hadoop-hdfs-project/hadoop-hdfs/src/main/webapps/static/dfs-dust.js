@@ -20,7 +20,7 @@
 
   var filters = {
     'fmt_bytes': function (v) {
-      var UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'ZB'];
+      var UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB'];
       var prev = 0, i = 0;
       while (Math.floor(v) > 0 && i < UNITS.length) {
         prev = v;
@@ -28,7 +28,7 @@
         i += 1;
       }
 
-      if (i > 0 && i < UNITS.length) {
+      if (i > 0) {
         v = prev;
         i -= 1;
       }
@@ -58,8 +58,14 @@
     },
 
     'date_tostring' : function (v) {
-      return new Date(Number(v)).toLocaleString();
+      return moment(Number(v)).format('ddd MMM DD HH:mm:ss ZZ YYYY');
     },
+
+    'format_compile_info' : function (v) {
+      var info = v.split(" by ")
+      var date = moment(info[0]).format('ddd MMM DD HH:mm:ss ZZ YYYY');
+      return date.concat(" by ").concat(info[1]);
+     },
 
     'helper_to_permission': function (v) {
       var symbols = [ '---', '--x', '-w-', '-wx', 'r--', 'r-x', 'rw-', 'rwx' ];
@@ -86,6 +92,26 @@
 
     'helper_to_acl_bit': function (v) {
       return v ? '+' : "";
+    },
+
+    'fmt_number': function (v) {
+      return v.toLocaleString();
+    },
+
+    'fmt_human_number': function (v) {
+      var UNITS = ['', 'K', 'M'];
+      var prev = 0, i = 0;
+      while (Math.floor(v) > 0 && i < UNITS.length) {
+        prev = v;
+        v /= 1000;
+        i += 1;
+      }
+
+      if (i > 0) {
+        v = prev;
+        i -= 1;
+      }
+      return Math.round(v * 100) / 100 + UNITS[i];
     }
   };
   $.extend(dust.filters, filters);
@@ -108,7 +134,7 @@
         if (to_be_completed === 0) {
           success_cb(data);
         }
-      }).error(function (jqxhr, text, err) {
+      }).fail(function (jqxhr, text, err) {
         error = true;
         error_cb(b.url, jqxhr, text, err);
       });

@@ -17,10 +17,10 @@
  */
 package org.apache.hadoop.hdfs;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -30,6 +30,7 @@ import java.util.List;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CreateFlag;
+import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -37,13 +38,13 @@ import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
-import org.apache.hadoop.hdfs.server.datanode.SimulatedFSDataset;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.apache.log4j.Level;
-import org.junit.Test;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
+import org.junit.jupiter.api.Test;
+import org.slf4j.event.Level;
 
 /**
  * This class tests the building blocks that are needed to
@@ -52,13 +53,12 @@ import org.junit.Test;
 public class TestFileAppend2 {
 
   {
-    DFSTestUtil.setNameNodeLogLevel(Level.ALL);
-    GenericTestUtils.setLogLevel(DataNode.LOG, Level.ALL);
-    GenericTestUtils.setLogLevel(DFSClient.LOG, Level.ALL);
+    DFSTestUtil.setNameNodeLogLevel(Level.TRACE);
+    GenericTestUtils.setLogLevel(DataNode.LOG, Level.TRACE);
+    GenericTestUtils.setLogLevel(DFSClient.LOG, Level.TRACE);
   }
 
   static final int numBlocks = 5;
-  final boolean simulatedStorage = false;
 
   private byte[] fileContents = null;
 
@@ -80,9 +80,6 @@ public class TestFileAppend2 {
   @Test
   public void testSimpleAppend() throws IOException {
     final Configuration conf = new HdfsConfiguration();
-    if (simulatedStorage) {
-      SimulatedFSDataset.setFactory(conf);
-    }
     conf.setInt(DFSConfigKeys.DFS_DATANODE_HANDLER_COUNT_KEY, 50);
     fileContents = AppendTestUtil.initBuffer(AppendTestUtil.FILE_SIZE);
     MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).build();
@@ -232,9 +229,6 @@ public class TestFileAppend2 {
   @Test
   public void testSimpleAppend2() throws Exception {
     final Configuration conf = new HdfsConfiguration();
-    if (simulatedStorage) {
-      SimulatedFSDataset.setFactory(conf);
-    }
     conf.setInt(DFSConfigKeys.DFS_DATANODE_HANDLER_COUNT_KEY, 50);
     fileContents = AppendTestUtil.initBuffer(AppendTestUtil.FILE_SIZE);
     MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).build();
@@ -379,7 +373,7 @@ public class TestFileAppend2 {
   //
   // an object that does a bunch of appends to files
   //
-  class Workload extends Thread {
+  class Workload extends SubjectInheritingThread {
     private final int id;
     private final MiniDFSCluster cluster;
     private final boolean appendToNewBlock;
@@ -392,7 +386,7 @@ public class TestFileAppend2 {
 
     // create a bunch of files. Write to them and then verify.
     @Override
-    public void run() {
+    public void work() {
       System.out.println("Workload " + id + " starting... ");
       for (int i = 0; i < numAppendsPerThread; i++) {
    
@@ -452,10 +446,9 @@ public class TestFileAppend2 {
             } catch (InterruptedException e) {}
           }
 
-          assertTrue("File " + testfile + " size is " + 
-                     fs.getFileStatus(testfile).getLen() +
-                     " but expected " + (len + sizeToAppend),
-                    fs.getFileStatus(testfile).getLen() == (len + sizeToAppend));
+          assertTrue(fs.getFileStatus(testfile).getLen() == (len + sizeToAppend),
+              "File " + testfile + " size is " + fs.getFileStatus(testfile).getLen() +
+                  " but expected " + (len + sizeToAppend));
 
           AppendTestUtil.checkFullFile(fs, testfile, (int) (len + sizeToAppend),
               fileContents, "Read 2");
@@ -467,9 +460,8 @@ public class TestFileAppend2 {
                                " " + e);
             e.printStackTrace();
           }
-          assertTrue("Workload exception " + id + " testfile " + testfile +
-                     " expected size " + (len + sizeToAppend),
-                     false);
+          assertTrue(false, "Workload exception " + id + " testfile " + testfile +
+              " expected size " + (len + sizeToAppend));
         }
 
         // Add testfile back to the pool of files.
@@ -488,7 +480,7 @@ public class TestFileAppend2 {
     Configuration conf = new HdfsConfiguration();
     conf.setInt(DFSConfigKeys.DFS_NAMENODE_HEARTBEAT_RECHECK_INTERVAL_KEY, 2000);
     conf.setInt(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 2);
-    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_PENDING_TIMEOUT_SEC_KEY, 2);
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_RECONSTRUCTION_PENDING_TIMEOUT_SEC_KEY, 2);
     conf.setInt(HdfsClientConfigKeys.DFS_CLIENT_SOCKET_TIMEOUT_KEY, 30000);
     conf.setInt(HdfsClientConfigKeys.DFS_DATANODE_SOCKET_WRITE_TIMEOUT_KEY, 30000);
     conf.setInt(DFSConfigKeys.DFS_DATANODE_HANDLER_COUNT_KEY, 50);
@@ -537,7 +529,7 @@ public class TestFileAppend2 {
     // If any of the worker thread failed in their job, indicate that
     // this test failed.
     //
-    assertTrue("testComplexAppend Worker encountered exceptions.", globalStatus);
+    assertTrue(globalStatus, "testComplexAppend Worker encountered exceptions.");
   }
 
   @Test
@@ -548,5 +540,41 @@ public class TestFileAppend2 {
   @Test
   public void testComplexAppend2() throws IOException {
     testComplexAppend(true);
+  }
+
+  /**
+   * Make sure when the block length after appending is less than 512 bytes, the
+   * checksum re-calculation and overwrite are performed correctly.
+   */
+  @Test
+  public void testAppendLessThanChecksumChunk() throws Exception {
+    final byte[] buf = new byte[1024];
+    final MiniDFSCluster cluster = new MiniDFSCluster
+        .Builder(new HdfsConfiguration()).numDataNodes(1).build();
+    cluster.waitActive();
+
+    try (DistributedFileSystem fs = cluster.getFileSystem()) {
+      final int len1 = 200;
+      final int len2 = 300;
+      final Path p = new Path("/foo");
+
+      FSDataOutputStream out = fs.create(p);
+      out.write(buf, 0, len1);
+      out.close();
+
+      out = fs.append(p);
+      out.write(buf, 0, len2);
+      // flush but leave open
+      out.hflush();
+
+      // read data to verify the replica's content and checksum are correct
+      FSDataInputStream in = fs.open(p);
+      final int length = in.read(0, buf, 0, len1 + len2);
+      assertTrue(length > 0);
+      in.close();
+      out.close();
+    } finally {
+      cluster.shutdown();
+    }
   }
 }

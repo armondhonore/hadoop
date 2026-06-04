@@ -17,9 +17,9 @@
  */
 package org.apache.hadoop.security;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assume.assumeTrue;
+import static org.apache.hadoop.test.PlatformAssumptions.assumeNotWindows;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -28,13 +28,14 @@ import java.io.OutputStream;
 import java.util.Map;
 
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.util.Shell;
 import org.apache.hadoop.security.ShellBasedIdMapping.PassThroughMap;
 import org.apache.hadoop.security.ShellBasedIdMapping.StaticMapping;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import com.google.common.collect.BiMap;
-import com.google.common.collect.HashBiMap;
+import org.apache.hadoop.thirdparty.com.google.common.collect.BiMap;
+import org.apache.hadoop.thirdparty.com.google.common.collect.HashBiMap;
+
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestShellBasedIdMapping {
   
@@ -87,7 +88,7 @@ public class TestShellBasedIdMapping {
   
   @Test
   public void testStaticMapping() throws IOException {
-    assumeTrue(!Shell.WINDOWS);
+    assumeNotWindows();
     Map<Integer, Integer> uidStaticMap = new PassThroughMap<Integer>();
     Map<Integer, Integer> gidStaticMap = new PassThroughMap<Integer>();
     
@@ -129,7 +130,7 @@ public class TestShellBasedIdMapping {
   // Test staticMap refreshing
   @Test
   public void testStaticMapUpdate() throws IOException {
-    assumeTrue(!Shell.WINDOWS);
+    assumeNotWindows();
     File tempStaticMapFile = File.createTempFile("nfs-", ".map");
     tempStaticMapFile.delete();
     Configuration conf = new Configuration();
@@ -148,8 +149,9 @@ public class TestShellBasedIdMapping {
     // getUid()
     incrIdMapping.clearNameMaps();
     uidNameMap = refIdMapping.getUidNameMap();
-    {
-      BiMap.Entry<Integer, String> me = uidNameMap.entrySet().iterator().next();
+    for (BiMap.Entry<Integer, String> me : uidNameMap.entrySet()) {
+      tempStaticMapFile.delete();
+      incrIdMapping.clearNameMaps();
       Integer id = me.getKey();
       String name = me.getValue();
 
@@ -174,8 +176,9 @@ public class TestShellBasedIdMapping {
     // getGid()
     incrIdMapping.clearNameMaps();
     gidNameMap = refIdMapping.getGidNameMap();
-    {
-      BiMap.Entry<Integer, String> me = gidNameMap.entrySet().iterator().next();
+    for (BiMap.Entry<Integer, String> me : gidNameMap.entrySet()) {
+      tempStaticMapFile.delete();
+      incrIdMapping.clearNameMaps();
       Integer id = me.getKey();
       String name = me.getValue();
 
@@ -189,7 +192,11 @@ public class TestShellBasedIdMapping {
       Integer rid = id + 10000;
       String smapStr = "gid " + rid + " " + id;
       // Sleep a bit to avoid that two changes have the same modification time
-      try {Thread.sleep(1000);} catch (InterruptedException e) {}
+      try {
+        Thread.sleep(100);
+      } catch (InterruptedException e) {
+        // Do nothing
+      }
       createStaticMapFile(tempStaticMapFile, smapStr);
 
       // Now the id found for "name" should be the id specified by
@@ -201,7 +208,7 @@ public class TestShellBasedIdMapping {
 
   @Test
   public void testDuplicates() throws IOException {
-    assumeTrue(!Shell.WINDOWS);
+    assumeNotWindows();
     String GET_ALL_USERS_CMD = "echo \"root:x:0:0:root:/root:/bin/bash\n"
         + "hdfs:x:11501:10787:Grid Distributed File System:/home/hdfs:/bin/bash\n"
         + "hdfs:x:11502:10788:Grid Distributed File System:/home/hdfs:/bin/bash\n"
@@ -241,7 +248,7 @@ public class TestShellBasedIdMapping {
 
   @Test
   public void testIdOutOfIntegerRange() throws IOException {
-    assumeTrue(!Shell.WINDOWS);
+    assumeNotWindows();
     String GET_ALL_USERS_CMD = "echo \""
         + "nfsnobody:x:4294967294:4294967294:Anonymous NFS User:/var/lib/nfs:/sbin/nologin\n"
         + "nfsnobody1:x:4294967295:4294967295:Anonymous NFS User:/var/lib/nfs1:/sbin/nologin\n"
@@ -290,18 +297,19 @@ public class TestShellBasedIdMapping {
   @Test
   public void testUserUpdateSetting() throws IOException {
     ShellBasedIdMapping iug = new ShellBasedIdMapping(new Configuration());
-    assertEquals(iug.getTimeout(),
+    assertThat(iug.getTimeout()).isEqualTo(
         IdMappingConstant.USERGROUPID_UPDATE_MILLIS_DEFAULT);
 
     Configuration conf = new Configuration();
     conf.setLong(IdMappingConstant.USERGROUPID_UPDATE_MILLIS_KEY, 0);
     iug = new ShellBasedIdMapping(conf);
-    assertEquals(iug.getTimeout(), IdMappingConstant.USERGROUPID_UPDATE_MILLIS_MIN);
+    assertThat(iug.getTimeout()).isEqualTo(
+        IdMappingConstant.USERGROUPID_UPDATE_MILLIS_MIN);
 
     conf.setLong(IdMappingConstant.USERGROUPID_UPDATE_MILLIS_KEY,
         IdMappingConstant.USERGROUPID_UPDATE_MILLIS_DEFAULT * 2);
     iug = new ShellBasedIdMapping(conf);
-    assertEquals(iug.getTimeout(),
+    assertThat(iug.getTimeout()).isEqualTo(
         IdMappingConstant.USERGROUPID_UPDATE_MILLIS_DEFAULT * 2);
   }
   

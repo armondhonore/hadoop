@@ -17,7 +17,9 @@
  */
 package org.apache.hadoop.hdfs.server.namenode.ha;
 
-import static org.junit.Assert.assertEquals;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.io.IOException;
 
@@ -34,9 +36,11 @@ import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.MiniDFSNNTopology;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.io.IOUtils;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.apache.hadoop.ipc.StandbyException;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 public class TestQuotasWithHA {
   private static final Path TEST_DIR = new Path("/test");
@@ -52,7 +56,7 @@ public class TestQuotasWithHA {
   private NameNode nn1;
   private FileSystem fs;
 
-  @Before
+  @BeforeEach
   public void setupCluster() throws Exception {
     Configuration conf = new Configuration();
     conf.setInt(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1);
@@ -74,10 +78,11 @@ public class TestQuotasWithHA {
     cluster.transitionToActive(0);
   }
   
-  @After
+  @AfterEach
   public void shutdownCluster() throws IOException {
     if (cluster != null) {
       cluster.shutdown();
+      cluster = null;
     }
   }
 
@@ -85,7 +90,8 @@ public class TestQuotasWithHA {
    * Test that quotas are properly tracked by the standby through
    * create, append, delete.
    */
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testQuotasTrackedOnStandby() throws Exception {
     fs.mkdirs(TEST_DIR);
     DistributedFileSystem dfs = (DistributedFileSystem)fs;
@@ -129,5 +135,32 @@ public class TestQuotasWithHA {
     assertEquals(expectedSize, cs.getSpaceConsumed());
     assertEquals(1, cs.getDirectoryCount());
     assertEquals(0, cs.getFileCount());
+  }
+
+  /**
+   * Test that getContentSummary on Standby should should throw standby
+   * exception.
+   */
+  @Test
+  public void testGetContentSummaryOnStandby() throws Exception {
+    assertThrows(StandbyException.class, () -> {
+      Configuration nn1conf = cluster.getConfiguration(1);
+      HAUtil.setAllowStandbyReads(nn1conf, false);
+      cluster.restartNameNode(1);
+      cluster.getNameNodeRpc(1).getContentSummary("/");
+    });
+  }
+
+  /**
+   * Test that getQuotaUsage on Standby should should throw standby exception.
+   */
+  @Test
+  public void testGetQuotaUsageOnStandby() throws Exception {
+    assertThrows(StandbyException.class, () -> {
+      Configuration nn1conf = cluster.getConfiguration(1);
+      HAUtil.setAllowStandbyReads(nn1conf, false);
+      cluster.restartNameNode(1);
+      cluster.getNameNodeRpc(1).getQuotaUsage("/");
+    });
   }
 }

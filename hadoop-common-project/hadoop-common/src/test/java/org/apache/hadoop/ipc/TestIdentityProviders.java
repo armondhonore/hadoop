@@ -18,32 +18,23 @@
 
 package org.apache.hadoop.ipc;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.assertj.core.api.Assertions.assertThat;
 
-import org.junit.Assert;
-import org.junit.Assume;
-import org.junit.Test;
-import org.junit.Before;
-import org.junit.After;
+import org.apache.hadoop.test.LambdaTestUtils;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.io.IOException;
-import java.nio.ByteBuffer;
 
-import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.security.UserGroupInformation;
-import org.apache.hadoop.io.Writable;
 
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.conf.Configuration;
 
 public class TestIdentityProviders {
-  public class FakeSchedulable implements Schedulable {
+  public static class FakeSchedulable implements Schedulable {
     public FakeSchedulable() {
     }
 
@@ -55,19 +46,25 @@ public class TestIdentityProviders {
       }
     }
 
+    @Override
+    public int getPriorityLevel() {
+      return 0;
+    }
   }
 
   @Test
   public void testPluggableIdentityProvider() {
     Configuration conf = new Configuration();
-    conf.set(CommonConfigurationKeys.IPC_CALLQUEUE_IDENTITY_PROVIDER_KEY,
+    conf.set(CommonConfigurationKeys.IPC_IDENTITY_PROVIDER_KEY,
       "org.apache.hadoop.ipc.UserIdentityProvider");
 
     List<IdentityProvider> providers = conf.getInstances(
-      CommonConfigurationKeys.IPC_CALLQUEUE_IDENTITY_PROVIDER_KEY,
+      CommonConfigurationKeys.IPC_IDENTITY_PROVIDER_KEY,
       IdentityProvider.class);
 
-    assertTrue(providers.size() == 1);
+    assertThat(providers)
+        .describedAs("provider list")
+        .hasSize(1);
 
     IdentityProvider ip = providers.get(0);
     assertNotNull(ip);
@@ -75,14 +72,20 @@ public class TestIdentityProviders {
   }
 
   @Test
-  public void testUserIdentityProvider() throws IOException {
+  public void testUserIdentityProvider() throws Exception {
     UserIdentityProvider uip = new UserIdentityProvider();
-    String identity = uip.makeIdentity(new FakeSchedulable());
+    FakeSchedulable fakeSchedulable = new FakeSchedulable();
+    String identity = uip.makeIdentity(fakeSchedulable);
 
     // Get our username
     UserGroupInformation ugi = UserGroupInformation.getCurrentUser();
     String username = ugi.getUserName();
 
     assertEquals(username, identity);
+
+    // FakeSchedulable doesn't override getCallerContext()
+    // accessing it should throw an UnsupportedOperationException
+    LambdaTestUtils.intercept(UnsupportedOperationException.class,
+        "Invalid operation.", fakeSchedulable::getCallerContext);
   }
 }

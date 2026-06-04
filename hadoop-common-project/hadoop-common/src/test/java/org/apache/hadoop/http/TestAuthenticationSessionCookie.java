@@ -13,15 +13,15 @@
  */
 package org.apache.hadoop.http;
 
-import org.junit.Assert;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.authentication.server.AuthenticationFilter;
 import org.apache.hadoop.security.ssl.KeyStoreTestUtil;
-import org.junit.After;
-import org.junit.Test;
-import org.mortbay.log.Log;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+import org.eclipse.jetty.util.log.Log;
 
 import javax.servlet.*;
 import javax.servlet.http.HttpServletResponse;
@@ -32,11 +32,15 @@ import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URL;
 import java.net.HttpCookie;
+import java.util.HashMap;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 public class TestAuthenticationSessionCookie {
-  private static final String BASEDIR = System.getProperty("test.build.dir",
-          "target/test-dir") + "/" + TestHttpCookieFlag.class.getSimpleName();
+  private static final String BASEDIR =
+      GenericTestUtils.getTempPath(TestHttpCookieFlag.class.getSimpleName());
   private static boolean isCookiePersistent;
   private static final long TOKEN_VALIDITY_SEC = 1000;
   private static long expires;
@@ -70,7 +74,7 @@ public class TestAuthenticationSessionCookie {
     @Override
     public void initFilter(FilterContainer container, Configuration conf) {
       container.addFilter("DummyAuth", DummyAuthenticationFilter.class
-              .getName(), null);
+              .getName(), new HashMap<>());
     }
   }
 
@@ -92,7 +96,7 @@ public class TestAuthenticationSessionCookie {
     @Override
     public void initFilter(FilterContainer container, Configuration conf) {
       container.addFilter("Dummy2Auth", Dummy2AuthenticationFilter.class
-              .getName(), null);
+              .getName(), new HashMap<>());
     }
   }
 
@@ -113,10 +117,7 @@ public class TestAuthenticationSessionCookie {
     sslConfDir = KeyStoreTestUtil.getClasspathDir(TestSSLHttpServer.class);
 
     KeyStoreTestUtil.setupSSLConfig(keystoresDir, sslConfDir, conf, false);
-    Configuration sslConf = new Configuration(false);
-    sslConf.addResource("ssl-server.xml");
-    sslConf.addResource("ssl-client.xml");
-
+    Configuration sslConf = KeyStoreTestUtil.getSslConfig();
 
     server = new HttpServer2.Builder()
             .setName("test")
@@ -150,10 +151,10 @@ public class TestAuthenticationSessionCookie {
 
     String header = conn.getHeaderField("Set-Cookie");
     List<HttpCookie> cookies = HttpCookie.parse(header);
-    Assert.assertTrue(!cookies.isEmpty());
-    Log.info(header);
-    Assert.assertFalse(header.contains("; Expires="));
-    Assert.assertTrue("token".equals(cookies.get(0).getValue()));
+    assertTrue(!cookies.isEmpty());
+    Log.getLog().info(header);
+    assertFalse(header.contains("; Expires="));
+    assertTrue("token".equals(cookies.get(0).getValue()));
   }
   
   @Test
@@ -172,13 +173,13 @@ public class TestAuthenticationSessionCookie {
 
     String header = conn.getHeaderField("Set-Cookie");
     List<HttpCookie> cookies = HttpCookie.parse(header);
-    Assert.assertTrue(!cookies.isEmpty());
-    Log.info(header);
-    Assert.assertTrue(header.contains("; Expires="));
-    Assert.assertTrue("token".equals(cookies.get(0).getValue()));
+    assertTrue(!cookies.isEmpty());
+    Log.getLog().info(header);
+    assertTrue(header.contains("; Expires="));
+    assertTrue("token".equals(cookies.get(0).getValue()));
   }
 
-  @After
+  @AfterEach
   public void cleanup() throws Exception {
     server.stop();
     FileUtil.fullyDelete(new File(BASEDIR));

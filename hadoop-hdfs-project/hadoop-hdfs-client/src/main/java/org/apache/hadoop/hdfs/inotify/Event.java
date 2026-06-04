@@ -25,6 +25,7 @@ import org.apache.hadoop.fs.permission.AclEntry;
 import org.apache.hadoop.fs.permission.FsPermission;
 
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Events sent by the inotify system. Note that no events are necessarily sent
@@ -34,7 +35,7 @@ import java.util.List;
 @InterfaceAudience.Public
 @InterfaceStability.Unstable
 public abstract class Event {
-  public static enum EventType {
+  public enum EventType {
     CREATE, CLOSE, APPEND, RENAME, METADATA, UNLINK, TRUNCATE
   }
 
@@ -98,8 +99,8 @@ public abstract class Event {
   @InterfaceAudience.Public
   public static class CreateEvent extends Event {
 
-    public static enum INodeType {
-      FILE, DIRECTORY, SYMLINK;
+    public enum INodeType {
+      FILE, DIRECTORY, SYMLINK
     }
 
     private INodeType iNodeType;
@@ -112,6 +113,7 @@ public abstract class Event {
     private String symlinkTarget;
     private boolean overwrite;
     private long defaultBlockSize;
+    private Optional<Boolean> erasureCoded;
 
     public static class Builder {
       private INodeType iNodeType;
@@ -124,6 +126,7 @@ public abstract class Event {
       private String symlinkTarget;
       private boolean overwrite;
       private long defaultBlockSize = 0;
+      private Optional<Boolean> erasureCoded = Optional.empty();
 
       public Builder iNodeType(INodeType type) {
         this.iNodeType = type;
@@ -175,6 +178,11 @@ public abstract class Event {
         return this;
       }
 
+      public Builder erasureCoded(boolean ecCoded) {
+        this.erasureCoded = Optional.of(ecCoded);
+        return this;
+      }
+
       public CreateEvent build() {
         return new CreateEvent(this);
       }
@@ -192,6 +200,7 @@ public abstract class Event {
       this.symlinkTarget = b.symlinkTarget;
       this.overwrite = b.overwrite;
       this.defaultBlockSize = b.defaultBlockSize;
+      this.erasureCoded = b.erasureCoded;
     }
 
     public INodeType getiNodeType() {
@@ -243,21 +252,30 @@ public abstract class Event {
       return defaultBlockSize;
     }
 
+    public Optional<Boolean> isErasureCoded() {
+      return erasureCoded;
+    }
+
     @Override
     @InterfaceStability.Unstable
     public String toString() {
       StringBuilder content = new StringBuilder();
-      content.append("CreateEvent [INodeType=" + iNodeType + ", path=" + path
-          + ", ctime=" + ctime + ", replication=" + replication
-          + ", ownerName=" + ownerName + ", groupName=" + groupName
-          + ", perms=" + perms + ", ");
+      content.append("CreateEvent [INodeType=").append(iNodeType)
+          .append(", path=").append(path)
+          .append(", ctime=").append(ctime)
+          .append(", replication=").append(replication)
+          .append(", ownerName=").append(ownerName)
+          .append(", groupName=").append(groupName)
+          .append(", perms=").append(perms).append(", ");
 
       if (symlinkTarget != null) {
-        content.append("symlinkTarget=" + symlinkTarget + ", ");
+        content.append("symlinkTarget=").append(symlinkTarget).append(", ");
       }
 
-      content.append("overwrite=" + overwrite + ", defaultBlockSize="
-          + defaultBlockSize + "]");
+      content.append("overwrite=").append(overwrite)
+          .append(", defaultBlockSize=").append(defaultBlockSize)
+          .append(", erasureCoded=").append(erasureCoded)
+          .append("]");
       return content.toString();
     }
 
@@ -274,8 +292,8 @@ public abstract class Event {
   @InterfaceAudience.Public
   public static class MetadataUpdateEvent extends Event {
 
-    public static enum MetadataType {
-      TIMES, REPLICATION, OWNER, PERMS, ACLS, XATTRS;
+    public enum MetadataType {
+      TIMES, REPLICATION, OWNER, PERMS, ACLS, XATTRS
     }
 
     private String path;
@@ -434,28 +452,29 @@ public abstract class Event {
     @InterfaceStability.Unstable
     public String toString() {
       StringBuilder content = new StringBuilder();
-      content.append("MetadataUpdateEvent [path=" + path + ", metadataType="
-          + metadataType);
+      content.append("MetadataUpdateEvent [path=").append(path)
+          .append(", metadataType=").append(metadataType);
       switch (metadataType) {
       case TIMES:
-        content.append(", mtime=" + mtime + ", atime=" + atime);
+        content.append(", mtime=").append(mtime)
+            .append(", atime=").append(atime);
         break;
       case REPLICATION:
-        content.append(", replication=" + replication);
+        content.append(", replication=").append(replication);
         break;
       case OWNER:
-        content.append(", ownerName=" + ownerName
-            + ", groupName=" + groupName);
+        content.append(", ownerName=").append(ownerName)
+            .append(", groupName=").append(groupName);
         break;
       case PERMS:
-        content.append(", perms=" + perms);
+        content.append(", perms=").append(perms);
         break;
       case ACLS:
-        content.append(", acls=" + acls);
+        content.append(", acls=").append(acls);
         break;
       case XATTRS:
-        content.append(", xAttrs=" + xAttrs + ", xAttrsRemoved="
-            + xAttrsRemoved);
+        content.append(", xAttrs=").append(xAttrs)
+            .append(", xAttrsRemoved=").append(xAttrsRemoved);
         break;
       default:
         break;

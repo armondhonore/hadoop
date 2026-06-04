@@ -17,19 +17,23 @@
  */
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity;
 
-import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.fica.FiCaSchedulerApp;
+import java.util.Set;
+
 import org.apache.hadoop.yarn.api.records.Resource;
+import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.RMNodeLabelsManager;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.fica.FiCaSchedulerApp;
+import org.apache.hadoop.yarn.util.resource.Resources;
 
 public class CapacityHeadroomProvider {
   
-  LeafQueue.User user;
-  LeafQueue queue;
+  UsersManager.User user;
+  AbstractLeafQueue queue;
   FiCaSchedulerApp application;
-  LeafQueue.QueueResourceLimitsInfo queueResourceLimitsInfo;
+  AbstractLeafQueue.QueueResourceLimitsInfo queueResourceLimitsInfo;
   
-  public CapacityHeadroomProvider(LeafQueue.User user, LeafQueue queue,
+  public CapacityHeadroomProvider(UsersManager.User user, AbstractLeafQueue queue,
       FiCaSchedulerApp application,
-      LeafQueue.QueueResourceLimitsInfo queueResourceLimitsInfo) {
+      AbstractLeafQueue.QueueResourceLimitsInfo queueResourceLimitsInfo) {
 
     this.user = user;
     this.queue = queue;
@@ -38,22 +42,32 @@ public class CapacityHeadroomProvider {
   }
   
   public Resource getHeadroom() {
-    
+
     Resource queueCurrentLimit;
     Resource clusterResource;
     synchronized (queueResourceLimitsInfo) {
       queueCurrentLimit = queueResourceLimitsInfo.getQueueCurrentLimit();
       clusterResource = queueResourceLimitsInfo.getClusterResource();
     }
-    Resource headroom = queue.getHeadroom(user, queueCurrentLimit, 
-      clusterResource, application);
-    
+    Set<String> requestedPartitions =
+        application.getAppSchedulingInfo().getRequestedPartitions();
+    Resource headroom;
+    if (requestedPartitions.isEmpty() || (requestedPartitions.size() == 1
+        && requestedPartitions.contains(RMNodeLabelsManager.NO_LABEL))) {
+      headroom = queue.getHeadroom(user, queueCurrentLimit, clusterResource,
+          application);
+    } else {
+      headroom = Resource.newInstance(0, 0);
+      for (String partition : requestedPartitions) {
+        Resource partitionHeadRoom = queue.getHeadroom(user, queueCurrentLimit,
+            clusterResource, application, partition);
+        Resources.addTo(headroom, partitionHeadRoom);
+      }
+    }
     // Corner case to deal with applications being slightly over-limit
-    if (headroom.getMemory() < 0) {
-      headroom.setMemory(0);
+    if (headroom.getMemorySize() < 0) {
+      headroom.setMemorySize(0);
     }
     return headroom;
-  
   }
-
 }

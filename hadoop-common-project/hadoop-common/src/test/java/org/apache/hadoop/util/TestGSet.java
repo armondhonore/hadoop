@@ -17,14 +17,18 @@
  */
 package org.apache.hadoop.util;
 
+import java.util.Collection;
 import java.util.ConcurrentModificationException;
 import java.util.Iterator;
 import java.util.Random;
 
 import org.apache.hadoop.HadoopIllegalArgumentException;
-import org.apache.hadoop.util.Time;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 public class TestGSet {
   private static final Random ran = new Random();
@@ -41,14 +45,19 @@ public class TestGSet {
 
   @Test
   public void testExceptionCases() {
+    testExceptionCases(false);
+    testExceptionCases(true);
+  }
+
+  private void testExceptionCases(boolean resizable) {
     {
       //test contains
       final LightWeightGSet<Integer, Integer> gset
-        = new LightWeightGSet<Integer, Integer>(16);
+        = createGSet(16, resizable);
       try {
         //test contains with a null element
         gset.contains(null);
-        Assert.fail();
+        fail();
       } catch(NullPointerException e) {
         LightWeightGSet.LOG.info("GOOD: getting " + e, e);
       }
@@ -57,11 +66,11 @@ public class TestGSet {
     {
       //test get
       final LightWeightGSet<Integer, Integer> gset
-        = new LightWeightGSet<Integer, Integer>(16);
+        = createGSet(16, resizable);
       try {
         //test get with a null element
         gset.get(null);
-        Assert.fail();
+        fail();
       } catch(NullPointerException e) {
         LightWeightGSet.LOG.info("GOOD: getting " + e, e);
       }
@@ -70,18 +79,18 @@ public class TestGSet {
     {
       //test put
       final LightWeightGSet<Integer, Integer> gset
-        = new LightWeightGSet<Integer, Integer>(16);
+        = createGSet(16, resizable);
       try {
         //test put with a null element
         gset.put(null);
-        Assert.fail();
+        fail();
       } catch(NullPointerException e) {
         LightWeightGSet.LOG.info("GOOD: getting " + e, e);
       }
       try {
         //test putting an element which is not implementing LinkedElement
         gset.put(1);
-        Assert.fail();
+        fail();
       } catch(IllegalArgumentException e) {
         LightWeightGSet.LOG.info("GOOD: getting " + e, e);
       }
@@ -97,7 +106,7 @@ public class TestGSet {
       for(int v = 1; v < data.length-1; v++) {
         {
           //test remove while iterating
-          final GSet<IntElement, IntElement> gset = createGSet(data);
+          final GSet<IntElement, IntElement> gset = createGSet(data, resizable);
           for(IntElement i : gset) {
             if (i.value == v) {
               //okay because data[0] is not in gset
@@ -112,7 +121,7 @@ public class TestGSet {
                 gset.remove(data[1]);
               }
             }
-            Assert.fail();
+            fail();
           } catch(ConcurrentModificationException e) {
             LightWeightGSet.LOG.info("GOOD: getting " + e, e);
           }
@@ -120,14 +129,14 @@ public class TestGSet {
 
         {
           //test put new element while iterating
-          final GSet<IntElement, IntElement> gset = createGSet(data);
+          final GSet<IntElement, IntElement> gset = createGSet(data, resizable);
           try {
             for(IntElement i : gset) {
               if (i.value == v) {
                 gset.put(data[0]);
               }
             }
-            Assert.fail();
+            fail();
           } catch(ConcurrentModificationException e) {
             LightWeightGSet.LOG.info("GOOD: getting " + e, e);
           }
@@ -135,14 +144,14 @@ public class TestGSet {
 
         {
           //test put existing element while iterating
-          final GSet<IntElement, IntElement> gset = createGSet(data);
+          final GSet<IntElement, IntElement> gset = createGSet(data, resizable);
           try {
             for(IntElement i : gset) {
               if (i.value == v) {
                 gset.put(data[3]);
               }
             }
-            Assert.fail();
+            fail();
           } catch(ConcurrentModificationException e) {
             LightWeightGSet.LOG.info("GOOD: getting " + e, e);
           }
@@ -151,9 +160,17 @@ public class TestGSet {
     }
   }
 
-  private static GSet<IntElement, IntElement> createGSet(final IntElement[] data) {
+  private static LightWeightGSet<Integer, Integer> createGSet(
+      int size, boolean resizable) {
+    return resizable ? new LightWeightResizableGSet<Integer, Integer>(size) :
+      new LightWeightGSet<Integer, Integer>(size);
+  }
+
+  private static GSet<IntElement, IntElement> createGSet(
+      final IntElement[] data, boolean resizable) {
     final GSet<IntElement, IntElement> gset
-      = new LightWeightGSet<IntElement, IntElement>(8);
+      = resizable ? new LightWeightResizableGSet<IntElement, IntElement>(8) :
+        new LightWeightGSet<IntElement, IntElement>(8);
     for(int i = 1; i < data.length; i++) {
       gset.put(data[i]);
     }
@@ -168,6 +185,14 @@ public class TestGSet {
     check(new GSetTestCase(255, 1 << 10, 65537));
   }
 
+  @Test
+  public void testResizableGSet() {
+    //The parameters are: table length, data size, modulus, resizable.
+    check(new GSetTestCase(1, 1 << 4, 65537, true));
+    check(new GSetTestCase(17, 1 << 16, 17, true));
+    check(new GSetTestCase(255, 1 << 10, 65537, true));
+  }
+
   /**
    * A long running test with various data sets and parameters.
    * It may take ~5 hours, 
@@ -177,14 +202,25 @@ public class TestGSet {
   //@Test
   public void runMultipleTestGSet() {
     for(int offset = -2; offset <= 2; offset++) {
-      runTestGSet(1, offset);
+      runTestGSet(1, offset, false);
       for(int i = 1; i < Integer.SIZE - 1; i++) {
-        runTestGSet((1 << i) + 1, offset);
+        runTestGSet((1 << i) + 1, offset, false);
       }
     }
   }
 
-  private static void runTestGSet(final int modulus, final int offset) {
+  //@Test
+  public void runMultipleTestResizableGSet() {
+    for(int offset = -2; offset <= 2; offset++) {
+      runTestGSet(1, offset, true);
+      for(int i = 1; i < Integer.SIZE - 1; i++) {
+        runTestGSet((1 << i) + 1, offset, true);
+      }
+    }
+  }
+
+  private static void runTestGSet(final int modulus, final int offset,
+      boolean resizable) {
     println("\n\nmodulus=" + modulus + ", offset=" + offset);
     for(int i = 0; i <= 16; i += 4) {
       final int tablelength = (1 << i) + offset;
@@ -194,7 +230,7 @@ public class TestGSet {
 
       for(int j = 0; j <= upper; j += steps) {
         final int datasize = 1 << j;
-        check(new GSetTestCase(tablelength, datasize, modulus));
+        check(new GSetTestCase(tablelength, datasize, modulus, resizable));
       }
     }
   }
@@ -229,7 +265,7 @@ public class TestGSet {
     for(int i = 0; i < test.data.size(); i++) {
       test.remove(test.data.get(i));
     }
-    Assert.assertEquals(0, test.gset.size());
+    assertEquals(0, test.gset.size());
     println("DONE " + test.stat());
 
     //check remove and add again
@@ -265,6 +301,10 @@ public class TestGSet {
     int contain_count = 0;
 
     GSetTestCase(int tablelength, int datasize, int modulus) {
+      this(tablelength, datasize, modulus, false);
+    }
+
+    GSetTestCase(int tablelength, int datasize, int modulus, boolean resizable) {
       denominator = Math.min((datasize >> 7) + 1, 1 << 16);
       info = getClass().getSimpleName()
           + ": tablelength=" + tablelength
@@ -274,14 +314,15 @@ public class TestGSet {
       println(info);
 
       data  = new IntData(datasize, modulus);
-      gset = new LightWeightGSet<IntElement, IntElement>(tablelength);
+      gset = resizable ? new LightWeightResizableGSet<IntElement, IntElement>() :
+        new LightWeightGSet<IntElement, IntElement>(tablelength);
 
-      Assert.assertEquals(0, gset.size());
+      assertEquals(0, gset.size());
     }
 
     private boolean containsTest(IntElement key) {
       final boolean e = expected.contains(key);
-      Assert.assertEquals(e, gset.contains(key));
+      assertEquals(e, gset.contains(key));
       return e;
     }
     @Override
@@ -293,7 +334,7 @@ public class TestGSet {
 
     private IntElement getTest(IntElement key) {
       final IntElement e = expected.get(key);
-      Assert.assertEquals(e.id, gset.get(key).id);
+      assertEquals(e.id, gset.get(key).id);
       return e;
     }
     @Override
@@ -306,9 +347,9 @@ public class TestGSet {
     private IntElement putTest(IntElement element) {
       final IntElement e = expected.put(element);
       if (e == null) {
-        Assert.assertEquals(null, gset.put(element));
+        assertEquals(null, gset.put(element));
       } else {
-        Assert.assertEquals(e.id, gset.put(element).id);
+        assertEquals(e.id, gset.put(element).id);
       }
       return e;
     }
@@ -322,9 +363,9 @@ public class TestGSet {
     private IntElement removeTest(IntElement key) {
       final IntElement e = expected.remove(key);
       if (e == null) {
-        Assert.assertEquals(null, gset.remove(key));
+        assertEquals(null, gset.remove(key));
       } else {
-        Assert.assertEquals(e.id, gset.remove(key).id);
+        assertEquals(e.id, gset.remove(key).id);
       }
       return e;
     }
@@ -337,7 +378,7 @@ public class TestGSet {
 
     private int sizeTest() {
       final int s = expected.size();
-      Assert.assertEquals(s, gset.size());
+      assertEquals(s, gset.size());
       return s;
     }
     @Override
@@ -390,7 +431,12 @@ public class TestGSet {
     public void clear() {
       expected.clear();
       gset.clear();
-      Assert.assertEquals(0, size());
+      assertEquals(0, size());
+    }
+
+    @Override
+    public Collection<IntElement> values() {
+      throw new UnsupportedOperationException();
     }
   }
 
@@ -428,7 +474,7 @@ public class TestGSet {
 
     @Override
     public boolean equals(Object obj) {
-      return obj != null && obj instanceof IntElement
+      return obj instanceof IntElement
           && value == ((IntElement)obj).value;
     }
 
@@ -462,27 +508,33 @@ public class TestGSet {
    * Test for {@link LightWeightGSet#computeCapacity(double, String)}
    * with invalid percent less than 0.
    */
-  @Test(expected=HadoopIllegalArgumentException.class)
+  @Test
   public void testComputeCapacityNegativePercent() {
-    LightWeightGSet.computeCapacity(1024, -1.0, "testMap");
+    assertThrows(HadoopIllegalArgumentException.class, () -> {
+      LightWeightGSet.computeCapacity(1024, -1.0, "testMap");
+    });
   }
   
   /** 
    * Test for {@link LightWeightGSet#computeCapacity(double, String)}
    * with invalid percent greater than 100.
    */
-  @Test(expected=HadoopIllegalArgumentException.class)
+  @Test
   public void testComputeCapacityInvalidPercent() {
-    LightWeightGSet.computeCapacity(1024, 101.0, "testMap");
+    assertThrows(HadoopIllegalArgumentException.class, () -> {
+      LightWeightGSet.computeCapacity(1024, 101.0, "testMap");
+    });
   }
   
   /** 
    * Test for {@link LightWeightGSet#computeCapacity(double, String)}
    * with invalid negative max memory
    */
-  @Test(expected=HadoopIllegalArgumentException.class)
+  @Test
   public void testComputeCapacityInvalidMemory() {
-    LightWeightGSet.computeCapacity(-1, 50.0, "testMap");
+    assertThrows(HadoopIllegalArgumentException.class, () -> {
+      LightWeightGSet.computeCapacity(-1, 50.0, "testMap");
+    });
   }
   
   private static boolean isPowerOfTwo(int num) {
@@ -503,16 +555,16 @@ public class TestGSet {
     LightWeightGSet.LOG.info("Validating - total memory " + maxMemory + " percent "
         + percent + " returned capacity " + capacity);
     // Returned capacity is zero or power of two
-    Assert.assertTrue(isPowerOfTwo(capacity));
+    assertTrue(isPowerOfTwo(capacity));
 
     // Ensure the capacity returned is the nearest to the asked perecentage
     int capacityPercent = getPercent(maxMemory, capacity);
     if (capacityPercent == percent) {
       return;
     } else if (capacityPercent > percent) {
-      Assert.assertTrue(getPercent(maxMemory, capacity * 2) > percent);
+      assertTrue(getPercent(maxMemory, capacity * 2) > percent);
     } else {
-      Assert.assertTrue(getPercent(maxMemory, capacity / 2) < percent);
+      assertTrue(getPercent(maxMemory, capacity / 2) < percent);
     }
   }
   

@@ -20,26 +20,31 @@ package org.apache.hadoop.hdfs.server.datanode;
 import java.io.IOException;
 import java.util.ArrayList;
 
-
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hdfs.*;
-import org.apache.hadoop.hdfs.protocol.*;
+import org.apache.hadoop.hdfs.DFSClient;
+import org.apache.hadoop.hdfs.DFSTestUtil;
+import org.apache.hadoop.hdfs.DistributedFileSystem;
+import org.apache.hadoop.hdfs.HdfsConfiguration;
+import org.apache.hadoop.hdfs.MiniDFSCluster;
+import org.apache.hadoop.hdfs.protocol.Block;
+import org.apache.hadoop.hdfs.protocol.BlockListAsLongs;
+import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+import org.apache.hadoop.hdfs.protocol.LocatedBlock;
+import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
 import org.apache.hadoop.hdfs.server.protocol.BlockReportContext;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsDatasetSpi;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeRegistration;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage;
 import org.apache.hadoop.hdfs.server.protocol.StorageBlockReport;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
-import static org.hamcrest.CoreMatchers.not;
-import static org.hamcrest.core.Is.is;
-import static org.junit.Assert.assertThat;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * This test verifies NameNode behavior when it gets unexpected block reports
@@ -47,7 +52,8 @@ import static org.junit.Assert.assertThat;
  * the same DataNode. Excess replicas on the same DN should be ignored by the NN.
  */
 public class TestBlockHasMultipleReplicasOnSameDN {
-  public static final Log LOG = LogFactory.getLog(TestBlockHasMultipleReplicasOnSameDN.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(TestBlockHasMultipleReplicasOnSameDN.class);
 
   private static final short NUM_DATANODES = 2;
   private static final int BLOCK_SIZE = 1024;
@@ -60,7 +66,7 @@ public class TestBlockHasMultipleReplicasOnSameDN {
   private DFSClient client;
   private String bpid;
 
-  @Before
+  @BeforeEach
   public void startUpCluster() throws IOException {
     conf = new HdfsConfiguration();
     cluster = new MiniDFSCluster.Builder(conf)
@@ -71,7 +77,7 @@ public class TestBlockHasMultipleReplicasOnSameDN {
     bpid = cluster.getNamesystem().getBlockPoolId();
   }
 
-  @After
+  @AfterEach
   public void shutDownCluster() throws IOException {
     if (cluster != null) {
       fs.close();
@@ -108,7 +114,7 @@ public class TestBlockHasMultipleReplicasOnSameDN {
     StorageBlockReport reports[] =
         new StorageBlockReport[cluster.getStoragesPerDatanode()];
 
-    ArrayList<Replica> blocks = new ArrayList<Replica>();
+    ArrayList<Replica> blocks = new ArrayList<>();
 
     for (LocatedBlock locatedBlock : locatedBlocks.getLocatedBlocks()) {
       Block localBlock = locatedBlock.getBlock().getLocalBlock();
@@ -134,8 +140,8 @@ public class TestBlockHasMultipleReplicasOnSameDN {
     // Make sure that each block has two replicas, one on each DataNode.
     for (LocatedBlock locatedBlock : locatedBlocks.getLocatedBlocks()) {
       DatanodeInfo[] locations = locatedBlock.getLocations();
-      assertThat(locations.length, is((int) NUM_DATANODES));
-      assertThat(locations[0].getDatanodeUuid(), not(locations[1].getDatanodeUuid()));
+      assertThat(locations.length).isEqualTo((int) NUM_DATANODES);
+      assertThat(locations[0].getDatanodeUuid()).isNotEqualTo(locations[1].getDatanodeUuid());
     }
   }
 }

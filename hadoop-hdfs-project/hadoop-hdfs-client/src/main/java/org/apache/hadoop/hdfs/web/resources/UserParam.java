@@ -19,7 +19,7 @@ package org.apache.hadoop.hdfs.web.resources;
 
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_WEBHDFS_USER_PATTERN_DEFAULT;
 import org.apache.hadoop.security.UserGroupInformation;
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 import java.text.MessageFormat;
 import java.util.regex.Pattern;
@@ -31,7 +31,8 @@ public class UserParam extends StringParam {
   /** Default parameter value. */
   public static final String DEFAULT = "";
 
-  private static Domain domain = new Domain(NAME, Pattern.compile(DFS_WEBHDFS_USER_PATTERN_DEFAULT));
+  private static Domain domain = new Domain(NAME,
+      Pattern.compile(DFS_WEBHDFS_USER_PATTERN_DEFAULT));
 
   @VisibleForTesting
   public static Domain getUserPatternDomain() {
@@ -65,7 +66,8 @@ public class UserParam extends StringParam {
    * @param str a string representation of the parameter value.
    */
   public UserParam(final String str) {
-    super(domain, str == null || str.equals(DEFAULT)? null : validateLength(str));
+    super(domain, str == null ||
+        str.equals(DEFAULT) ? null : validateLength(str));
   }
 
   /**

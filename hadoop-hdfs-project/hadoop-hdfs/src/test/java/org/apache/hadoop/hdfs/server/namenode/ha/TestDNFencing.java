@@ -17,19 +17,19 @@
  */
 package org.apache.hadoop.hdfs.server.namenode.ha;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 
 import java.io.IOException;
 import java.io.PrintWriter;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.function.Supplier;
 
-import com.google.common.base.Supplier;
-import com.google.common.collect.Lists;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
@@ -40,10 +40,8 @@ import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.MiniDFSNNTopology;
-import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.protocolPB.DatanodeProtocolClientSideTranslatorPB;
-import org.apache.hadoop.hdfs.server.blockmanagement.BlockCollection;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManagerTestUtil;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockPlacementPolicy;
@@ -51,25 +49,29 @@ import org.apache.hadoop.hdfs.server.blockmanagement.BlockPlacementPolicyDefault
 import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeStorageInfo;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
 import org.apache.hadoop.hdfs.server.datanode.DataNodeTestUtils;
+import org.apache.hadoop.hdfs.server.datanode.InternalDataNodeTestUtils;
+import org.apache.hadoop.hdfs.server.datanode.ReplicaNotFoundException;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.hdfs.server.namenode.NameNodeAdapter;
-import org.apache.hadoop.hdfs.server.protocol.BlockReportContext;
-import org.apache.hadoop.hdfs.server.protocol.DatanodeRegistration;
-import org.apache.hadoop.hdfs.server.protocol.StorageBlockReport;
+import org.apache.hadoop.hdfs.util.RwLockMode;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.test.GenericTestUtils.DelayAnswer;
-import org.apache.log4j.Level;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.apache.hadoop.util.Lists;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.mockito.invocation.InvocationOnMock;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.event.Level;
 
 
 public class TestDNFencing {
   
-  protected static final Log LOG = LogFactory.getLog(TestDNFencing.class);
+  protected static final Logger LOG = LoggerFactory.getLogger(TestDNFencing.class);
   private static final String TEST_FILE = "/testStandbyIsHot";
   private static final Path TEST_FILE_PATH = new Path(TEST_FILE);
   private static final int SMALL_BLOCK = 1024;
@@ -80,16 +82,17 @@ public class TestDNFencing {
   private FileSystem fs;
 
   static {
-    DFSTestUtil.setNameNodeLogLevel(Level.ALL);
+    DFSTestUtil.setNameNodeLogLevel(Level.TRACE);
   }
   
-  @Before
+  @BeforeEach
   public void setupCluster() throws Exception {
     conf = new Configuration();
     conf.setInt(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, SMALL_BLOCK);
-    // Bump up replication interval so that we only run replication
+    // Bump up redundancy interval so that we only run low redundancy
     // checks explicitly.
-    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_INTERVAL_KEY, 600);
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY,
+        600);
     // Increase max streams so that we re-replicate quickly.
     conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_MAX_STREAMS_KEY, 1000);
     // See RandomDeleterPolicy javadoc.
@@ -111,7 +114,7 @@ public class TestDNFencing {
     fs = HATestUtil.configureFailoverFs(cluster, conf);
   }
   
-  @After
+  @AfterEach
   public void shutdownCluster() throws Exception {
     if (cluster != null) {
       banner("Shutting down cluster. NN1 metadata:");
@@ -119,6 +122,7 @@ public class TestDNFencing {
       banner("Shutting down cluster. NN2 metadata:");
       doMetasave(nn2);
       cluster.shutdown();
+      cluster = null;
     }
   }
   
@@ -144,8 +148,7 @@ public class TestDNFencing {
     cluster.transitionToActive(1);
     
     // Check that the standby picked up the replication change.
-    assertEquals(1,
-        nn2.getRpcServer().getFileInfo(TEST_FILE).getReplication());
+    assertEquals(1, nn2.getRpcServer().getFileInfo(TEST_FILE).getReplication());
 
     // Dump some info for debugging purposes.
     banner("NN2 Metadata immediately after failover");
@@ -166,7 +169,7 @@ public class TestDNFencing {
     // The blocks should no longer be postponed.
     assertEquals(0, nn2.getNamesystem().getPostponedMisreplicatedBlocks());
     
-    // Wait for NN2 to enact its deletions (replication monitor has to run, etc)
+    // Wait for NN2 to enact its deletions (redundancy monitor has to run, etc)
     BlockManagerTestUtil.computeInvalidationWork(
         nn2.getNamesystem().getBlockManager());
     cluster.triggerHeartbeats();
@@ -235,8 +238,7 @@ public class TestDNFencing {
     cluster.transitionToActive(1);
 
     // Check that the standby picked up the replication change.
-    assertEquals(1,
-        nn2.getRpcServer().getFileInfo(TEST_FILE).getReplication());
+    assertEquals(1, nn2.getRpcServer().getFileInfo(TEST_FILE).getReplication());
 
     // Dump some info for debugging purposes.
     banner("Metadata immediately after failover");
@@ -257,7 +259,7 @@ public class TestDNFencing {
     // The block should no longer be postponed.
     assertEquals(0, nn2.getNamesystem().getPostponedMisreplicatedBlocks());
     
-    // Wait for NN2 to enact its deletions (replication monitor has to run, etc)
+    // Wait for NN2 to enact its deletions (redundancy monitor has to run, etc)
     BlockManagerTestUtil.computeInvalidationWork(
         nn2.getNamesystem().getBlockManager());
 
@@ -296,7 +298,7 @@ public class TestDNFencing {
       LOG.info("Getting more replication work computed");
     }
     BlockManager bm1 = nn1.getNamesystem().getBlockManager();
-    while (bm1.getPendingReplicationBlocksCount() > 0) {
+    while (bm1.getPendingReconstructionBlocksCount() > 0) {
       BlockManagerTestUtil.updateState(bm1);
       cluster.triggerHeartbeats();
       Thread.sleep(1000);
@@ -335,8 +337,7 @@ public class TestDNFencing {
     cluster.transitionToActive(1);
 
     // Check that the standby picked up the replication change.
-    assertEquals(1,
-        nn2.getRpcServer().getFileInfo(TEST_FILE).getReplication());
+    assertEquals(1, nn2.getRpcServer().getFileInfo(TEST_FILE).getReplication());
 
     // Dump some info for debugging purposes.
     banner("Metadata immediately after failover");
@@ -357,7 +358,7 @@ public class TestDNFencing {
     // The block should no longer be postponed.
     assertEquals(0, nn2.getNamesystem().getPostponedMisreplicatedBlocks());
     
-    // Wait for NN2 to enact its deletions (replication monitor has to run, etc)
+    // Wait for NN2 to enact its deletions (redundancy monitor has to run, etc)
     BlockManagerTestUtil.computeInvalidationWork(
         nn2.getNamesystem().getBlockManager());
 
@@ -419,9 +420,6 @@ public class TestDNFencing {
    */
   @Test
   public void testQueueingWithAppend() throws Exception {
-    int numQueued = 0;
-    int numDN = cluster.getDataNodes().size();
-    
     // case 1: create file and call hflush after write
     FSDataOutputStream out = fs.create(TEST_FILE_PATH);
     try {
@@ -434,20 +432,16 @@ public class TestDNFencing {
       // Apply cluster.triggerBlockReports() to trigger the reporting sooner.
       //
       cluster.triggerBlockReports();
-      numQueued += numDN; // RBW messages
 
       // The cluster.triggerBlockReports() call above does a full 
       // block report that incurs 3 extra RBW messages
-      numQueued += numDN; // RBW messages      
     } finally {
       IOUtils.closeStream(out);
-      numQueued += numDN; // blockReceived messages
     }
 
     cluster.triggerBlockReports();
-    numQueued += numDN;
-    assertEquals(numQueued, cluster.getNameNode(1).getNamesystem().
-        getPendingDataNodeMessageCount());
+    assertEquals(3, nn2.getNamesystem().getPendingDataNodeMessageCount(),
+        "The queue should only have the latest report for each DN");
 
     // case 2: append to file and call hflush after write
     try {
@@ -455,13 +449,12 @@ public class TestDNFencing {
       AppendTestUtil.write(out, 10, 10);
       out.hflush();
       cluster.triggerBlockReports();
-      numQueued += numDN * 2; // RBW messages, see comments in case 1
     } finally {
       IOUtils.closeStream(out);
-      numQueued += numDN; // blockReceived
+      cluster.triggerHeartbeats();
     }
-    assertEquals(numQueued, cluster.getNameNode(1).getNamesystem().
-        getPendingDataNodeMessageCount());
+    assertEquals(3, nn2.getNamesystem().getPendingDataNodeMessageCount(),
+        "The queue should only have the latest report for each DN");
 
     // case 3: similar to case 2, except no hflush is called.
     try {
@@ -480,17 +473,12 @@ public class TestDNFencing {
       //    BPServiceActor#addPendingReplicationBlockInfo 
       //
       IOUtils.closeStream(out);
-      numQueued += numDN; // blockReceived
     }
 
     cluster.triggerBlockReports();
-    numQueued += numDN;
 
-    LOG.info("Expect " + numQueued + " and got: " + cluster.getNameNode(1).getNamesystem().
-        getPendingDataNodeMessageCount());      
-
-    assertEquals(numQueued, cluster.getNameNode(1).getNamesystem().
-        getPendingDataNodeMessageCount());
+    assertEquals(3, nn2.getNamesystem().getPendingDataNodeMessageCount(),
+        "The queue should only have the latest report for each DN");
 
     cluster.transitionToStandby(0);
     cluster.transitionToActive(1);
@@ -538,14 +526,14 @@ public class TestDNFencing {
 
       DataNode dn = cluster.getDataNodes().get(0);
       DatanodeProtocolClientSideTranslatorPB spy =
-        DataNodeTestUtils.spyOnBposToNN(dn, nn2);
-      
+        InternalDataNodeTestUtils.spyOnBposToNN(dn, nn2);
+
       Mockito.doAnswer(delayer)
         .when(spy).blockReport(
-          Mockito.<DatanodeRegistration>anyObject(),
-          Mockito.anyString(),
-          Mockito.<StorageBlockReport[]>anyObject(),
-          Mockito.<BlockReportContext>anyObject());
+          any(),
+          anyString(),
+          any(),
+          any());
       dn.scheduleAllBlockReport(0);
       delayer.waitForCall();
       
@@ -579,13 +567,13 @@ public class TestDNFencing {
   }
 
   private void doMetasave(NameNode nn2) {
-    nn2.getNamesystem().writeLock();
+    nn2.getNamesystem().writeLock(RwLockMode.BM);
     try {
       PrintWriter pw = new PrintWriter(System.err);
       nn2.getNamesystem().getBlockManager().metaSave(pw);
       pw.flush();
     } finally {
-      nn2.getNamesystem().writeUnlock();
+      nn2.getNamesystem().writeUnlock(RwLockMode.BM, "metaSave");
     }
   }
 
@@ -607,9 +595,13 @@ public class TestDNFencing {
       throws IOException {
     int count = 0;
     for (DataNode dn : cluster.getDataNodes()) {
-      if (DataNodeTestUtils.getFSDataset(dn).getStoredBlock(
-          block.getBlockPoolId(), block.getBlockId()) != null) {
-        count++;
+      try {
+        if (DataNodeTestUtils.getFSDataset(dn).getStoredBlock(
+            block.getBlockPoolId(), block.getBlockId()) != null) {
+          count++;
+        }
+      } catch (ReplicaNotFoundException e) {
+        continue;
       }
     }
     return count;
@@ -631,13 +623,14 @@ public class TestDNFencing {
     }
 
     @Override
-    public DatanodeStorageInfo chooseReplicaToDelete(BlockCollection inode,
-        Block block, short replicationFactor,
-        Collection<DatanodeStorageInfo> first,
-        Collection<DatanodeStorageInfo> second,
-        List<StorageType> excessTypes) {
-      
-      Collection<DatanodeStorageInfo> chooseFrom = !first.isEmpty() ? first : second;
+    public DatanodeStorageInfo chooseReplicaToDelete(
+        Collection<DatanodeStorageInfo> moreThanOne,
+        Collection<DatanodeStorageInfo> exactlyOne,
+        List<StorageType> excessTypes,
+        Map<String, List<DatanodeStorageInfo>> rackMap) {
+
+      Collection<DatanodeStorageInfo> chooseFrom = !moreThanOne.isEmpty() ?
+          moreThanOne : exactlyOne;
 
       List<DatanodeStorageInfo> l = Lists.newArrayList(chooseFrom);
       return l.get(ThreadLocalRandom.current().nextInt(l.size()));

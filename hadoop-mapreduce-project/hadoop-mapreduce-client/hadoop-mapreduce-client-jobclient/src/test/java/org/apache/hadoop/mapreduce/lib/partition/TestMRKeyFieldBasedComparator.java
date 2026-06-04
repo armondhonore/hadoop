@@ -18,8 +18,6 @@
 
 package org.apache.hadoop.mapreduce.lib.partition;
 
-import java.io.*;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
@@ -32,6 +30,15 @@ import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.MapReduceTestUtil;
 import org.apache.hadoop.mapreduce.Reducer;
 import org.apache.hadoop.mapreduce.lib.map.InverseMapper;
+import org.junit.jupiter.api.Test;
+
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 
 public class TestMRKeyFieldBasedComparator extends HadoopTestCase {
@@ -43,10 +50,10 @@ public class TestMRKeyFieldBasedComparator extends HadoopTestCase {
   public TestMRKeyFieldBasedComparator() throws IOException {
     super(HadoopTestCase.LOCAL_MR, HadoopTestCase.LOCAL_FS, 1, 1);
     conf = createJobConf();
-    conf.set(MRJobConfig.MAP_OUTPUT_KEY_FIELD_SEPERATOR, " ");
+    conf.set(MRJobConfig.MAP_OUTPUT_KEY_FIELD_SEPARATOR, " ");
   }
-  
-  private void testComparator(String keySpec, int expect) 
+
+  private void testComparator(String keySpec, int expect)
       throws Exception {
     String root = System.getProperty("test.build.data", "/tmp");
     Path inDir = new Path(root, "test_cmp/in");
@@ -54,7 +61,7 @@ public class TestMRKeyFieldBasedComparator extends HadoopTestCase {
     
     conf.set("mapreduce.partition.keycomparator.options", keySpec);
     conf.set("mapreduce.partition.keypartitioner.options", "-k1.1,1.1");
-    conf.set(MRJobConfig.MAP_OUTPUT_KEY_FIELD_SEPERATOR, " ");
+    conf.set(MRJobConfig.MAP_OUTPUT_KEY_FIELD_SEPARATOR, " ");
 
     Job job = MapReduceTestUtil.createJob(conf, inDir, outDir, 1, 1,
                 line1 +"\n" + line2 + "\n"); 
@@ -93,7 +100,8 @@ public class TestMRKeyFieldBasedComparator extends HadoopTestCase {
       reader.close();
     }
   }
-  
+
+  @Test
   public void testBasicUnixComparator() throws Exception {
     testComparator("-k1,1n", 1);
     testComparator("-k2,2n", 1);
@@ -117,7 +125,7 @@ public class TestMRKeyFieldBasedComparator extends HadoopTestCase {
   byte[] line1_bytes = line1.getBytes();
   byte[] line2_bytes = line2.getBytes();
 
-  public void testWithoutMRJob(String keySpec, int expect) throws Exception {
+  private void testWithoutMRJob(String keySpec, int expect) throws Exception {
     KeyFieldBasedComparator<Void, Void> keyFieldCmp = 
       new KeyFieldBasedComparator<Void, Void>();
     conf.set("mapreduce.partition.keycomparator.options", keySpec);

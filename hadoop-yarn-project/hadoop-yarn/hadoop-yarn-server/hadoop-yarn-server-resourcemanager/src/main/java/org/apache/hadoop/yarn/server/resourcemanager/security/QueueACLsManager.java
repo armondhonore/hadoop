@@ -18,20 +18,27 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.security;
 
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.yarn.api.records.QueueACL;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
+import org.apache.hadoop.yarn.security.YarnAuthorizationProvider;
+import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FairScheduler;
+import java.util.List;
 
-import com.google.common.annotations.VisibleForTesting;
+@SuppressWarnings("checkstyle:visibilitymodifier")
+public abstract class QueueACLsManager {
 
-public class QueueACLsManager {
-  private ResourceScheduler scheduler;
-  private boolean isACLsEnable;
-  
+  ResourceScheduler scheduler;
+  boolean isACLsEnable;
+  YarnAuthorizationProvider authorizer;
+
   @VisibleForTesting
-  public QueueACLsManager() {
+  public QueueACLsManager(Configuration conf) {
     this(null, new Configuration());
   }
 
@@ -39,13 +46,45 @@ public class QueueACLsManager {
     this.scheduler = scheduler;
     this.isACLsEnable = conf.getBoolean(YarnConfiguration.YARN_ACL_ENABLE,
         YarnConfiguration.DEFAULT_YARN_ACL_ENABLE);
+    this.authorizer = YarnAuthorizationProvider.getInstance(conf);
   }
 
-  public boolean checkAccess(UserGroupInformation callerUGI,
-      QueueACL acl, String queueName) {
-    if (!isACLsEnable) {
-      return true;
+  /**
+   * Get queue acl manager corresponding to the scheduler.
+   * @param scheduler the scheduler for which the queue acl manager is required
+   * @param conf Configuration.
+   * @return {@link QueueACLsManager}
+   */
+  public static QueueACLsManager getQueueACLsManager(
+      ResourceScheduler scheduler, Configuration conf) {
+    if (scheduler instanceof CapacityScheduler) {
+      return new CapacityQueueACLsManager(scheduler, conf);
+    } else if (scheduler instanceof FairScheduler) {
+      return new FairQueueACLsManager(scheduler, conf);
+    } else {
+      return new GenericQueueACLsManager(scheduler, conf);
     }
-    return scheduler.checkAccess(callerUGI, acl, queueName);
   }
+
+  public abstract boolean checkAccess(UserGroupInformation callerUGI,
+      QueueACL acl, RMApp app, String remoteAddress,
+      List<String> forwardedAddresses);
+
+  /**
+   * Check access to a targetQueue in the case of a move of an application.
+   * The application cannot contain the destination queue since it has not
+   * been moved yet, thus need to pass it in separately.
+   *
+   * @param callerUGI the caller UGI
+   * @param acl the acl for the Queue to check
+   * @param app the application to move
+   * @param remoteAddress server ip address
+   * @param forwardedAddresses forwarded adresses
+   * @param targetQueue the name of the queue to move the application to
+   * @return true: if submission is allowed and queue exists,
+   *         false: in all other cases (also non existing target queue)
+   */
+  public abstract boolean checkAccess(UserGroupInformation callerUGI,
+      QueueACL acl, RMApp app, String remoteAddress,
+      List<String> forwardedAddresses, String targetQueue);
 }

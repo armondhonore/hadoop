@@ -38,13 +38,14 @@ basicinitsetup () {
   dirvars="HADOOP_COMMON_HOME \
         HADOOP_MAPRED_HOME \
         HADOOP_HDFS_HOME \
-        HADOOP_YARN_HOME"
+        HADOOP_YARN_HOME \
+        HADOOP_TOOLS_HOME"
 
   for j in ${testvars}; do
-    unset ${!j}
+    unset ${j}
   done
 
-  HADOOP_PREFIX=${TMP}
+  HADOOP_HOME=${TMP}
 }
 
 check_var_values () {
@@ -69,7 +70,7 @@ check_var_values () {
     eval ${j}=${i}
     hadoop_basic_init
     echo "Verifying $j has >${i}< >${!j}<"
-    [ ${!j} = ${i} ]
+    [ "${!j}" = "${i}" ]
   done
 }
 
@@ -89,6 +90,6 @@ check_var_values () {
     hadoop_basic_init
     check_var_values
     echo "Verifying $j has foo >${!j}<"
-    [ ${j} = foo ]
+    [ "${j}" = "foo" ]
   done
 }

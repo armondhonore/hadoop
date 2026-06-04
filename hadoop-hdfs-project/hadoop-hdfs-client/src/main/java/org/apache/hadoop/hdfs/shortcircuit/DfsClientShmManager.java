@@ -29,7 +29,7 @@ import java.util.TreeMap;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 
-import org.apache.commons.lang.mutable.MutableBoolean;
+import org.apache.commons.lang3.mutable.MutableBoolean;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.hdfs.ExtendedBlockId;
 import org.apache.hadoop.hdfs.net.DomainPeer;
@@ -43,22 +43,22 @@ import org.apache.hadoop.hdfs.shortcircuit.ShortCircuitShm.Slot;
 import org.apache.hadoop.net.unix.DomainSocket;
 import org.apache.hadoop.net.unix.DomainSocketWatcher;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.util.Preconditions;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 /**
  * Manages short-circuit memory segments for an HDFS client.
- * 
- * Clients are responsible for requesting and releasing shared memory segments used
- * for communicating with the DataNode. The client will try to allocate new slots
- * in the set of existing segments, falling back to getting a new segment from the
- * DataNode via {@link DataTransferProtocol#requestShortCircuitFds}.
- * 
- * The counterpart to this class on the DataNode is {@link ShortCircuitRegistry}.
- * See {@link ShortCircuitRegistry} for more information on the communication protocol.
+ *
+ * Clients are responsible for requesting and releasing shared memory segments
+ * used for communicating with the DataNode. The client will try to allocate new
+ * slots in the set of existing segments, falling back to getting a new segment
+ * from the DataNode via {@link DataTransferProtocol#requestShortCircuitFds}.
+ *
+ * The counterpart to this class on the DataNode is ShortCircuitRegistry.
+ * See ShortCircuitRegistry for more information on the communication protocol.
  */
 @InterfaceAudience.Private
 public class DfsClientShmManager implements Closeable {
@@ -79,16 +79,14 @@ public class DfsClientShmManager implements Closeable {
      *
      * Protected by the manager lock.
      */
-    private final TreeMap<ShmId, DfsClientShm> full =
-        new TreeMap<ShmId, DfsClientShm>();
+    private final TreeMap<ShmId, DfsClientShm> full = new TreeMap<>();
 
     /**
      * Shared memory segments which have at least one empty slot.
      *
      * Protected by the manager lock.
      */
-    private final TreeMap<ShmId, DfsClientShm> notFull =
-        new TreeMap<ShmId, DfsClientShm>();
+    private final TreeMap<ShmId, DfsClientShm> notFull = new TreeMap<>();
 
     /**
      * True if this datanode doesn't support short-circuit shared memory
@@ -129,18 +127,13 @@ public class DfsClientShmManager implements Closeable {
       ShmId shmId = shm.getShmId();
       Slot slot = shm.allocAndRegisterSlot(blockId);
       if (shm.isFull()) {
-        if (LOG.isTraceEnabled()) {
-          LOG.trace(this + ": pulled the last slot " + slot.getSlotIdx() +
-              " out of " + shm);
-        }
+        LOG.trace("{}: pulled the last slot {} out of {}",
+            this, slot.getSlotIdx(), shm);
         DfsClientShm removedShm = notFull.remove(shmId);
         Preconditions.checkState(removedShm == shm);
         full.put(shmId, shm);
       } else {
-        if (LOG.isTraceEnabled()) {
-          LOG.trace(this + ": pulled slot " + slot.getSlotIdx() +
-              " out of " + shm);
-        }
+        LOG.trace("{}: pulled slot {} out of {}", this, slot.getSlotIdx(), shm);
       }
       return slot;
     }
@@ -162,11 +155,11 @@ public class DfsClientShmManager implements Closeable {
      */
     private DfsClientShm requestNewShm(String clientName, DomainPeer peer)
         throws IOException {
-      final DataOutputStream out = 
+      final DataOutputStream out =
           new DataOutputStream(
               new BufferedOutputStream(peer.getOutputStream()));
       new Sender(out).requestShortCircuitShm(clientName);
-      ShortCircuitShmResponseProto resp = 
+      ShortCircuitShmResponseProto resp =
           ShortCircuitShmResponseProto.parseFrom(
             PBHelperClient.vintPrefixed(peer.getInputStream()));
       String error = resp.hasError() ? resp.getError() : "(unknown)";
@@ -174,7 +167,7 @@ public class DfsClientShmManager implements Closeable {
       case SUCCESS:
         DomainSocket sock = peer.getDomainSocket();
         byte buf[] = new byte[1];
-        FileInputStream fis[] = new FileInputStream[1];
+        FileInputStream[] fis = new FileInputStream[1];
         if (sock.recvFileInputStreams(fis, buf, 0, buf.length) < 0) {
           throw new EOFException("got EOF while trying to transfer the " +
               "file descriptor for the shared memory segment.");
@@ -184,12 +177,10 @@ public class DfsClientShmManager implements Closeable {
               "pass a file descriptor for the shared memory segment.");
         }
         try {
-          DfsClientShm shm = 
+          DfsClientShm shm =
               new DfsClientShm(PBHelperClient.convert(resp.getId()),
                   fis[0], this, peer);
-          if (LOG.isTraceEnabled()) {
-            LOG.trace(this + ": createNewShm: created " + shm);
-          }
+          LOG.trace("{}: createNewShm: created {}", this, shm);
           return shm;
         } finally {
           try {
@@ -234,15 +225,11 @@ public class DfsClientShmManager implements Closeable {
         String clientName, ExtendedBlockId blockId) throws IOException {
       while (true) {
         if (closed) {
-          if (LOG.isTraceEnabled()) {
-            LOG.trace(this + ": the DfsClientShmManager has been closed.");
-          }
+          LOG.trace("{}: the DfsClientShmManager has been closed.", this);
           return null;
         }
         if (disabled) {
-          if (LOG.isTraceEnabled()) {
-            LOG.trace(this + ": shared memory segment access is disabled.");
-          }
+          LOG.trace("{}: shared memory segment access is disabled.", this);
           return null;
         }
         // Try to use an existing slot.
@@ -253,9 +240,7 @@ public class DfsClientShmManager implements Closeable {
         // There are no free slots.  If someone is loading more slots, wait
         // for that to finish.
         if (loading) {
-          if (LOG.isTraceEnabled()) {
-            LOG.trace(this + ": waiting for loading to finish...");
-          }
+          LOG.trace("{}: waiting for loading to finish...", this);
           finishedLoading.awaitUninterruptibly();
         } else {
           // Otherwise, load the slot ourselves.
@@ -282,18 +267,16 @@ public class DfsClientShmManager implements Closeable {
             // fired and marked the shm as disconnected.  In this case, we
             // obviously don't want to add the SharedMemorySegment to our list
             // of valid not-full segments.
-            if (LOG.isDebugEnabled()) {
-              LOG.debug(this + ": the UNIX domain socket associated with " +
-                  "this short-circuit memory closed before we could make " +
-                  "use of the shm.");
-            }
+            LOG.debug("{}: the UNIX domain socket associated with this "
+                + "short-circuit memory closed before we could make use of "
+                + "the shm.", this);
           } else {
             notFull.put(shm.getShmId(), shm);
           }
         }
       }
     }
-    
+
     /**
      * Stop tracking a slot.
      *
@@ -309,9 +292,7 @@ public class DfsClientShmManager implements Closeable {
         Preconditions.checkState(!full.containsKey(shm.getShmId()));
         Preconditions.checkState(!notFull.containsKey(shm.getShmId()));
         if (shm.isEmpty()) {
-          if (LOG.isTraceEnabled()) {
-            LOG.trace(this + ": freeing empty stale " + shm);
-          }
+          LOG.trace("{}: freeing empty stale {}", this, shm);
           shm.free();
         }
       } else {
@@ -319,7 +300,7 @@ public class DfsClientShmManager implements Closeable {
         full.remove(shmId); // The shm can't be full if we just freed a slot.
         if (shm.isEmpty()) {
           notFull.remove(shmId);
-  
+
           // If the shared memory segment is now empty, we call shutdown(2) on
           // the UNIX domain socket associated with it.  The DomainSocketWatcher,
           // which is watching this socket, will call DfsClientShm#handle,
@@ -336,17 +317,15 @@ public class DfsClientShmManager implements Closeable {
           // lowest ID, but it could still occur.  In most workloads,
           // fragmentation should not be a major concern, since it doesn't impact
           // peak file descriptor usage or the speed of allocation.
-          if (LOG.isTraceEnabled()) {
-            LOG.trace(this + ": shutting down UNIX domain socket for " +
-                "empty " + shm);
-          }
+          LOG.trace("{}: shutting down UNIX domain socket for empty {}",
+              this, shm);
           shutdown(shm);
         } else {
           notFull.put(shmId, shm);
         }
       }
     }
-    
+
     /**
      * Unregister a shared memory segment.
      *
@@ -402,8 +381,8 @@ public class DfsClientShmManager implements Closeable {
    * Information about each Datanode.
    */
   private final HashMap<DatanodeInfo, EndpointShmManager> datanodes =
-      new HashMap<DatanodeInfo, EndpointShmManager>(1);
-  
+      new HashMap<>(1);
+
   /**
    * The DomainSocketWatcher which keeps track of the UNIX domain socket
    * associated with each shared memory segment.
@@ -415,12 +394,12 @@ public class DfsClientShmManager implements Closeable {
    * methods are off-limits unless you release the manager lock first.
    */
   private final DomainSocketWatcher domainSocketWatcher;
-  
+
   DfsClientShmManager(int interruptCheckPeriodMs) throws IOException {
     this.domainSocketWatcher = new DomainSocketWatcher(interruptCheckPeriodMs,
         "client");
   }
-  
+
   public Slot allocSlot(DatanodeInfo datanode, DomainPeer peer,
       MutableBoolean usedPeer, ExtendedBlockId blockId,
       String clientName) throws IOException {
@@ -440,7 +419,7 @@ public class DfsClientShmManager implements Closeable {
       lock.unlock();
     }
   }
-  
+
   public void freeSlot(Slot slot) {
     lock.lock();
     try {
@@ -475,8 +454,7 @@ public class DfsClientShmManager implements Closeable {
   public void visit(Visitor visitor) throws IOException {
     lock.lock();
     try {
-      HashMap<DatanodeInfo, PerDatanodeVisitorInfo> info = 
-          new HashMap<DatanodeInfo, PerDatanodeVisitorInfo>();
+      HashMap<DatanodeInfo, PerDatanodeVisitorInfo> info = new HashMap<>();
       for (Entry<DatanodeInfo, EndpointShmManager> entry :
             datanodes.entrySet()) {
         info.put(entry.getKey(), entry.getValue().getVisitorInfo());
@@ -518,5 +496,15 @@ public class DfsClientShmManager implements Closeable {
   @VisibleForTesting
   public DomainSocketWatcher getDomainSocketWatcher() {
     return domainSocketWatcher;
+  }
+
+  @VisibleForTesting
+  public int getShmNum() {
+    int segments = 0;
+    for (EndpointShmManager endpointShmManager : datanodes.values()) {
+      segments +=
+          endpointShmManager.notFull.size() + endpointShmManager.full.size();
+    }
+    return segments;
   }
 }

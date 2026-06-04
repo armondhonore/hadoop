@@ -15,7 +15,7 @@
 YARN Secure Containers
 ======================
 
-* [Overview](#Overview)
+<!-- MACRO{toc|fromDepth=0|toDepth=3} -->
 
 Overview
 --------
@@ -30,13 +30,13 @@ Secure Containers work only in the context of secured YARN clusters.
 
 ###Linux Secure Container Executor
 
-  On Linux environment the secure container executor is the `LinuxContainerExecutor`. It uses an external program called the **container-executor**\> to launch the container. This program has the `setuid` access right flag set which allows it to launch the container with the permissions of the YARN application user.
+  On Linux environment the secure container executor is the `LinuxContainerExecutor`. It uses an external program called the **container-executor** to launch the container. This program has the `setuid` access right flag set which allows it to launch the container with the permissions of the YARN application user.
 
 ###Configuration
 
   The configured directories for `yarn.nodemanager.local-dirs` and `yarn.nodemanager.log-dirs` must be owned by the configured NodeManager user (`yarn`) and group (`hadoop`). The permission set on these directories must be `drwxr-xr-x`.
 
-  The `container-executor` program must be owned by `root` and have the permission set `---sr-s---`.
+  The `container-executor` program must be owned by `root` and have the permission set `---Sr-s---`.
 
   To configure the `NodeManager` to use the `LinuxContainerExecutor` set the following in the **conf/yarn-site.xml**:
 
@@ -59,7 +59,10 @@ yarn.nodemanager.linux-container-executor.group=#configured value of yarn.nodema
 banned.users=#comma separated list of users who can not run applications
 allowed.system.users=#comma separated list of allowed system users
 min.user.id=1000#Prevent other super-users
+feature.terminal.enabled=1
 ```
+
+Terminal feature (feature.terminal.enabled) allows restricted shell into secure container via YARN UI2.
 
 ###Windows Secure Container Executor (WSCE)
 
@@ -114,7 +117,7 @@ min.user.id=1000#Prevent other super-users
 
   `yarn.nodemanager.windows-secure-container-executor.impersonate.allowed` should contain the users that are allowed to create containers in the cluster. These users will be allowed to be impersonated by hadoopwinutilsvc.
 
-  `yarn.nodemanager.windows-secure-container-executor.impersonate.denied` should contain users that are explictly forbiden from creating containers. hadoopwinutilsvc will refuse to impersonate these users.
+  `yarn.nodemanager.windows-secure-container-executor.impersonate.denied` should contain users that are explicitly forbidden from creating containers. hadoopwinutilsvc will refuse to impersonate these users.
 
   `yarn.nodemanager.windows-secure-container-executor.local-dirs` should contain the nodemanager local dirs. hadoopwinutilsvc will allow only file operations under these directories. This should contain the same values as `$yarn.nodemanager.local-dirs, $yarn.nodemanager.log-dirs` but note that hadoopwinutilsvc XML configuration processing does not do substitutions so the value must be the final value. All paths must be absolute and no environment variable substitution will be performed. The paths are compared LOCAL\_INVARIANT case insensitive string comparison, the file path validated must start with one of the paths listed in local-dirs configuration. Use comma as path separator:`,`
 

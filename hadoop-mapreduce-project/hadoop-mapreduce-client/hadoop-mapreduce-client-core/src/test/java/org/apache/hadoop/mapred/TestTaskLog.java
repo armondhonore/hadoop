@@ -17,8 +17,8 @@
  */
 package org.apache.hadoop.mapred;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -27,27 +27,40 @@ import java.io.IOException;
 import java.io.InputStream;
 
 import org.apache.commons.io.FileUtils;
+import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.mapred.TaskLog.LogName;
-import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /**
  * TestCounters checks the sanity and recoverability of Queue
  */
 public class TestTaskLog {
 
+  private static final String testDirName = TestTaskLog.class.getSimpleName();
+  private static final String testDir = System.getProperty("test.build.data",
+      "target" + File.separatorChar + "test-dir")
+      + File.separatorChar + testDirName;
+
+  @AfterAll
+  public static void cleanup() {
+    FileUtil.fullyDelete(new File(testDir));
+  }
+
   /**
    * test TaskAttemptID
    * 
    * @throws IOException
    */
-  @Test (timeout=50000)
+  @Test
+  @Timeout(value = 50)
   public void testTaskLog() throws IOException {
     // test TaskLog
     System.setProperty(
         YarnConfiguration.YARN_APP_CONTAINER_LOG_DIR, "testString");
-    assertEquals(TaskLog.getMRv2LogDir(), "testString");
+    assertThat(TaskLog.getMRv2LogDir()).isEqualTo("testString");
     TaskAttemptID taid = mock(TaskAttemptID.class);
     JobID jid = new JobID("job", 1);
 
@@ -67,7 +80,7 @@ public class TestTaskLog {
     indexFile.delete();
     indexFile.createNewFile();
 
-    TaskLog.syncLogs("location", taid, true);
+    TaskLog.syncLogs(testDir, taid, true);
 
     assertTrue(indexFile.getAbsolutePath().endsWith(
         "userlogs" + File.separatorChar + "job_job_0001"
@@ -76,7 +89,7 @@ public class TestTaskLog {
 
     f = TaskLog.getRealTaskLogFileLocation(taid, true, LogName.DEBUGOUT);
     if (f != null) {
-      assertTrue(f.getAbsolutePath().endsWith("location"
+      assertTrue(f.getAbsolutePath().endsWith(testDirName
           + File.separatorChar + "debugout"));
       FileUtils.copyFile(indexFile, f);
     }
@@ -84,14 +97,13 @@ public class TestTaskLog {
     assertTrue(TaskLog.obtainLogDirOwner(taid).length() > 0);
     // test TaskLog.Reader
     assertTrue(readTaskLog(TaskLog.LogName.DEBUGOUT, taid, true).length() > 0);
-
   }
 
-  public String readTaskLog(TaskLog.LogName filter,
+  private String readTaskLog(TaskLog.LogName filter,
       org.apache.hadoop.mapred.TaskAttemptID taskId, boolean isCleanup)
       throws IOException {
     // string buffer to store task log
-    StringBuffer result = new StringBuffer();
+    StringBuilder result = new StringBuilder();
     int res;
 
     // reads the whole tasklog into inputstream
@@ -120,14 +132,15 @@ public class TestTaskLog {
    * 
    * @throws IOException
    */
-  @Test (timeout=50000)
+  @Test
+  @Timeout(value = 50)
   public void testTaskLogWithoutTaskLogDir() throws IOException {
     // TaskLog tasklog= new TaskLog();
     System.clearProperty(YarnConfiguration.YARN_APP_CONTAINER_LOG_DIR);
 
     // test TaskLog
 
-    assertEquals(TaskLog.getMRv2LogDir(), null);
+    assertThat(TaskLog.getMRv2LogDir()).isNull();
     TaskAttemptID taid = mock(TaskAttemptID.class);
     JobID jid = new JobID("job", 1);
 

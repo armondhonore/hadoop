@@ -20,20 +20,28 @@ package org.apache.hadoop.yarn.server.resourcemanager.scheduler;
 import java.util.List;
 import java.util.Set;
 
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.yarn.api.records.Container;
 import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.NMToken;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.api.records.ResourceRequest;
+import org.apache.hadoop.yarn.api.records.RejectedSchedulingRequest;
 
 public class Allocation {
 
   final List<Container> containers;
-  final Resource resourceLimit;
   final Set<ContainerId> strictContainers;
   final Set<ContainerId> fungibleContainers;
   final List<ResourceRequest> fungibleResources;
   final List<NMToken> nmTokens;
+  final List<Container> increasedContainers;
+  final List<Container> decreasedContainers;
+  final List<Container> promotedContainers;
+  final List<Container> demotedContainers;
+  private final List<Container> previousAttemptContainers;
+  private Resource resourceLimit;
+  private List<RejectedSchedulingRequest> rejectedRequest;
 
   public Allocation(List<Container> containers, Resource resourceLimit,
       Set<ContainerId> strictContainers, Set<ContainerId> fungibleContainers,
@@ -45,12 +53,38 @@ public class Allocation {
   public Allocation(List<Container> containers, Resource resourceLimit,
       Set<ContainerId> strictContainers, Set<ContainerId> fungibleContainers,
       List<ResourceRequest> fungibleResources, List<NMToken> nmTokens) {
+    this(containers, resourceLimit, strictContainers, fungibleContainers,
+        fungibleResources, nmTokens, null, null, null, null, null, null);
+  }
+
+  public Allocation(List<Container> containers, Resource resourceLimit,
+      Set<ContainerId> strictContainers, Set<ContainerId> fungibleContainers,
+      List<ResourceRequest> fungibleResources, List<NMToken> nmTokens,
+      List<Container> increasedContainers, List<Container> decreasedContainer) {
+    this(containers, resourceLimit, strictContainers, fungibleContainers,
+        fungibleResources, nmTokens, increasedContainers, decreasedContainer,
+        null, null, null, null);
+  }
+
+  public Allocation(List<Container> containers, Resource resourceLimit,
+      Set<ContainerId> strictContainers, Set<ContainerId> fungibleContainers,
+      List<ResourceRequest> fungibleResources, List<NMToken> nmTokens,
+      List<Container> increasedContainers, List<Container> decreasedContainer,
+      List<Container> promotedContainers, List<Container> demotedContainer,
+      List<Container> previousAttemptContainers, List<RejectedSchedulingRequest>
+      rejectedRequest) {
     this.containers = containers;
     this.resourceLimit = resourceLimit;
     this.strictContainers = strictContainers;
     this.fungibleContainers = fungibleContainers;
     this.fungibleResources = fungibleResources;
     this.nmTokens = nmTokens;
+    this.increasedContainers = increasedContainers;
+    this.decreasedContainers = decreasedContainer;
+    this.promotedContainers = promotedContainers;
+    this.demotedContainers = demotedContainer;
+    this.previousAttemptContainers = previousAttemptContainers;
+    this.rejectedRequest = rejectedRequest;
   }
 
   public List<Container> getContainers() {
@@ -76,5 +110,45 @@ public class Allocation {
   public List<NMToken> getNMTokens() {
     return nmTokens;
   }
+  
+  public List<Container> getIncreasedContainers() {
+    return increasedContainers;
+  }
+  
+  public List<Container> getDecreasedContainers() {
+    return decreasedContainers;
+  }
 
+  public List<Container> getPromotedContainers() {
+    return promotedContainers;
+  }
+
+  public List<Container> getDemotedContainers() {
+    return demotedContainers;
+  }
+
+  public List<Container> getPreviousAttemptContainers() {
+    return previousAttemptContainers;
+  }
+
+  public List<RejectedSchedulingRequest> getRejectedRequest() {
+    return rejectedRequest;
+  }
+
+  @VisibleForTesting
+  public void setResourceLimit(Resource resource) {
+    this.resourceLimit = resource;
+  }
+
+  @Override
+  public String toString() {
+    return "Allocation{" + "containers=" + containers + ", strictContainers="
+        + strictContainers + ", fungibleContainers=" + fungibleContainers
+        + ", fungibleResources=" + fungibleResources + ", nmTokens=" + nmTokens
+        + ", increasedContainers=" + increasedContainers
+        + ", decreasedContainers=" + decreasedContainers
+        + ", promotedContainers=" + promotedContainers + ", demotedContainers="
+        + demotedContainers + ", previousAttemptContainers="
+        + previousAttemptContainers + ", resourceLimit=" + resourceLimit + '}';
+  }
 }

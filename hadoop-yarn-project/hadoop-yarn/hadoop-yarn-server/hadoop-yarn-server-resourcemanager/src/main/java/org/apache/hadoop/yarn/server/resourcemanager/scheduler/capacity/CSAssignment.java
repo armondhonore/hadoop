@@ -26,40 +26,63 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.Assignment
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.fica.FiCaSchedulerApp;
 import org.apache.hadoop.yarn.util.resource.Resources;
 
+import java.util.List;
+
 @Private
 @Unstable
 public class CSAssignment {
   public static final CSAssignment NULL_ASSIGNMENT =
       new CSAssignment(Resources.createResource(0, 0), NodeType.NODE_LOCAL);
 
-  public static final CSAssignment SKIP_ASSIGNMENT = new CSAssignment(true);
+  public static final CSAssignment SKIP_ASSIGNMENT =
+      new CSAssignment(SkippedType.OTHER);
 
   private Resource resource;
+  // Container allocation locality type
   private NodeType type;
+
+  // Pending request locality type
+  private NodeType requestLocalityType;
   private RMContainer excessReservation;
   private FiCaSchedulerApp application;
-  private final boolean skipped;
+  private SkippedType skipped;
+
+  /**
+   * Reason for the queue to get skipped.
+   */
+  public enum SkippedType {
+    NONE,
+    QUEUE_LIMIT,
+    OTHER
+  }
+
   private boolean fulfilledReservation;
   private final AssignmentInformation assignmentInformation;
+  private boolean increaseAllocation;
+  private List<RMContainer> containersToKill;
+
+  // Set when fulfilledReservation = true
+  private RMContainer fulfilledReservedContainer;
+  private SchedulingMode schedulingMode;
 
   public CSAssignment(Resource resource, NodeType type) {
-    this(resource, type, null, null, false, false);
+    this(resource, type, null, null, SkippedType.NONE, false);
   }
 
   public CSAssignment(FiCaSchedulerApp application,
       RMContainer excessReservation) {
     this(excessReservation.getContainer().getResource(), NodeType.NODE_LOCAL,
-      excessReservation, application, false, false);
+      excessReservation, application, SkippedType.NONE, false);
   }
 
-  public CSAssignment(boolean skipped) {
+  public CSAssignment(SkippedType skipped) {
     this(Resource.newInstance(0, 0), NodeType.NODE_LOCAL, null, null, skipped,
       false);
   }
 
   public CSAssignment(Resource resource, NodeType type,
       RMContainer excessReservation, FiCaSchedulerApp application,
-      boolean skipped, boolean fulfilledReservation) {
+      SkippedType skipped, boolean fulfilledReservation) {
     this.resource = resource;
     this.type = type;
     this.excessReservation = excessReservation;
@@ -101,10 +124,14 @@ public class CSAssignment {
     excessReservation = rmContainer;
   }
 
-  public boolean getSkipped() {
+  public SkippedType getSkippedType() {
     return skipped;
   }
-  
+
+  public void setSkippedType(SkippedType skippedType) {
+    this.skipped = skippedType;
+  }
+
   @Override
   public String toString() {
     String ret = "resource:" + resource.toString();
@@ -137,5 +164,46 @@ public class CSAssignment {
   
   public AssignmentInformation getAssignmentInformation() {
     return this.assignmentInformation;
+  }
+  
+  public boolean isIncreasedAllocation() {
+    return increaseAllocation;
+  }
+
+  public void setIncreasedAllocation(boolean flag) {
+    increaseAllocation = flag;
+  }
+
+  public void setContainersToKill(List<RMContainer> containersToKill) {
+    this.containersToKill = containersToKill;
+  }
+
+  public List<RMContainer> getContainersToKill() {
+    return containersToKill;
+  }
+
+  public RMContainer getFulfilledReservedContainer() {
+    return fulfilledReservedContainer;
+  }
+
+  public void setFulfilledReservedContainer(
+      RMContainer fulfilledReservedContainer) {
+    this.fulfilledReservedContainer = fulfilledReservedContainer;
+  }
+
+  public SchedulingMode getSchedulingMode() {
+    return schedulingMode;
+  }
+
+  public void setSchedulingMode(SchedulingMode schedulingMode) {
+    this.schedulingMode = schedulingMode;
+  }
+
+  public NodeType getRequestLocalityType() {
+    return requestLocalityType;
+  }
+
+  public void setRequestLocalityType(NodeType requestLocalityType) {
+    this.requestLocalityType = requestLocalityType;
   }
 }

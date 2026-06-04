@@ -21,13 +21,14 @@ import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 
-import com.google.common.annotations.VisibleForTesting;
-
 import org.apache.hadoop.fs.StorageType;
+import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage.State;
 import org.apache.hadoop.hdfs.server.protocol.StorageReport;
+
+import org.apache.hadoop.classification.VisibleForTesting;
 
 /**
  * A Datanode has one or more storages. A storage in the Datanode is represented
@@ -100,7 +101,8 @@ public class DatanodeStorageInfo {
 
     public BlockInfo next() {
       BlockInfo res = current;
-      current = current.getNext(current.findStorageInfo(DatanodeStorageInfo.this));
+      current =
+          current.getNext(current.findStorageInfo(DatanodeStorageInfo.this));
       return res;
     }
 
@@ -116,17 +118,19 @@ public class DatanodeStorageInfo {
 
   private long capacity;
   private long dfsUsed;
+  private long nonDfsUsed;
   private volatile long remaining;
   private long blockPoolUsed;
 
   private volatile BlockInfo blockList = null;
   private int numBlocks = 0;
 
-  // The ID of the last full block report which updated this storage.
-  private long lastBlockReportId = 0;
-
   /** The number of block reports received */
   private int blockReportCount = 0;
+
+  /** Whether the NameNode has received block reports for this storage since it
+   * was started.*/
+  private boolean hasReceivedBlockReport = false;
 
   /**
    * Set to false on any NN failover, and reset to true
@@ -145,14 +149,23 @@ public class DatanodeStorageInfo {
   private boolean blockContentsStale = true;
 
   DatanodeStorageInfo(DatanodeDescriptor dn, DatanodeStorage s) {
-    this.dn = dn;
-    this.storageID = s.getStorageID();
-    this.storageType = s.getStorageType();
-    this.state = s.getState();
+    this(dn, s.getStorageID(), s.getStorageType(), s.getState());
   }
 
-  int getBlockReportCount() {
+  DatanodeStorageInfo(DatanodeDescriptor dn, String storageID,
+      StorageType storageType, State state) {
+    this.dn = dn;
+    this.storageID = storageID;
+    this.storageType = storageType;
+    this.state = state;
+  }
+
+  public int getBlockReportCount() {
     return blockReportCount;
+  }
+
+  boolean hasReceivedBlockReport() {
+    return hasReceivedBlockReport;
   }
 
   void setBlockReportCount(int blockReportCount) {
@@ -161,6 +174,11 @@ public class DatanodeStorageInfo {
 
   public boolean areBlockContentsStale() {
     return blockContentsStale;
+  }
+
+  @VisibleForTesting
+  public void setBlockContentsStale(boolean value) {
+    blockContentsStale = value;
   }
 
   void markStaleAfterFailover() {
@@ -178,6 +196,7 @@ public class DatanodeStorageInfo {
       blockContentsStale = false;
     }
     blockReportCount++;
+    hasReceivedBlockReport = true;
   }
 
   @VisibleForTesting
@@ -189,14 +208,6 @@ public class DatanodeStorageInfo {
     this.blockPoolUsed = blockPoolUsed;
   }
 
-  long getLastBlockReportId() {
-    return lastBlockReportId;
-  }
-
-  void setLastBlockReportId(long lastBlockReportId) {
-    this.lastBlockReportId = lastBlockReportId;
-  }
-
   State getState() {
     return this.state;
   }
@@ -205,10 +216,15 @@ public class DatanodeStorageInfo {
     this.state = state;
   }
 
+  void setHeartbeatedSinceFailover(boolean value) {
+    heartbeatedSinceFailover = value;
+  }
+
   boolean areBlocksOnFailedStorage() {
     return getState() == State.FAILED && numBlocks != 0;
   }
 
+  @VisibleForTesting
   public String getStorageID() {
     return storageID;
   }
@@ -225,6 +241,10 @@ public class DatanodeStorageInfo {
     return dfsUsed;
   }
 
+  long getNonDfsUsed() {
+    return nonDfsUsed;
+  }
+
   long getRemaining() {
     return remaining;
   }
@@ -233,7 +253,7 @@ public class DatanodeStorageInfo {
     return blockPoolUsed;
   }
 
-  public AddBlockResult addBlock(BlockInfo b) {
+  public AddBlockResult addBlock(BlockInfo b, Block reportedBlock) {
     // First check whether the block belongs to a different storage
     // on the same DN.
     AddBlockResult result = AddBlockResult.ADDED;
@@ -252,13 +272,20 @@ public class DatanodeStorageInfo {
     }
 
     // add to the head of the data-node list
-    b.addStorage(this);
-    blockList = b.listInsert(blockList, this);
-    numBlocks++;
+    b.addStorage(this, reportedBlock);
+    insertToList(b);
     return result;
   }
 
-  public boolean removeBlock(BlockInfo b) {
+  AddBlockResult addBlock(BlockInfo b) {
+    return addBlock(b, b);
+  }
+
+  public void insertToList(BlockInfo b) {
+    blockList = b.listInsert(blockList, this);
+    numBlocks++;
+  }
+  boolean removeBlock(BlockInfo b) {
     blockList = b.listRemove(blockList, this);
     if (b.removeStorage(this)) {
       numBlocks--;
@@ -271,10 +298,9 @@ public class DatanodeStorageInfo {
   int numBlocks() {
     return numBlocks;
   }
-  
+
   Iterator<BlockInfo> getBlockIterator() {
     return new BlockIterator(blockList);
-
   }
 
   /**
@@ -286,8 +312,9 @@ public class DatanodeStorageInfo {
     return curIndex;
   }
 
+
   /**
-   * Used for testing only
+   * Used for testing only.
    * @return the head of the blockList
    */
   @VisibleForTesting
@@ -298,6 +325,7 @@ public class DatanodeStorageInfo {
   void updateState(StorageReport r) {
     capacity = r.getCapacity();
     dfsUsed = r.getDfsUsed();
+    nonDfsUsed = r.getNonDfsUsed();
     remaining = r.getRemaining();
     blockPoolUsed = r.getBlockPoolUsed();
   }
@@ -313,11 +341,21 @@ public class DatanodeStorageInfo {
     }
   }
 
+  /**
+   * Decrement the number of blocks scheduled for each given storage. This will
+   * be called during abandon block or delete of UC block.
+   */
+  public static void decrementBlocksScheduled(DatanodeStorageInfo... storages) {
+    for (DatanodeStorageInfo s : storages) {
+      s.getDatanodeDescriptor().decrementBlocksScheduled(s.getStorageType());
+    }
+  }
+
   @Override
   public boolean equals(Object obj) {
     if (this == obj) {
       return true;
-    } else if (obj == null || !(obj instanceof DatanodeStorageInfo)) {
+    } else if (!(obj instanceof DatanodeStorageInfo)) {
       return false;
     }
     final DatanodeStorageInfo that = (DatanodeStorageInfo)obj;
@@ -337,7 +375,7 @@ public class DatanodeStorageInfo {
   StorageReport toStorageReport() {
     return new StorageReport(
         new DatanodeStorage(storageID, state, storageType),
-        false, capacity, dfsUsed, remaining, blockPoolUsed);
+        false, capacity, dfsUsed, remaining, blockPoolUsed, nonDfsUsed);
   }
 
   static Iterable<StorageType> toStorageTypes(
@@ -377,7 +415,12 @@ public class DatanodeStorageInfo {
     return null;
   }
 
-  static enum AddBlockResult {
+  @VisibleForTesting
+  void setRemainingForTests(int remaining) {
+    this.remaining = remaining;
+  }
+
+  enum AddBlockResult {
     ADDED, REPLACED, ALREADY_EXIST
   }
 }

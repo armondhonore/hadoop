@@ -18,14 +18,12 @@
 
 package org.apache.hadoop.mapreduce.lib.input;
 
-import java.io.*;
-import java.util.*;
-import junit.framework.TestCase;
-
-import org.apache.commons.logging.*;
-
-import org.apache.hadoop.fs.*;
-import org.apache.hadoop.io.*;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.BytesWritable;
+import org.apache.hadoop.io.SequenceFile;
+import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapreduce.InputFormat;
 import org.apache.hadoop.mapreduce.InputSplit;
 import org.apache.hadoop.mapreduce.Job;
@@ -34,11 +32,19 @@ import org.apache.hadoop.mapreduce.MapReduceTestUtil;
 import org.apache.hadoop.mapreduce.RecordReader;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
 import org.apache.hadoop.mapreduce.task.MapContextImpl;
-import org.apache.hadoop.conf.*;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-public class TestMRSequenceFileInputFilter extends TestCase {
-  private static final Log LOG = 
-    LogFactory.getLog(TestMRSequenceFileInputFilter.class.getName());
+import java.io.IOException;
+import java.util.Random;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
+public class TestMRSequenceFileInputFilter {
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestMRSequenceFileInputFilter.class);
 
   private static final int MAX_LENGTH = 15000;
   private static final Configuration conf = new Configuration();
@@ -113,7 +119,8 @@ public class TestMRSequenceFileInputFilter extends TestCase {
     }
     return count;
   }
-  
+
+  @Test
   public void testRegexFilter() throws Exception {
     // set the filter class
     LOG.info("Testing Regex Filter with patter: \\A10*");
@@ -138,6 +145,7 @@ public class TestMRSequenceFileInputFilter extends TestCase {
     fs.delete(inDir, true);
   }
 
+  @Test
   public void testPercentFilter() throws Exception {
     LOG.info("Testing Percent Filter with frequency: 1000");
     // set the filter class
@@ -159,13 +167,14 @@ public class TestMRSequenceFileInputFilter extends TestCase {
       int expectedCount = length / 1000;
       if (expectedCount * 1000 != length)
         expectedCount++;
-      assertEquals(count, expectedCount);
+      assertThat(count).isEqualTo(expectedCount);
     }
       
     // clean up
     fs.delete(inDir, true);
   }
-  
+
+  @Test
   public void testMD5Filter() throws Exception {
     // set the filter class
     LOG.info("Testing MD5 Filter with frequency: 1000");
@@ -186,10 +195,5 @@ public class TestMRSequenceFileInputFilter extends TestCase {
     }
     // clean up
     fs.delete(inDir, true);
-  }
-
-  public static void main(String[] args) throws Exception {
-    TestMRSequenceFileInputFilter filter = new TestMRSequenceFileInputFilter();
-    filter.testRegexFilter();
   }
 }

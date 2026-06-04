@@ -17,13 +17,12 @@
  */
 package org.apache.hadoop.hdfs;
 
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.io.File;
 import java.io.IOException;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.FSDataInputStream;
@@ -31,12 +30,12 @@ import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
-import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 public class TestBlockMissingException {
-  final static Log LOG = LogFactory.getLog("org.apache.hadoop.hdfs.TestBlockMissing");
+  final static Logger LOG =
+      LoggerFactory.getLogger("org.apache.hadoop.hdfs.TestBlockMissing");
   final static int NUM_DATANODES = 3;
 
   Configuration conf;
@@ -67,7 +66,8 @@ public class TestBlockMissingException {
           0, numBlocks * blockSize);
       // remove block of file
       LOG.info("Remove first block of file");
-      corruptBlock(file1, locations.get(0).getBlock());
+      dfs.corruptBlockOnDataNodesByDeletingBlockFile(
+          locations.get(0).getBlock());
 
       // validate that the system throws BlockMissingException
       validateFile(fileSys, file1);
@@ -116,18 +116,6 @@ public class TestBlockMissingException {
       gotException = true;
     }
     stm.close();
-    assertTrue("Expected BlockMissingException ", gotException);
-  }
-
-  //
-  // Corrupt specified block of file
-  //
-  void corruptBlock(Path file, ExtendedBlock blk) {
-    // Now deliberately remove/truncate data blocks from the file.
-    File[] blockFiles = dfs.getAllBlockFiles(blk);
-    for (File f : blockFiles) {
-      f.delete();
-      LOG.info("Deleted block " + f);
-    }
+    assertTrue(gotException, "Expected BlockMissingException ");
   }
 }

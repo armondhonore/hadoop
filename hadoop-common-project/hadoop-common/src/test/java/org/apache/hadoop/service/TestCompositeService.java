@@ -18,17 +18,18 @@
 
 package org.apache.hadoop.service;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.service.Service.STATE;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 public class TestCompositeService {
 
@@ -36,7 +37,8 @@ public class TestCompositeService {
 
   private static final int FAILED_SERVICE_SEQ_NUMBER = 2;
 
-  private static final Log LOG  = LogFactory.getLog(TestCompositeService.class);
+  private static final Logger LOG  =
+      LoggerFactory.getLogger(TestCompositeService.class);
 
   /**
    * flag to state policy of CompositeService, and hence
@@ -46,7 +48,7 @@ public class TestCompositeService {
   private static final boolean STOP_ONLY_STARTED_SERVICES =
     CompositeServiceImpl.isPolicyToStopOnlyStartedServices();
 
-  @Before
+  @BeforeEach
   public void setup() {
     CompositeServiceImpl.resetCounter();
   }
@@ -64,8 +66,8 @@ public class TestCompositeService {
     CompositeServiceImpl[] services = serviceManager.getServices().toArray(
         new CompositeServiceImpl[0]);
 
-    assertEquals("Number of registered services ", NUM_OF_SERVICES,
-        services.length);
+    assertEquals(NUM_OF_SERVICES, services.length,
+        "Number of registered services ");
 
     Configuration conf = new Configuration();
     // Initialise the composite service
@@ -76,9 +78,9 @@ public class TestCompositeService {
 
     // Verify the init() call sequence numbers for every service
     for (int i = 0; i < NUM_OF_SERVICES; i++) {
-      assertEquals("For " + services[i]
-          + " service, init() call sequence number should have been ", i,
-          services[i].getCallSequenceNumber());
+      assertEquals(i, services[i].getCallSequenceNumber(),
+          "For " + services[i] +
+          " service, init() call sequence number should have been ");
     }
 
     // Reset the call sequence numbers
@@ -90,9 +92,9 @@ public class TestCompositeService {
 
     // Verify the start() call sequence numbers for every service
     for (int i = 0; i < NUM_OF_SERVICES; i++) {
-      assertEquals("For " + services[i]
-          + " service, start() call sequence number should have been ", i,
-          services[i].getCallSequenceNumber());
+      assertEquals(i,
+          services[i].getCallSequenceNumber(), "For " + services[i] +
+          " service, start() call sequence number should have been ");
     }
     resetServices(services);
 
@@ -103,18 +105,18 @@ public class TestCompositeService {
 
     // Verify the stop() call sequence numbers for every service
     for (int i = 0; i < NUM_OF_SERVICES; i++) {
-      assertEquals("For " + services[i]
-          + " service, stop() call sequence number should have been ",
-          ((NUM_OF_SERVICES - 1) - i), services[i].getCallSequenceNumber());
+      assertEquals(((NUM_OF_SERVICES - 1) - i), services[i].getCallSequenceNumber(),
+          "For " + services[i] +
+          " service, stop() call sequence number should have been ");
     }
 
     // Try to stop again. This should be a no-op.
     serviceManager.stop();
     // Verify that stop() call sequence numbers for every service don't change.
     for (int i = 0; i < NUM_OF_SERVICES; i++) {
-      assertEquals("For " + services[i]
-          + " service, stop() call sequence number should have been ",
-          ((NUM_OF_SERVICES - 1) - i), services[i].getCallSequenceNumber());
+      assertEquals(((NUM_OF_SERVICES - 1) - i), services[i].getCallSequenceNumber(),
+          "For " + services[i] +
+          " service, stop() call sequence number should have been ");
     }
   }
 
@@ -154,11 +156,11 @@ public class TestCompositeService {
       for (int i = 0; i < NUM_OF_SERVICES - 1; i++) {
         if (i >= FAILED_SERVICE_SEQ_NUMBER && STOP_ONLY_STARTED_SERVICES) {
           // Failed service state should be INITED
-          assertEquals("Service state should have been ", STATE.INITED,
-              services[NUM_OF_SERVICES - 1].getServiceState());
+          assertEquals(STATE.INITED, services[NUM_OF_SERVICES - 1].getServiceState(),
+              "Service state should have been ");
         } else {
-          assertEquals("Service state should have been ", STATE.STOPPED,
-              services[i].getServiceState());
+          assertEquals(STATE.STOPPED, services[i].getServiceState(),
+              "Service state should have been ");
         }
       }
 
@@ -222,10 +224,8 @@ public class TestCompositeService {
   }
 
   private void assertInState(STATE expected, Service service) {
-    assertEquals("Service state should have been " + expected + " in "
-                 + service,
-                 expected,
-                 service.getServiceState());
+    assertEquals(expected,  service.getServiceState(),
+        "Service state should have been " + expected + " in " + service);
   }
 
   /**
@@ -312,58 +312,24 @@ public class TestCompositeService {
     assertInState(STATE.INITED, child);
   }
 
-  @Test (timeout = 1000)
+  @Test
+  @Timeout(value = 10)
   public void testAddIfService() {
     CompositeService testService = new CompositeService("TestService") {
       Service service;
       @Override
       public void serviceInit(Configuration conf) {
         Integer notAService = new Integer(0);
-        assertFalse("Added an integer as a service",
-            addIfService(notAService));
+        assertFalse(addIfService(notAService), "Added an integer as a service");
 
         service = new AbstractService("Service") {};
-        assertTrue("Unable to add a service", addIfService(service));
+        assertTrue(addIfService(service), "Unable to add a service");
       }
     };
 
     testService.init(new Configuration());
-    assertEquals("Incorrect number of services",
-                 1, testService.getServices().size());
-  }
-
-  @Test(timeout = 1000)
-  public void testAddInitedSiblingInInit() throws Throwable {
-    CompositeService parent = new CompositeService("parent");
-    BreakableService sibling = new BreakableService();
-    sibling.init(new Configuration());
-    parent.addService(new AddSiblingService(parent,
-                                            sibling,
-                                            STATE.INITED));
-    parent.init(new Configuration());
-    parent.start();
-    parent.stop();
-    assertEquals("Incorrect number of services",
-                 2, parent.getServices().size());
-  }
-
-  @Test(timeout = 1000)
-  public void testAddUninitedSiblingInInit() throws Throwable {
-    CompositeService parent = new CompositeService("parent");
-    BreakableService sibling = new BreakableService();
-    parent.addService(new AddSiblingService(parent,
-                                            sibling,
-                                            STATE.INITED));
-    parent.init(new Configuration());
-    try {
-      parent.start();
-      fail("Expected an exception, got " + parent);
-    } catch (ServiceStateException e) {
-      //expected
-    }
-    parent.stop();
-    assertEquals("Incorrect number of services",
-                 2, parent.getServices().size());
+    assertEquals(1, testService.getServices().size(),
+        "Incorrect number of services");
   }
 
   @Test
@@ -372,8 +338,7 @@ public class TestCompositeService {
       @Override
       public void serviceInit(Configuration conf) {
         Integer notAService = new Integer(0);
-        assertFalse("Added an integer as a service",
-            addIfService(notAService));
+        assertFalse(addIfService(notAService), "Added an integer as a service");
 
         Service service1 = new AbstractService("Service1") {};
         addIfService(service1);
@@ -389,11 +354,132 @@ public class TestCompositeService {
     };
 
     testService.init(new Configuration());
-    assertEquals("Incorrect number of services",
-        2, testService.getServices().size());
+    assertEquals(2, testService.getServices().size(),
+        "Incorrect number of services");
   }
 
-  @Test(timeout = 1000)
+  //
+  // Tests for adding child service to parent
+  //
+
+  @Test
+  @Timeout(value = 10)
+  public void testAddUninitedChildBeforeInit() throws Throwable {
+    CompositeService parent = new CompositeService("parent");
+    BreakableService child = new BreakableService();
+    AddSiblingService.addChildToService(parent, child);
+    parent.init(new Configuration());
+    assertInState(STATE.INITED, child);
+    parent.start();
+    assertInState(STATE.STARTED, child);
+    parent.stop();
+    assertInState(STATE.STOPPED, child);
+  }
+
+  @Test
+  @Timeout(value = 10)
+  public void testAddUninitedChildInInit() throws Throwable {
+    CompositeService parent = new CompositeService("parent");
+    BreakableService child = new BreakableService();
+    parent.init(new Configuration());
+    AddSiblingService.addChildToService(parent, child);
+    assertInState(STATE.NOTINITED, child);
+    try {
+      parent.start();
+      fail("Expected an exception, got " + parent);
+    } catch (ServiceStateException e) {
+      //expected
+    }
+    assertInState(STATE.NOTINITED, child);
+    parent.stop();
+    assertInState(STATE.NOTINITED, child);
+    assertEquals(1, parent.getServices().size(),
+        "Incorrect number of services");
+  }
+
+  @Test
+  @Timeout(value = 10)
+  public void testAddUninitedChildInStart() throws Throwable {
+    CompositeService parent = new CompositeService("parent");
+    BreakableService child = new BreakableService();
+    parent.init(new Configuration());
+    parent.start();
+    AddSiblingService.addChildToService(parent, child);
+    assertInState(STATE.NOTINITED, child);
+    parent.stop();
+    assertInState(STATE.NOTINITED, child);
+  }
+
+  @Test
+  @Timeout(value = 10)
+  public void testAddUninitedChildInStop() throws Throwable {
+    CompositeService parent = new CompositeService("parent");
+    BreakableService child = new BreakableService();
+    parent.init(new Configuration());
+    parent.start();
+    parent.stop();
+    AddSiblingService.addChildToService(parent, child);
+    assertInState(STATE.NOTINITED, child);
+  }
+
+  @Test
+  @Timeout(value = 10)
+  public void testAddInitedChildBeforeInit() throws Throwable {
+    CompositeService parent = new CompositeService("parent");
+    BreakableService child = new BreakableService();
+    child.init(new Configuration());
+    AddSiblingService.addChildToService(parent, child);
+    parent.init(new Configuration());
+    assertInState(STATE.INITED, child);
+    parent.start();
+    assertInState(STATE.STARTED, child);
+    parent.stop();
+    assertInState(STATE.STOPPED, child);
+  }
+
+  @Test
+  @Timeout(value = 10)
+  public void testAddInitedChildInInit() throws Throwable {
+    CompositeService parent = new CompositeService("parent");
+    BreakableService child = new BreakableService();
+    child.init(new Configuration());
+    parent.init(new Configuration());
+    AddSiblingService.addChildToService(parent, child);
+    parent.start();
+    assertInState(STATE.STARTED, child);
+    parent.stop();
+    assertInState(STATE.STOPPED, child);
+  }
+
+  @Test
+  @Timeout(value = 10)
+  public void testAddInitedChildInStart() throws Throwable {
+    CompositeService parent = new CompositeService("parent");
+    BreakableService child = new BreakableService();
+    child.init(new Configuration());
+    parent.init(new Configuration());
+    parent.start();
+    AddSiblingService.addChildToService(parent, child);
+    assertInState(STATE.INITED, child);
+    parent.stop();
+    assertInState(STATE.STOPPED, child);
+  }
+
+  @Test
+  @Timeout(value = 10)
+  public void testAddInitedChildInStop() throws Throwable {
+    CompositeService parent = new CompositeService("parent");
+    BreakableService child = new BreakableService();
+    child.init(new Configuration());
+    parent.init(new Configuration());
+    parent.start();
+    parent.stop();
+    AddSiblingService.addChildToService(parent, child);
+    assertInState(STATE.INITED, child);
+  }
+
+  @Test
+  @Timeout(value = 10)
   public void testAddStartedChildBeforeInit() throws Throwable {
     CompositeService parent = new CompositeService("parent");
     BreakableService child = new BreakableService();
@@ -407,9 +493,56 @@ public class TestCompositeService {
       //expected
     }
     parent.stop();
+    assertEquals(1, parent.getServices().size(),
+        "Incorrect number of services");
   }
 
-  @Test(timeout = 1000)
+  @Test
+  @Timeout(value = 10)
+  public void testAddStartedChildInInit() throws Throwable {
+    CompositeService parent = new CompositeService("parent");
+    BreakableService child = new BreakableService();
+    child.init(new Configuration());
+    child.start();
+    parent.init(new Configuration());
+    AddSiblingService.addChildToService(parent, child);
+    parent.start();
+    assertInState(STATE.STARTED, child);
+    parent.stop();
+    assertInState(STATE.STOPPED, child);
+  }
+
+  @Test
+  @Timeout(value = 10)
+  public void testAddStartedChildInStart() throws Throwable {
+    CompositeService parent = new CompositeService("parent");
+    BreakableService child = new BreakableService();
+    child.init(new Configuration());
+    child.start();
+    parent.init(new Configuration());
+    parent.start();
+    AddSiblingService.addChildToService(parent, child);
+    assertInState(STATE.STARTED, child);
+    parent.stop();
+    assertInState(STATE.STOPPED, child);
+  }
+
+  @Test
+  @Timeout(value = 10)
+  public void testAddStartedChildInStop() throws Throwable {
+    CompositeService parent = new CompositeService("parent");
+    BreakableService child = new BreakableService();
+    child.init(new Configuration());
+    child.start();
+    parent.init(new Configuration());
+    parent.start();
+    parent.stop();
+    AddSiblingService.addChildToService(parent, child);
+    assertInState(STATE.STARTED, child);
+  }
+
+  @Test
+  @Timeout(value = 10)
   public void testAddStoppedChildBeforeInit() throws Throwable {
     CompositeService parent = new CompositeService("parent");
     BreakableService child = new BreakableService();
@@ -424,25 +557,104 @@ public class TestCompositeService {
       //expected
     }
     parent.stop();
+    assertEquals(1, parent.getServices().size(),
+        "Incorrect number of services");
   }
 
-  @Test(timeout = 1000)
-  public void testAddStartedSiblingInStart() throws Throwable {
+  @Test
+  @Timeout(value = 10)
+  public void testAddStoppedChildInInit() throws Throwable {
     CompositeService parent = new CompositeService("parent");
-    BreakableService sibling = new BreakableService();
-    sibling.init(new Configuration());
-    sibling.start();
-    parent.addService(new AddSiblingService(parent,
-                                            sibling,
-                                            STATE.STARTED));
+    BreakableService child = new BreakableService();
+    child.init(new Configuration());
+    child.start();
+    child.stop();
+    parent.init(new Configuration());
+    AddSiblingService.addChildToService(parent, child);
+    try {
+      parent.start();
+      fail("Expected an exception, got " + parent);
+    } catch (ServiceStateException e) {
+      //expected
+    }
+    assertInState(STATE.STOPPED, child);
+    parent.stop();
+    assertEquals(1, parent.getServices().size(),
+        "Incorrect number of services");
+  }
+
+  @Test
+  @Timeout(value = 10)
+  public void testAddStoppedChildInStart() throws Throwable {
+    CompositeService parent = new CompositeService("parent");
+    BreakableService child = new BreakableService();
+    child.init(new Configuration());
+    child.start();
+    child.stop();
+    parent.init(new Configuration());
+    parent.start();
+    AddSiblingService.addChildToService(parent, child);
+    parent.stop();
+  }
+
+  @Test
+  @Timeout(value = 10)
+  public void testAddStoppedChildInStop() throws Throwable {
+    CompositeService parent = new CompositeService("parent");
+    BreakableService child = new BreakableService();
+    child.init(new Configuration());
+    child.start();
+    child.stop();
     parent.init(new Configuration());
     parent.start();
     parent.stop();
-    assertEquals("Incorrect number of services",
-                 2, parent.getServices().size());
+    AddSiblingService.addChildToService(parent, child);
   }
 
-  @Test(timeout = 1000)
+  //
+  // Tests for adding sibling service to parent
+  //
+
+  @Test
+  @Timeout(value = 10)
+  public void testAddUninitedSiblingBeforeInit() throws Throwable {
+    CompositeService parent = new CompositeService("parent");
+    BreakableService sibling = new BreakableService();
+    parent.addService(new AddSiblingService(parent,
+                                            sibling,
+                                            STATE.NOTINITED));
+    parent.init(new Configuration());
+    assertInState(STATE.NOTINITED, sibling);
+    parent.start();
+    assertInState(STATE.NOTINITED, sibling);
+    parent.stop();
+    assertInState(STATE.NOTINITED, sibling);
+    assertEquals(1, parent.getServices().size(),
+        "Incorrect number of services");
+  }
+
+  @Test
+  @Timeout(value = 10)
+  public void testAddUninitedSiblingInInit() throws Throwable {
+    CompositeService parent = new CompositeService("parent");
+    BreakableService sibling = new BreakableService();
+    parent.addService(new AddSiblingService(parent,
+                                            sibling,
+                                            STATE.INITED));
+    parent.init(new Configuration());
+    try {
+      parent.start();
+      fail("Expected an exception, got " + parent);
+    } catch (ServiceStateException e) {
+      //expected
+    }
+    parent.stop();
+    assertEquals(2, parent.getServices().size(),
+        "Incorrect number of services");
+  }
+
+  @Test
+  @Timeout(value = 10)
   public void testAddUninitedSiblingInStart() throws Throwable {
     CompositeService parent = new CompositeService("parent");
     BreakableService sibling = new BreakableService();
@@ -452,12 +664,122 @@ public class TestCompositeService {
     parent.init(new Configuration());
     assertInState(STATE.NOTINITED, sibling);
     parent.start();
+    assertInState(STATE.NOTINITED, sibling);
     parent.stop();
-    assertEquals("Incorrect number of services",
-                 2, parent.getServices().size());
+    assertInState(STATE.NOTINITED, sibling);
+    assertEquals(2, parent.getServices().size(),
+        "Incorrect number of services");
   }
 
-  @Test(timeout = 1000)
+  @Test
+  @Timeout(value = 10)
+  public void testAddUninitedSiblingInStop() throws Throwable {
+    CompositeService parent = new CompositeService("parent");
+    BreakableService sibling = new BreakableService();
+    parent.addService(new AddSiblingService(parent,
+                                            sibling,
+                                            STATE.STOPPED));
+    parent.init(new Configuration());
+    assertInState(STATE.NOTINITED, sibling);
+    parent.start();
+    assertInState(STATE.NOTINITED, sibling);
+    parent.stop();
+    assertInState(STATE.NOTINITED, sibling);
+    assertEquals(2, parent.getServices().size(),
+        "Incorrect number of services");
+  }
+
+  @Test
+  @Timeout(value = 10)
+  public void testAddInitedSiblingBeforeInit() throws Throwable {
+    CompositeService parent = new CompositeService("parent");
+    BreakableService sibling = new BreakableService();
+    sibling.init(new Configuration());
+    parent.addService(new AddSiblingService(parent,
+                                            sibling,
+                                            STATE.NOTINITED));
+    parent.init(new Configuration());
+    assertInState(STATE.INITED, sibling);
+    parent.start();
+    assertInState(STATE.INITED, sibling);
+    parent.stop();
+    assertInState(STATE.INITED, sibling);
+    assertEquals(1, parent.getServices().size(),
+        "Incorrect number of services");
+  }
+
+  @Test
+  @Timeout(value = 10)
+  public void testAddInitedSiblingInInit() throws Throwable {
+    CompositeService parent = new CompositeService("parent");
+    BreakableService sibling = new BreakableService();
+    sibling.init(new Configuration());
+    parent.addService(new AddSiblingService(parent,
+                                            sibling,
+                                            STATE.INITED));
+    parent.init(new Configuration());
+    assertInState(STATE.INITED, sibling);
+    parent.start();
+    assertInState(STATE.STARTED, sibling);
+    parent.stop();
+    assertInState(STATE.STOPPED, sibling);
+    assertEquals(2, parent.getServices().size(),
+        "Incorrect number of services");
+  }
+
+  @Test
+  @Timeout(value = 10)
+  public void testAddInitedSiblingInStart() throws Throwable {
+    CompositeService parent = new CompositeService("parent");
+    BreakableService sibling = new BreakableService();
+    sibling.init(new Configuration());
+    parent.addService(new AddSiblingService(parent,
+                                            sibling,
+                                            STATE.STARTED));
+    parent.init(new Configuration());
+    assertInState(STATE.INITED, sibling);
+    parent.start();
+    assertInState(STATE.INITED, sibling);
+    parent.stop();
+    assertInState(STATE.STOPPED, sibling);
+    assertEquals(2, parent.getServices().size(),
+        "Incorrect number of services");
+  }
+
+  @Test
+  @Timeout(value = 10)
+  public void testAddInitedSiblingInStop() throws Throwable {
+    CompositeService parent = new CompositeService("parent");
+    BreakableService sibling = new BreakableService();
+    sibling.init(new Configuration());
+    parent.addService(new AddSiblingService(parent,
+                                            sibling,
+                                            STATE.STOPPED));
+    parent.init(new Configuration());
+  }
+
+  @Test
+  @Timeout(value = 10)
+  public void testAddStartedSiblingBeforeInit() throws Throwable {
+    CompositeService parent = new CompositeService("parent");
+    BreakableService sibling = new BreakableService();
+    sibling.init(new Configuration());
+    sibling.start();
+    parent.addService(new AddSiblingService(parent,
+                                            sibling,
+                                            STATE.NOTINITED));
+    parent.init(new Configuration());
+    assertInState(STATE.STARTED, sibling);
+    parent.start();
+    assertInState(STATE.STARTED, sibling);
+    parent.stop();
+    assertInState(STATE.STARTED, sibling);
+    assertEquals(1, parent.getServices().size(),
+        "Incorrect number of services");
+  }
+
+  @Test
+  @Timeout(value = 10)
   public void testAddStartedSiblingInInit() throws Throwable {
     CompositeService parent = new CompositeService("parent");
     BreakableService sibling = new BreakableService();
@@ -471,12 +793,34 @@ public class TestCompositeService {
     parent.start();
     assertInState(STATE.STARTED, sibling);
     parent.stop();
-    assertEquals("Incorrect number of services",
-                 2, parent.getServices().size());
     assertInState(STATE.STOPPED, sibling);
+    assertEquals(2, parent.getServices().size(),
+        "Incorrect number of services");
   }
 
-  @Test(timeout = 1000)
+
+  @Test
+  @Timeout(value = 10)
+  public void testAddStartedSiblingInStart() throws Throwable {
+    CompositeService parent = new CompositeService("parent");
+    BreakableService sibling = new BreakableService();
+    sibling.init(new Configuration());
+    sibling.start();
+    parent.addService(new AddSiblingService(parent,
+                                            sibling,
+                                            STATE.STARTED));
+    parent.init(new Configuration());
+    assertInState(STATE.STARTED, sibling);
+    parent.start();
+    assertInState(STATE.STARTED, sibling);
+    parent.stop();
+    assertInState(STATE.STOPPED, sibling);
+    assertEquals(2, parent.getServices().size(),
+        "Incorrect number of services");
+  }
+
+  @Test
+  @Timeout(value = 10)
   public void testAddStartedSiblingInStop() throws Throwable {
     CompositeService parent = new CompositeService("parent");
     BreakableService sibling = new BreakableService();
@@ -486,10 +830,101 @@ public class TestCompositeService {
                                             sibling,
                                             STATE.STOPPED));
     parent.init(new Configuration());
+    assertInState(STATE.STARTED, sibling);
     parent.start();
+    assertInState(STATE.STARTED, sibling);
     parent.stop();
-    assertEquals("Incorrect number of services",
-                 2, parent.getServices().size());
+    assertInState(STATE.STARTED, sibling);
+    assertEquals(2, parent.getServices().size(),
+        "Incorrect number of services");
+  }
+
+  @Test
+  @Timeout(value = 10)
+  public void testAddStoppedSiblingBeforeInit() throws Throwable {
+    CompositeService parent = new CompositeService("parent");
+    BreakableService sibling = new BreakableService();
+    sibling.init(new Configuration());
+    sibling.start();
+    sibling.stop();
+    parent.addService(new AddSiblingService(parent,
+                                            sibling,
+                                            STATE.NOTINITED));
+    parent.init(new Configuration());
+    assertInState(STATE.STOPPED, sibling);
+    parent.start();
+    assertInState(STATE.STOPPED, sibling);
+    parent.stop();
+    assertInState(STATE.STOPPED, sibling);
+    assertEquals(1, parent.getServices().size(),
+        "Incorrect number of services");
+  }
+
+  @Test
+  @Timeout(value = 10)
+  public void testAddStoppedSiblingInInit() throws Throwable {
+    CompositeService parent = new CompositeService("parent");
+    BreakableService sibling = new BreakableService();
+    sibling.init(new Configuration());
+    sibling.start();
+    sibling.stop();
+    parent.addService(new AddSiblingService(parent,
+                                            sibling,
+                                            STATE.INITED));
+    parent.init(new Configuration());
+    assertInState(STATE.STOPPED, sibling);
+    try {
+      parent.start();
+      fail("Expected an exception, got " + parent);
+    } catch (ServiceStateException e) {
+      //expected
+    }
+    parent.stop();
+    assertInState(STATE.STOPPED, sibling);
+    assertEquals(2, parent.getServices().size(),
+        "Incorrect number of services");
+  }
+
+  @Test
+  @Timeout(value = 10)
+  public void testAddStoppedSiblingInStart() throws Throwable {
+    CompositeService parent = new CompositeService("parent");
+    BreakableService sibling = new BreakableService();
+    sibling.init(new Configuration());
+    sibling.start();
+    sibling.stop();
+    parent.addService(new AddSiblingService(parent,
+                                            sibling,
+                                            STATE.STARTED));
+    parent.init(new Configuration());
+    assertInState(STATE.STOPPED, sibling);
+    parent.start();
+    assertInState(STATE.STOPPED, sibling);
+    parent.stop();
+    assertInState(STATE.STOPPED, sibling);
+    assertEquals(2, parent.getServices().size(),
+        "Incorrect number of services");
+  }
+
+  @Test
+  @Timeout(value = 10)
+  public void testAddStoppedSiblingInStop() throws Throwable {
+    CompositeService parent = new CompositeService("parent");
+    BreakableService sibling = new BreakableService();
+    sibling.init(new Configuration());
+    sibling.start();
+    sibling.stop();
+    parent.addService(new AddSiblingService(parent,
+                                            sibling,
+                                            STATE.STOPPED));
+    parent.init(new Configuration());
+    assertInState(STATE.STOPPED, sibling);
+    parent.start();
+    assertInState(STATE.STOPPED, sibling);
+    parent.stop();
+    assertInState(STATE.STOPPED, sibling);
+    assertEquals(2, parent.getServices().size(),
+        "Incorrect number of services");
   }
 
   public static class CompositeServiceAddingAChild extends CompositeService{

@@ -17,15 +17,17 @@
  */
 package org.apache.hadoop.hdfs.server.blockmanagement;
 
+import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.protocol.Block;
+import org.apache.hadoop.hdfs.protocol.BlockType;
 
 /**
  * Subclass of {@link BlockInfo}, used for a block with replication scheme.
  */
 @InterfaceAudience.Private
 public class BlockInfoContiguous extends BlockInfo {
-  public static final BlockInfoContiguous[] EMPTY_ARRAY = {};
 
   public BlockInfoContiguous(short size) {
     super(size);
@@ -33,14 +35,6 @@ public class BlockInfoContiguous extends BlockInfo {
 
   public BlockInfoContiguous(Block blk, short size) {
     super(blk, size);
-  }
-
-  /**
-   * Copy construction.
-   * @param from BlockInfoContiguous to copy from.
-   */
-  protected BlockInfoContiguous(BlockInfoContiguous from) {
-    super(from);
   }
 
   /**
@@ -62,7 +56,10 @@ public class BlockInfoContiguous extends BlockInfo {
   }
 
   @Override
-  boolean addStorage(DatanodeStorageInfo storage) {
+  boolean addStorage(DatanodeStorageInfo storage, Block reportedBlock) {
+    Preconditions.checkArgument(this.getBlockId() == reportedBlock.getBlockId(),
+        "reported blk_%s is different from stored blk_%s",
+        reportedBlock.getBlockId(), this.getBlockId());
     // find the last null node
     int lastNode = ensureCapacity(1);
     setStorageInfo(lastNode, storage);
@@ -93,6 +90,19 @@ public class BlockInfoContiguous extends BlockInfo {
   }
 
   @Override
+  boolean isProvided() {
+    int len = getCapacity();
+    for (int idx = 0; idx < len; idx++) {
+      DatanodeStorageInfo storage = getStorageInfo(idx);
+      if (storage != null
+          && storage.getStorageType().equals(StorageType.PROVIDED)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  @Override
   public int numNodes() {
     assert this.triplets != null : "BlockInfo is not initialized";
     assert triplets.length % 3 == 0 : "Malformed BlockInfo";
@@ -106,17 +116,17 @@ public class BlockInfoContiguous extends BlockInfo {
   }
 
   @Override
-  void replaceBlock(BlockInfo newBlock) {
-    assert newBlock instanceof BlockInfoContiguous;
-    for (int i = this.numNodes() - 1; i >= 0; i--) {
-      final DatanodeStorageInfo storage = this.getStorageInfo(i);
-      final boolean removed = storage.removeBlock(this);
-      assert removed : "currentBlock not found.";
+  public final boolean isStriped() {
+    return false;
+  }
 
-      final DatanodeStorageInfo.AddBlockResult result = storage.addBlock(
-          newBlock);
-      assert result == DatanodeStorageInfo.AddBlockResult.ADDED :
-          "newBlock already exists.";
-    }
+  @Override
+  public BlockType getBlockType() {
+    return BlockType.CONTIGUOUS;
+  }
+
+  @Override
+  final boolean hasNoStorage() {
+    return getStorageInfo(0) == null;
   }
 }

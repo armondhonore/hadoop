@@ -21,8 +21,6 @@ import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
 
-import junit.framework.TestCase;
-
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.NullWritable;
@@ -35,13 +33,16 @@ import org.apache.hadoop.mapred.JobConfigurable;
 import org.apache.hadoop.mapred.RecordReader;
 import org.apache.hadoop.mapred.Reporter;
 import org.apache.hadoop.util.ReflectionUtils;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-public class TestWrappedRecordReaderClassloader extends TestCase {
+public class TestWrappedRecordReaderClassloader {
   /**
    * Tests the class loader set by {@link JobConf#setClassLoader(ClassLoader)}
    * is inherited by any {@link WrappedRecordReader}s created by
    * {@link CompositeRecordReader}
    */
+  @Test
   public void testClassLoader() throws Exception {
     JobConf job = new JobConf();
     Fake_ClassLoader classLoader = new Fake_ClassLoader();
@@ -49,8 +50,8 @@ public class TestWrappedRecordReaderClassloader extends TestCase {
     assertTrue(job.getClassLoader() instanceof Fake_ClassLoader);
 
     FileSystem fs = FileSystem.get(job);
-    Path testdir = new Path(System.getProperty("test.build.data", "/tmp"))
-        .makeQualified(fs);
+    Path testdir = fs.makeQualified(new Path(
+        System.getProperty("test.build.data", "/tmp")));
 
     Path base = new Path(testdir, "/empty");
     Path[] src = { new Path(base, "i0"), new Path("i1"), new Path("i2") };
@@ -122,9 +123,9 @@ public class TestWrappedRecordReaderClassloader extends TestCase {
 
     @SuppressWarnings("unchecked")
     public RR_ClassLoaderChecker(JobConf job) {
-      assertTrue("The class loader has not been inherited from "
-          + CompositeRecordReader.class.getSimpleName(),
-          job.getClassLoader() instanceof Fake_ClassLoader);
+      assertTrue(job.getClassLoader() instanceof Fake_ClassLoader,
+          "The class loader has not been inherited from "
+          + CompositeRecordReader.class.getSimpleName());
 
       keyclass = (Class<? extends K>) job.getClass("test.fakeif.keyclass",
           NullWritable.class, WritableComparable.class);

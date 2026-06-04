@@ -40,8 +40,9 @@ public abstract class ReplicaAccessor {
    *
    * @return       The number of bytes read.  If the read extends past the end
    *                  of the replica, a short read count will be returned.  We
-   *                  will never return a negative number.  We will never
-   *                  return a short read count unless EOF is reached.
+   *                  will should return -1 if EOF is reached and no bytes
+   *                  can be returned.  We will never return a short read
+   *                  count unless EOF is reached.
    */
   public abstract int read(long pos, byte[] buf, int off, int len)
       throws IOException;
@@ -58,8 +59,9 @@ public abstract class ReplicaAccessor {
    *
    * @return       The number of bytes read.  If the read extends past the end
    *                 of the replica, a short read count will be returned.  We
-   *                 will never return a negative number.  We will never return
-   *                 a short read count unless EOF is reached.
+   *                 should return -1 if EOF is reached and no bytes can be
+   *                 returned.  We will never return a short read count unless
+   *                 EOF is reached.
    */
   public abstract int read(long pos, ByteBuffer buf) throws IOException;
 
@@ -85,4 +87,11 @@ public abstract class ReplicaAccessor {
    * short-circuit byte count statistics.
    */
   public abstract boolean isShortCircuit();
+
+  /**
+   * Return the network distance between local machine and the remote machine.
+   */
+  public int getNetworkDistance() {
+    return isLocal() ? 0 : Integer.MAX_VALUE;
+  }
 }

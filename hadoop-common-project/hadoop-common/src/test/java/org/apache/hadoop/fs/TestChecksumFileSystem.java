@@ -18,20 +18,30 @@
 
 package org.apache.hadoop.fs;
 
+import java.util.Arrays;
+
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FSDataOutputStream;
+import org.apache.hadoop.fs.permission.FsPermission;
 import static org.apache.hadoop.fs.FileSystemTestHelper.*;
 import org.apache.hadoop.conf.Configuration;
-import org.junit.*;
-import static org.junit.Assert.*;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 public class TestChecksumFileSystem {
-  static final String TEST_ROOT_DIR
-    = System.getProperty("test.build.data","build/test/data/work-dir/localfs");
+  static final String TEST_ROOT_DIR =
+      GenericTestUtils.getTempPath("work-dir/localfs");
 
   static LocalFileSystem localFs;
 
-  @Before
+  @BeforeEach
   public void resetLocalFs() throws Exception {
     localFs = FileSystem.getLocal(new Configuration());
     localFs.setVerifyChecksum(true);
@@ -73,12 +83,12 @@ public class TestChecksumFileSystem {
     readFile(localFs, testPath, 1025);
 
     localFs.delete(localFs.getChecksumFile(testPath), true);
-    assertTrue("checksum deleted", !localFs.exists(localFs.getChecksumFile(testPath)));
+    assertTrue(!localFs.exists(localFs.getChecksumFile(testPath)), "checksum deleted");
     
     //copying the wrong checksum file
     FileUtil.copy(localFs, localFs.getChecksumFile(testPath11), localFs, 
         localFs.getChecksumFile(testPath),false,true,localFs.getConf());
-    assertTrue("checksum exists", localFs.exists(localFs.getChecksumFile(testPath)));
+    assertTrue(localFs.exists(localFs.getChecksumFile(testPath)), "checksum exists");
     
     boolean errorRead = false;
     try {
@@ -86,12 +96,12 @@ public class TestChecksumFileSystem {
     }catch(ChecksumException ie) {
       errorRead = true;
     }
-    assertTrue("error reading", errorRead);
+    assertTrue(errorRead, "error reading");
     
     //now setting verify false, the read should succeed
     localFs.setVerifyChecksum(false);
     String str = readFile(localFs, testPath, 1024).toString();
-    assertTrue("read", "testing".equals(str));
+    assertTrue("testing".equals(str), "read");
   }
 
   @Test
@@ -149,7 +159,7 @@ public class TestChecksumFileSystem {
     // telling it not to verify checksums, should avoid issue.
     localFs.setVerifyChecksum(false);
     String str = readFile(localFs, testPath, 1024).toString();
-    assertTrue("read", "testing truncation".equals(str));
+    assertTrue("testing truncation".equals(str), "read");
   }
   
   @Test
@@ -160,13 +170,11 @@ public class TestChecksumFileSystem {
     
     localFs.setVerifyChecksum(true);
     in = localFs.open(testPath);
-    assertTrue("stream is input checker",
-        in.getWrappedStream() instanceof FSInputChecker);
+    assertTrue(in.getWrappedStream() instanceof FSInputChecker, "stream is input checker");
     
     localFs.setVerifyChecksum(false);
     in = localFs.open(testPath);
-    assertFalse("stream is not input checker",
-        in.getWrappedStream() instanceof FSInputChecker);
+    assertFalse(in.getWrappedStream() instanceof FSInputChecker, "stream is not input checker");
   }
   
   @Test
@@ -196,7 +204,7 @@ public class TestChecksumFileSystem {
     } catch (ChecksumException ce) {
       e = ce;
     } finally {
-      assertNotNull("got checksum error", e);
+      assertNotNull(e, "got checksum error");
     }
 
     localFs.setVerifyChecksum(false);
@@ -228,6 +236,29 @@ public class TestChecksumFileSystem {
   }
 
 
+  @Test
+  public void testSetConf() {
+    Configuration conf = new Configuration();
+
+    conf.setInt(LocalFileSystemConfigKeys.LOCAL_FS_BYTES_PER_CHECKSUM_KEY, 0);
+    try {
+      localFs.setConf(conf);
+      fail("Should have failed because zero bytes per checksum is invalid");
+    } catch (IllegalStateException ignored) {
+    }
+
+    conf.setInt(LocalFileSystemConfigKeys.LOCAL_FS_BYTES_PER_CHECKSUM_KEY, -1);
+    try {
+      localFs.setConf(conf);
+      fail("Should have failed because negative bytes per checksum is invalid");
+    } catch (IllegalStateException ignored) {
+    }
+
+    conf.setInt(LocalFileSystemConfigKeys.LOCAL_FS_BYTES_PER_CHECKSUM_KEY, 512);
+    localFs.setConf(conf);
+
+  }
+
   void verifyRename(Path srcPath, Path dstPath, boolean dstIsDir)
       throws Exception { 
     localFs.delete(srcPath,true);
@@ -256,5 +287,28 @@ public class TestChecksumFileSystem {
     assertTrue(localFs.exists(localFs.getChecksumFile(srcPath)));
     assertTrue(localFs.rename(srcPath, dstPath));
     assertTrue(localFs.exists(localFs.getChecksumFile(realDstPath)));
+  }
+
+  @Test
+  public void testSetPermissionCrc() throws Exception {
+    FileSystem rawFs = localFs.getRawFileSystem();
+    Path p = new Path(TEST_ROOT_DIR, "testCrcPermissions");
+    localFs.createNewFile(p);
+    Path crc = localFs.getChecksumFile(p);
+    assert(rawFs.exists(crc));
+
+    for (short mode : Arrays.asList((short)0666, (short)0660, (short)0600)) {
+      FsPermission perm = new FsPermission(mode);
+      localFs.setPermission(p, perm);
+      assertEquals(perm, localFs.getFileStatus(p).getPermission());
+      assertEquals(perm, rawFs.getFileStatus(crc).getPermission());
+    }
+  }
+
+  @Test
+  public void testOperationOnRoot() throws Exception {
+    Path p = new Path("/");
+    localFs.mkdirs(p);
+    localFs.setReplication(p, localFs.getFileStatus(p).getPermission().toShort());
   }
 }

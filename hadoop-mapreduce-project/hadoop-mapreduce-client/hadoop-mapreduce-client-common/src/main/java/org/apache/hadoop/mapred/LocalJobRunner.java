@@ -24,6 +24,7 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -31,13 +32,12 @@ import java.util.List;
 import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import javax.crypto.KeyGenerator;
+
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
@@ -47,7 +47,9 @@ import org.apache.hadoop.io.Text;
 import org.apache.hadoop.ipc.ProtocolSignature;
 import org.apache.hadoop.mapreduce.Cluster.JobTrackerStatus;
 import org.apache.hadoop.mapreduce.ClusterMetrics;
+import org.apache.hadoop.mapreduce.CryptoUtils;
 import org.apache.hadoop.mapreduce.MRConfig;
+import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.OutputFormat;
 import org.apache.hadoop.mapreduce.QueueInfo;
 import org.apache.hadoop.mapreduce.TaskCompletionEvent;
@@ -55,6 +57,7 @@ import org.apache.hadoop.mapreduce.TaskTrackerInfo;
 import org.apache.hadoop.mapreduce.TaskType;
 import org.apache.hadoop.mapreduce.checkpoint.TaskCheckpointID;
 import org.apache.hadoop.mapreduce.protocol.ClientProtocol;
+import org.apache.hadoop.mapreduce.security.TokenCache;
 import org.apache.hadoop.mapreduce.security.token.delegation.DelegationTokenIdentifier;
 import org.apache.hadoop.mapreduce.server.jobtracker.JTConfig;
 import org.apache.hadoop.mapreduce.split.JobSplit.TaskSplitMetaInfo;
@@ -67,14 +70,18 @@ import org.apache.hadoop.security.authorize.AccessControlList;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.util.ReflectionUtils;
 
-import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
+import org.apache.hadoop.util.concurrent.HadoopExecutors;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** Implements MapReduce locally, in-process, for debugging. */
 @InterfaceAudience.Private
 @InterfaceStability.Unstable
 public class LocalJobRunner implements ClientProtocol {
-  public static final Log LOG =
-    LogFactory.getLog(LocalJobRunner.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(LocalJobRunner.class);
 
   /** The maximum number of map tasks to run in parallel in LocalJobRunner */
   public static final String LOCAL_MAX_MAPS =
@@ -83,6 +90,8 @@ public class LocalJobRunner implements ClientProtocol {
   /** The maximum number of reduce tasks to run in parallel in LocalJobRunner */
   public static final String LOCAL_MAX_REDUCES =
     "mapreduce.local.reduce.tasks.maximum";
+
+  public static final String INTERMEDIATE_DATA_ENCRYPTION_ALGO = "HmacSHA1";
 
   private FileSystem fs;
   private HashMap<JobID, Job> jobs = new HashMap<JobID, Job>();
@@ -106,7 +115,7 @@ public class LocalJobRunner implements ClientProtocol {
         this, protocol, clientVersion, clientMethodsHash);
   }
 
-  private class Job extends Thread implements TaskUmbilicalProtocol {
+  private class Job extends SubjectInheritingThread implements TaskUmbilicalProtocol {
     // The job directory on the system: JobClient places job configurations here.
     // This is analogous to JobTracker's system directory.
     private Path systemJobDir;
@@ -161,7 +170,7 @@ public class LocalJobRunner implements ClientProtocol {
       // Manage the distributed cache.  If there are files to be copied,
       // this will trigger localFile to be re-written again.
       localDistributedCacheManager = new LocalDistributedCacheManager();
-      localDistributedCacheManager.setup(conf);
+      localDistributedCacheManager.setup(conf, jobid);
       
       // Write out configuration file.  Instead of copying it from
       // systemJobFile, we re-write it, since setup(), above, may have
@@ -187,6 +196,25 @@ public class LocalJobRunner implements ClientProtocol {
           profile.getURL().toString());
 
       jobs.put(id, this);
+
+      if (CryptoUtils.isEncryptedSpillEnabled(job)) {
+        try {
+          int keyLen = conf.getInt(
+              MRJobConfig.MR_ENCRYPTED_INTERMEDIATE_DATA_KEY_SIZE_BITS,
+              MRJobConfig
+                  .DEFAULT_MR_ENCRYPTED_INTERMEDIATE_DATA_KEY_SIZE_BITS);
+          KeyGenerator keyGen =
+              KeyGenerator.getInstance(INTERMEDIATE_DATA_ENCRYPTION_ALGO);
+          keyGen.init(keyLen);
+          Credentials creds =
+              UserGroupInformation.getCurrentUser().getCredentials();
+          TokenCache.setEncryptedSpillKey(keyGen.generateKey().getEncoded(),
+              creds);
+          UserGroupInformation.getCurrentUser().addCredentials(creds);
+        } catch (NoSuchAlgorithmException e) {
+          throw new IOException("Error generating encrypted spill key", e);
+        }
+      }
 
       this.start();
     }
@@ -401,7 +429,8 @@ public class LocalJobRunner implements ClientProtocol {
       ThreadFactory tf = new ThreadFactoryBuilder()
         .setNameFormat("LocalJobRunner Map Task Executor #%d")
         .build();
-      ExecutorService executor = Executors.newFixedThreadPool(maxMapThreads, tf);
+      ExecutorService executor = HadoopExecutors.newFixedThreadPool(
+          maxMapThreads, tf);
 
       return executor;
     }
@@ -427,7 +456,8 @@ public class LocalJobRunner implements ClientProtocol {
       LOG.debug("Reduce tasks to process: " + this.numReduceTasks);
 
       // Create a new executor service to drain the work queue.
-      ExecutorService executor = Executors.newFixedThreadPool(maxReduceThreads);
+      ExecutorService executor = HadoopExecutors.newFixedThreadPool(
+          maxReduceThreads);
 
       return executor;
     }
@@ -492,7 +522,7 @@ public class LocalJobRunner implements ClientProtocol {
     }
 
     @Override
-    public void run() {
+    public void work() {
       JobID jobId = profile.getJobID();
       JobContext jContext = new JobContextImpl(job, jobId);
       
@@ -558,16 +588,22 @@ public class LocalJobRunner implements ClientProtocol {
         } else {
           this.status.setRunState(JobStatus.FAILED);
         }
-        LOG.warn(id, t);
+        LOG.warn(id.toString(), t);
 
         JobEndNotifier.localRunnerNotification(job, status);
 
       } finally {
         try {
-          fs.delete(systemJobFile.getParent(), true);  // delete submit dir
-          localFs.delete(localJobFile, true);              // delete local copy
-          // Cleanup distributed cache
-          localDistributedCacheManager.close();
+          try {
+            // Cleanup distributed cache
+            localDistributedCacheManager.close();
+          } finally {
+            try {
+              fs.delete(systemJobFile.getParent(), true); // delete submit dir
+            } finally {
+              localFs.delete(localJobFile, true);         // delete local copy
+            }
+          }
         } catch (IOException e) {
           LOG.warn("Error cleaning up "+id+": "+e);
         }
@@ -692,17 +728,17 @@ public class LocalJobRunner implements ClientProtocol {
     @Override
     public synchronized void fsError(TaskAttemptID taskId, String message) 
     throws IOException {
-      LOG.fatal("FSError: "+ message + "from task: " + taskId);
+      LOG.error("FSError: "+ message + "from task: " + taskId);
     }
 
     @Override
     public void shuffleError(TaskAttemptID taskId, String message) throws IOException {
-      LOG.fatal("shuffleError: "+ message + "from task: " + taskId);
+      LOG.error("shuffleError: "+ message + "from task: " + taskId);
     }
     
-    public synchronized void fatalError(TaskAttemptID taskId, String msg) 
+    public synchronized void fatalError(TaskAttemptID taskId, String msg, boolean fastFail)
     throws IOException {
-      LOG.fatal("Fatal: "+ msg + "from task: " + taskId);
+      LOG.error("Fatal: "+ msg + " from task: " + taskId + " fast fail: " + fastFail);
     }
     
     @Override
@@ -739,7 +775,7 @@ public class LocalJobRunner implements ClientProtocol {
   public LocalJobRunner(JobConf conf) throws IOException {
     this.fs = FileSystem.getLocal(conf);
     this.conf = conf;
-    myMetrics = new LocalJobRunnerMetrics(new JobConf(conf));
+    myMetrics = LocalJobRunnerMetrics.create();
   }
 
   // JobSubmissionProtocol methods
@@ -992,8 +1028,8 @@ public class LocalJobRunner implements ClientProtocol {
     String taskId = t.getTaskID().toString();
     boolean isCleanup = t.isTaskCleanupTask();
     String user = t.getUser();
-    StringBuffer childMapredLocalDir =
-        new StringBuffer(localDirs[0] + Path.SEPARATOR
+    StringBuilder childMapredLocalDir =
+        new StringBuilder(localDirs[0] + Path.SEPARATOR
             + getLocalTaskDir(user, jobId, taskId, isCleanup));
     for (int i = 1; i < localDirs.length; i++) {
       childMapredLocalDir.append("," + localDirs[i] + Path.SEPARATOR

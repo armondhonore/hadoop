@@ -17,10 +17,14 @@
  */
 package org.apache.hadoop.hdfs;
 
+import java.util.function.Supplier;
+
 import java.io.IOException;
 import java.util.Arrays;
+import java.util.concurrent.TimeoutException;
 
-import org.apache.commons.logging.Log;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
@@ -33,15 +37,17 @@ import org.apache.hadoop.hdfs.protocol.datatransfer.ReplaceDatanodeOnFailure;
 import org.apache.hadoop.hdfs.protocol.datatransfer.ReplaceDatanodeOnFailure.Policy;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.apache.log4j.Level;
-import org.junit.Assert;
-import org.junit.Test;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.Test;
+import org.slf4j.event.Level;
 
 /**
  * This class tests that data nodes are correctly replaced on failure.
  */
 public class TestReplaceDatanodeOnFailure {
-  static final Log LOG = AppendTestUtil.LOG;
+  static final Logger LOG =
+      LoggerFactory.getLogger(TestReplaceDatanodeOnFailure.class);
 
   static final String DIR = "/" + TestReplaceDatanodeOnFailure.class.getSimpleName() + "/";
   static final short REPLICATION = 3;
@@ -49,7 +55,7 @@ public class TestReplaceDatanodeOnFailure {
   final private static String RACK1 = "/rack1";
 
   {
-    GenericTestUtils.setLogLevel(DataTransferProtocol.LOG, Level.ALL);
+    GenericTestUtils.setLogLevel(DataTransferProtocol.LOG, Level.TRACE);
   }
 
   /** Test DEFAULT ReplaceDatanodeOnFailure policy. */
@@ -60,9 +66,9 @@ public class TestReplaceDatanodeOnFailure {
 
     final DatanodeInfo[] infos = new DatanodeInfo[5];
     final DatanodeInfo[][] datanodes = new DatanodeInfo[infos.length + 1][];
-    datanodes[0] = new DatanodeInfo[0];
+    datanodes[0] = DatanodeInfo.EMPTY_ARRAY;
     for(int i = 0; i < infos.length; ) {
-      infos[i] = DFSTestUtil.getLocalDatanodeInfo(50020 + i);
+      infos[i] = DFSTestUtil.getLocalDatanodeInfo(9867 + i);
       i++;
       datanodes[i] = new DatanodeInfo[i];
       System.arraycopy(infos, 0, datanodes[i], 0, datanodes[i].length);
@@ -74,7 +80,7 @@ public class TestReplaceDatanodeOnFailure {
     for(short replication = 1; replication <= infos.length; replication++) {
       for(int nExistings = 0; nExistings < datanodes.length; nExistings++) {
         final DatanodeInfo[] existings = datanodes[nExistings];
-        Assert.assertEquals(nExistings, existings.length);
+        Assertions.assertEquals(nExistings, existings.length);
 
         for(int i = 0; i < isAppend.length; i++) {
           for(int j = 0; j < isHflushed.length; j++) {
@@ -95,7 +101,7 @@ public class TestReplaceDatanodeOnFailure {
             final boolean computed = p.satisfy(
                 replication, existings, isAppend[i], isHflushed[j]);
             try {
-              Assert.assertEquals(expected, computed);
+              Assertions.assertEquals(expected, computed);
             } catch(AssertionError e) {
               final String s = "replication=" + replication
                            + "\nnExistings =" + nExistings
@@ -113,7 +119,9 @@ public class TestReplaceDatanodeOnFailure {
   @Test
   public void testReplaceDatanodeOnFailure() throws Exception {
     final Configuration conf = new HdfsConfiguration();
-    
+    // do not consider load factor when selecting a data node
+    conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_CONSIDERLOAD_KEY,
+        false);
     //always replace a datanode
     ReplaceDatanodeOnFailure.write(Policy.ALWAYS, true, conf);
 
@@ -123,31 +131,40 @@ public class TestReplaceDatanodeOnFailure {
         ).racks(racks).numDataNodes(REPLICATION).build();
 
     try {
+      cluster.waitActive();
       final DistributedFileSystem fs = cluster.getFileSystem();
       final Path dir = new Path(DIR);
-      
-      final SlowWriter[] slowwriters = new SlowWriter[10];
+      final int NUM_WRITERS = 10;
+      final int FIRST_BATCH = 5;
+      final SlowWriter[] slowwriters = new SlowWriter[NUM_WRITERS];
       for(int i = 1; i <= slowwriters.length; i++) {
         //create slow writers in different speed
         slowwriters[i - 1] = new SlowWriter(fs, new Path(dir, "file" + i), i*200L);
       }
 
-      for(SlowWriter s : slowwriters) {
-        s.start();
+      for(int i = 0; i < FIRST_BATCH; i++) {
+        slowwriters[i].start();
       }
 
       // Let slow writers write something.
-      // Some of them are too slow and will be not yet started. 
-      sleepSeconds(1);
+      // Some of them are too slow and will be not yet started.
+      sleepSeconds(3);
 
       //start new datanodes
       cluster.startDataNodes(conf, 2, true, null, new String[]{RACK1, RACK1});
+      cluster.waitActive();
+      // wait for first block reports for up to 10 seconds
+      cluster.waitFirstBRCompleted(0, 10000);
+
       //stop an old datanode
-      cluster.stopDataNode(AppendTestUtil.nextInt(REPLICATION));
-      
-      //Let the slow writer writes a few more seconds
-      //Everyone should have written something.
-      sleepSeconds(5);
+      MiniDFSCluster.DataNodeProperties dnprop = cluster.stopDataNode(
+          AppendTestUtil.nextInt(REPLICATION));
+
+      for(int i = FIRST_BATCH; i < slowwriters.length; i++) {
+        slowwriters[i].start();
+      }
+
+      waitForBlockReplication(slowwriters);
 
       //check replication and interrupt.
       for(SlowWriter s : slowwriters) {
@@ -169,7 +186,7 @@ public class TestReplaceDatanodeOnFailure {
         try {
           in = fs.open(slowwriters[i].filepath);
           for(int j = 0, x; (x = in.read()) != -1; j++) {
-            Assert.assertEquals(j, x);
+            Assertions.assertEquals(j, x);
           }
         }
         finally {
@@ -181,17 +198,37 @@ public class TestReplaceDatanodeOnFailure {
     }
   }
 
+  void waitForBlockReplication(final SlowWriter[] slowwriters) throws
+      TimeoutException, InterruptedException {
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+      @Override public Boolean get() {
+        try {
+          for (SlowWriter s : slowwriters) {
+            if (s.out.getCurrentBlockReplication() < REPLICATION) {
+              return false;
+            }
+          }
+        } catch (IOException e) {
+          LOG.warn("IOException is thrown while getting the file block " +
+              "replication factor", e);
+          return false;
+        }
+        return true;
+      }
+    }, 1000, 10000);
+  }
+
   static void sleepSeconds(final int waittime) throws InterruptedException {
     LOG.info("Wait " + waittime + " seconds");
     Thread.sleep(waittime * 1000L);
   }
 
-  static class SlowWriter extends Thread {
+  static class SlowWriter extends SubjectInheritingThread {
     final Path filepath;
     final HdfsDataOutputStream out;
     final long sleepms;
     private volatile boolean running = true;
-    
+
     SlowWriter(DistributedFileSystem fs, Path filepath, final long sleepms
         ) throws IOException {
       super(SlowWriter.class.getSimpleName() + ":" + filepath);
@@ -201,14 +238,16 @@ public class TestReplaceDatanodeOnFailure {
     }
 
     @Override
-    public void run() {
+    public void work() {
       int i = 0;
+
       try {
         sleep(sleepms);
         for(; running; i++) {
           LOG.info(getName() + " writes " + i);
           out.write(i);
           out.hflush();
+
           sleep(sleepms);
         }
       } catch(InterruptedException e) {
@@ -232,7 +271,7 @@ public class TestReplaceDatanodeOnFailure {
     }
 
     void checkReplication() throws IOException {
-      Assert.assertEquals(REPLICATION, out.getCurrentBlockReplication());
+      Assertions.assertEquals(REPLICATION, out.getCurrentBlockReplication());
     }        
   }
 
@@ -252,8 +291,8 @@ public class TestReplaceDatanodeOnFailure {
         LOG.info("create an empty file " + f);
         fs.create(f, REPLICATION).close();
         final FileStatus status = fs.getFileStatus(f);
-        Assert.assertEquals(REPLICATION, status.getReplication());
-        Assert.assertEquals(0L, status.getLen());
+        Assertions.assertEquals(REPLICATION, status.getReplication());
+        Assertions.assertEquals(0L, status.getLen());
       }
       
       
@@ -265,8 +304,8 @@ public class TestReplaceDatanodeOnFailure {
         out.close();
 
         final FileStatus status = fs.getFileStatus(f);
-        Assert.assertEquals(REPLICATION, status.getReplication());
-        Assert.assertEquals(bytes.length, status.getLen());
+        Assertions.assertEquals(REPLICATION, status.getReplication());
+        Assertions.assertEquals(bytes.length, status.getLen());
       }
 
       {
@@ -276,7 +315,7 @@ public class TestReplaceDatanodeOnFailure {
           out.write(bytes);
           out.close();
 
-          Assert.fail();
+          Assertions.fail();
         } catch(IOException ioe) {
           LOG.info("This exception is expected", ioe);
         }
@@ -308,8 +347,8 @@ public class TestReplaceDatanodeOnFailure {
         out.close();
 
         final FileStatus status = fs.getFileStatus(f);
-        Assert.assertEquals(REPLICATION, status.getReplication());
-        Assert.assertEquals(bytes.length, status.getLen());
+        Assertions.assertEquals(REPLICATION, status.getReplication());
+        Assertions.assertEquals(bytes.length, status.getLen());
       }
 
       {

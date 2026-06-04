@@ -18,22 +18,28 @@
 
 package org.apache.hadoop.mapred;
 
-import java.io.*;
-import java.util.*;
-import junit.framework.TestCase;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.BytesWritable;
+import org.apache.hadoop.io.IntWritable;
+import org.apache.hadoop.io.SequenceFile;
+import org.slf4j.Logger;
+import org.junit.jupiter.api.Test;
 
-import org.apache.commons.logging.*;
+import java.util.BitSet;
+import java.util.Random;
 
-import org.apache.hadoop.fs.*;
-import org.apache.hadoop.io.*;
-import org.apache.hadoop.conf.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
-public class TestSequenceFileInputFormat extends TestCase {
-  private static final Log LOG = FileInputFormat.LOG;
+public class TestSequenceFileInputFormat {
+  private static final Logger LOG = FileInputFormat.LOG;
 
   private static int MAX_LENGTH = 10000;
   private static Configuration conf = new Configuration();
 
+  @Test
   public void testFormat() throws Exception {
     JobConf job = new JobConf(conf);
     FileSystem fs = FileSystem.getLocal(conf);
@@ -96,7 +102,7 @@ public class TestSequenceFileInputFormat extends TestCase {
               // LOG.info("splits["+j+"]="+splits[j]+" : " + key.get());
               // LOG.info("@"+reader.getPos());
               // }
-              assertFalse("Key in multiple partitions.", bits.get(key.get()));
+              assertFalse(bits.get(key.get()), "Key in multiple partitions.");
               bits.set(key.get());
               count++;
             }
@@ -105,12 +111,11 @@ public class TestSequenceFileInputFormat extends TestCase {
             reader.close();
           }
         }
-        assertEquals("Some keys in no partition.", length, bits.cardinality());
+        assertEquals(length, bits.cardinality(), "Some keys in no partition.");
       }
 
     }
   }
-
   public static void main(String[] args) throws Exception {
     new TestSequenceFileInputFormat().testFormat();
   }

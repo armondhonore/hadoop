@@ -19,22 +19,22 @@ package org.apache.hadoop.yarn.server.resourcemanager.monitor;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
-import org.apache.hadoop.yarn.server.resourcemanager.scheduler.PreemptableResourceScheduler;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
 
 public interface SchedulingEditPolicy {
 
-  public void init(Configuration config, RMContext context,
-      PreemptableResourceScheduler scheduler);
+  void init(Configuration config, RMContext context,
+      ResourceScheduler scheduler);
 
   /**
    * This method is invoked at regular intervals. Internally the policy is
    * allowed to track containers and affect the scheduler. The "actions"
    * performed are passed back through an EventHandler.
    */
-  public void editSchedule();
+  void editSchedule();
 
-  public long getMonitoringInterval();
+  long getMonitoringInterval();
 
-  public String getPolicyName();
+  String getPolicyName();
 
 }

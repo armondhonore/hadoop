@@ -29,8 +29,20 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapred.lib.IdentityMapper;
+
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+
 public class TestJobName extends ClusterMapReduceTestCase {
 
+  @BeforeAll
+  public static void setupClass() throws Exception {
+    setupClassBase(TestJobName.class);
+  }
+
+  @Test
   public void testComplexName() throws Exception {
     OutputStream os = getFileSystem().create(new Path(getInputDir(),
         "text.txt"));
@@ -65,6 +77,7 @@ public class TestJobName extends ClusterMapReduceTestCase {
     reader.close();
   }
 
+  @Test
   public void testComplexNameWithRegex() throws Exception {
     OutputStream os = getFileSystem().create(new Path(getInputDir(),
         "text.txt"));

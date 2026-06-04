@@ -22,10 +22,6 @@ import java.io.File;
 import java.io.IOException;
 import java.util.List;
 
-import junit.framework.TestCase;
-
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.ipc.ProtocolSignature;
@@ -40,6 +36,11 @@ import org.apache.hadoop.mapreduce.split.JobSplit.TaskSplitMetaInfo;
 import org.apache.hadoop.mapreduce.split.JobSplitWriter;
 import org.apache.hadoop.mapreduce.split.SplitMetaInfoReader;
 import org.apache.hadoop.util.ReflectionUtils;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  *  Validates map phase progress.
@@ -55,8 +56,9 @@ import org.apache.hadoop.util.ReflectionUtils;
  *  once mapTask.run() is finished. Sort phase progress in map task is not
  *  validated here.
  */
-public class TestMapProgress extends TestCase {
-  public static final Log LOG = LogFactory.getLog(TestMapProgress.class);
+public class TestMapProgress {
+  public static final Logger LOG =
+      LoggerFactory.getLogger(TestMapProgress.class);
   private static String TEST_ROOT_DIR;
   static {
     String root = new File(System.getProperty("test.build.data", "/tmp"))
@@ -89,8 +91,8 @@ public class TestMapProgress extends TestCase {
       LOG.info("Task " + taskId + " reporting shuffle error: " + message);
     }
 
-    public void fatalError(TaskAttemptID taskId, String msg) throws IOException {
-      LOG.info("Task " + taskId + " reporting fatal error: " + msg);
+    public void fatalError(TaskAttemptID taskId, String msg, boolean fastFail) throws IOException {
+      LOG.info("Task " + taskId + " reporting fatal error: " + msg + " fast fail: " + fastFail);
     }
 
     public JvmTask getTask(JvmContext context) throws IOException {
@@ -117,7 +119,7 @@ public class TestMapProgress extends TestCase {
     
     public AMFeedback statusUpdate(TaskAttemptID taskId, TaskStatus taskStatus) 
     throws IOException, InterruptedException {
-      StringBuffer buf = new StringBuffer("Task ");
+      StringBuilder buf = new StringBuilder("Task ");
       buf.append(taskId);
       if (taskStatus != null) {
         buf.append(" making progress to ");
@@ -191,8 +193,8 @@ public class TestMapProgress extends TestCase {
         return;
       }
       // validate map task progress when the map task is in map phase
-      assertTrue("Map progress is not the expected value.",
-                 Math.abs(mapTaskProgress - ((float)recordNum/3)) < 0.001);
+      assertTrue(Math.abs(mapTaskProgress - ((float)recordNum/3)) < 0.001,
+          "Map progress is not the expected value.");
     }
   }
 
@@ -234,7 +236,8 @@ public class TestMapProgress extends TestCase {
   /**
    *  Validates map phase progress after each record is processed by map task
    *  using custom task reporter.
-   */ 
+   */
+  @Test
   public void testMapProgress() throws Exception {
     JobConf job = new JobConf();
     fs = FileSystem.getLocal(job);

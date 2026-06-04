@@ -21,8 +21,6 @@ package org.apache.hadoop.mapreduce.v2.hs;
 import java.util.List;
 import java.util.Map;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.mapred.TaskCompletionEvent;
@@ -39,11 +37,14 @@ import org.apache.hadoop.mapreduce.v2.app.job.Task;
 import org.apache.hadoop.mapreduce.v2.jobhistory.JobIndexInfo;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authorize.AccessControlList;
+import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.factory.providers.RecordFactoryProvider;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 
 public class PartialJob implements org.apache.hadoop.mapreduce.v2.app.job.Job {
-  private static final Log LOG = LogFactory.getLog(PartialJob.class);
+  private static final Logger LOG = LoggerFactory.getLogger(PartialJob.class);
 
   private JobIndexInfo jobIndexInfo = null;
   private JobId jobId = null;
@@ -196,4 +197,29 @@ public class PartialJob implements org.apache.hadoop.mapreduce.v2.app.job.Job {
     throw new UnsupportedOperationException("Can't set job's queue name in history");
   }
 
+  @Override
+  public void setJobPriority(Priority priority) {
+    throw new UnsupportedOperationException(
+        "Can't set job's priority in history");
+  }
+
+  @Override
+  public int getFailedMaps() {
+    return -1;
+  }
+
+  @Override
+  public int getFailedReduces() {
+    return -1;
+  }
+
+  @Override
+  public int getKilledMaps() {
+    return -1;
+  }
+
+  @Override
+  public int getKilledReduces() {
+    return -1;
+  }
 }

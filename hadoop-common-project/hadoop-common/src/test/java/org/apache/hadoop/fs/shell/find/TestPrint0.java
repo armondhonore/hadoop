@@ -17,29 +17,32 @@
  */
 package org.apache.hadoop.fs.shell.find;
 
-import static org.junit.Assert.*;
-import static org.mockito.Mockito.*;
-
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
 import java.io.IOException;
 
 import org.apache.hadoop.fs.shell.PathData;
-import org.junit.Test;
 
 import java.io.PrintStream;
 
 import org.apache.hadoop.fs.FileSystem;
-import org.junit.Before;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
+@Timeout(10)
 public class TestPrint0 {
   private FileSystem mockFs;
 
-  @Before
+  @BeforeEach
   public void resetMock() throws IOException {
     mockFs = MockFileSystem.setup();
   }
 
   // test the full path is printed to stdout with a '\0'
-  @Test(timeout = 1000)
+  @Test
   public void testPrint() throws IOException {
     Print.Print0 print = new Print.Print0();
     PrintStream out = mock(PrintStream.class);

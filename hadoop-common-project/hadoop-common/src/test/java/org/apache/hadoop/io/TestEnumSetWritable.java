@@ -18,15 +18,20 @@
 
 package org.apache.hadoop.io;
 
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+
+
 import java.io.IOException;
 import java.util.EnumSet;
 import java.util.Iterator;
 import java.lang.reflect.Type;
 
-import junit.framework.TestCase;
 
 /** Unit test for EnumSetWritable */
-public class TestEnumSetWritable extends TestCase {
+public class TestEnumSetWritable {
 
   enum TestEnumSet {
     CREATE, OVERWRITE, APPEND;
@@ -37,6 +42,7 @@ public class TestEnumSetWritable extends TestCase {
       new EnumSetWritable<TestEnumSet>(nonEmptyFlag);
 
   @SuppressWarnings("unchecked")
+  @Test
   public void testSerializeAndDeserializeNonEmpty() throws IOException {
     DataOutputBuffer out = new DataOutputBuffer();
     ObjectWritable.writeObject(out, nonEmptyFlagWritable, nonEmptyFlagWritable
@@ -51,6 +57,7 @@ public class TestEnumSetWritable extends TestCase {
   EnumSet<TestEnumSet> emptyFlag = EnumSet.noneOf(TestEnumSet.class);
 
   @SuppressWarnings("unchecked")
+  @Test
   public void testSerializeAndDeserializeEmpty() throws IOException {
 
     boolean gotException = false;
@@ -60,10 +67,9 @@ public class TestEnumSetWritable extends TestCase {
       gotException = true;
     }
 
-    assertTrue(
+    assertTrue(gotException,
         "Instantiation of empty EnumSetWritable with no element type class "
-        + "provided should throw exception.",
-        gotException);
+        + "provided should throw exception.");
 
     EnumSetWritable<TestEnumSet> emptyFlagWritable = 
         new EnumSetWritable<TestEnumSet>(emptyFlag, TestEnumSet.class);
@@ -78,6 +84,7 @@ public class TestEnumSetWritable extends TestCase {
   }
 
   @SuppressWarnings("unchecked")
+  @Test
   public void testSerializeAndDeserializeNull() throws IOException {
 
     boolean gotException = false;
@@ -87,10 +94,9 @@ public class TestEnumSetWritable extends TestCase {
       gotException = true;
     }
 
-    assertTrue(
+    assertTrue(gotException,
         "Instantiation of empty EnumSetWritable with no element type class "
-        + "provided should throw exception",
-        gotException);
+        + "provided should throw exception");
 
     EnumSetWritable<TestEnumSet> nullFlagWritable = 
         new EnumSetWritable<TestEnumSet>(null, TestEnumSet.class);
@@ -107,10 +113,11 @@ public class TestEnumSetWritable extends TestCase {
 
   public EnumSetWritable<TestEnumSet> testField;
 
+  @Test
   public void testAvroReflect() throws Exception {
     String schema = "{\"type\":\"array\",\"items\":{\"type\":\"enum\","
         + "\"name\":\"TestEnumSet\","
-        + "\"namespace\":\"org.apache.hadoop.io.TestEnumSetWritable$\","
+        + "\"namespace\":\"org.apache.hadoop.io.TestEnumSetWritable\","
         + "\"symbols\":[\"CREATE\",\"OVERWRITE\",\"APPEND\"]},"
         + "\"java-class\":\"org.apache.hadoop.io.EnumSetWritable\"}";
     Type type =
@@ -121,24 +128,25 @@ public class TestEnumSetWritable extends TestCase {
   /**
    * test {@link EnumSetWritable} equals() method
    */
+  @Test
   public void testEnumSetWritableEquals() {
     EnumSetWritable<TestEnumSet> eset1 = new EnumSetWritable<TestEnumSet>(
         EnumSet.of(TestEnumSet.APPEND, TestEnumSet.CREATE), TestEnumSet.class);
     EnumSetWritable<TestEnumSet> eset2 = new EnumSetWritable<TestEnumSet>(
         EnumSet.of(TestEnumSet.APPEND, TestEnumSet.CREATE), TestEnumSet.class);
-    assertTrue("testEnumSetWritableEquals error !!!", eset1.equals(eset2));
-    assertFalse("testEnumSetWritableEquals error !!!",
-        eset1.equals(new EnumSetWritable<TestEnumSet>(EnumSet.of(
-            TestEnumSet.APPEND, TestEnumSet.CREATE, TestEnumSet.OVERWRITE),
-            TestEnumSet.class)));
-    assertTrue("testEnumSetWritableEquals getElementType error !!!", eset1
-        .getElementType().equals(TestEnumSet.class));
+    assertTrue(eset1.equals(eset2), "testEnumSetWritableEquals error !!!");
+    assertFalse(eset1.equals(new EnumSetWritable<TestEnumSet>(EnumSet.of(
+        TestEnumSet.APPEND, TestEnumSet.CREATE, TestEnumSet.OVERWRITE),
+        TestEnumSet.class)), "testEnumSetWritableEquals error !!!");
+    assertTrue(eset1.getElementType().equals(TestEnumSet.class),
+        "testEnumSetWritableEquals getElementType error !!!");
   }
   
   /** 
    * test {@code EnumSetWritable.write(DataOutputBuffer out)} 
    *  and iteration by TestEnumSet through iterator().
    */
+  @Test
   public void testEnumSetWritableWriteRead() throws Exception {
     EnumSetWritable<TestEnumSet> srcSet = new EnumSetWritable<TestEnumSet>(
         EnumSet.of(TestEnumSet.APPEND, TestEnumSet.CREATE), TestEnumSet.class);
@@ -154,8 +162,8 @@ public class TestEnumSetWritable extends TestCase {
     Iterator<TestEnumSet> dstIter = result.iterator();
     Iterator<TestEnumSet> srcIter = srcSet.iterator();
     while (dstIter.hasNext() && srcIter.hasNext()) {
-      assertEquals("testEnumSetWritableWriteRead error !!!", dstIter.next(),
-          srcIter.next());
+      assertEquals(dstIter.next(), srcIter.next(),
+          "testEnumSetWritableWriteRead error !!!");
     }
   }
 }

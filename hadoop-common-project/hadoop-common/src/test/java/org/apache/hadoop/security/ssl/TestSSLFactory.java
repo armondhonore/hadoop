@@ -17,24 +17,45 @@
  */
 package org.apache.hadoop.security.ssl;
 
-import static org.junit.Assert.assertArrayEquals;
-import static org.junit.Assert.assertEquals;
+import static java.security.Security.getProperty;
+import static java.security.Security.setProperty;
+import static org.apache.hadoop.security.ssl.FileBasedKeyStoresFactory.SSL_TRUSTSTORE_LOCATION_TPL_KEY;
+import static org.apache.hadoop.security.ssl.KeyStoreTestUtil.TRUST_STORE_PASSWORD_DEFAULT;
+import static org.apache.hadoop.security.ssl.SSLFactory.Mode.CLIENT;
+import static org.apache.hadoop.security.ssl.SSLFactory.SSL_CLIENT_CONF_KEY;
+import static org.apache.hadoop.security.ssl.SSLFactory.SSL_REQUIRE_CLIENT_CERT_KEY;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.security.alias.CredentialProvider;
 import org.apache.hadoop.security.alias.CredentialProviderFactory;
 import org.apache.hadoop.security.alias.JavaKeyStoreProvider;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.hadoop.util.StringUtils;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.event.Level;
 
 import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.SSLEngine;
+import javax.net.ssl.SSLEngineResult;
+import javax.net.ssl.SSLHandshakeException;
+import javax.net.ssl.SSLSession;
 import java.io.File;
 import java.net.URL;
+import java.nio.ByteBuffer;
 import java.security.GeneralSecurityException;
 import java.security.KeyPair;
 import java.security.cert.X509Certificate;
@@ -42,15 +63,27 @@ import java.util.Collections;
 import java.util.Map;
 
 public class TestSSLFactory {
-
+  private static final Logger LOG = LoggerFactory
+      .getLogger(TestSSLFactory.class);
   private static final String BASEDIR =
-    System.getProperty("test.build.dir", "target/test-dir") + "/" +
-    TestSSLFactory.class.getSimpleName();
+      GenericTestUtils.getTempPath(TestSSLFactory.class.getSimpleName());
   private static final String KEYSTORES_DIR =
     new File(BASEDIR).getAbsolutePath();
   private String sslConfsDir;
+  private static final String excludeCiphers = "TLS_ECDHE_RSA_WITH_RC4_128_SHA,"
+      + "SSL_DHE_RSA_EXPORT_WITH_DES40_CBC_SHA,  \n"
+      + "SSL_RSA_WITH_DES_CBC_SHA,"
+      + "SSL_DHE_RSA_WITH_DES_CBC_SHA,  "
+      + "SSL_RSA_EXPORT_WITH_RC4_40_MD5,\t \n"
+      + "SSL_RSA_EXPORT_WITH_DES40_CBC_SHA,"
+      + "SSL_RSA_WITH_RC4_128_MD5,"
+      + "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA";
+  private static final Configuration FAKE_SSL_CONFIG =
+      KeyStoreTestUtil.createClientSSLConfig("clientKeyStoreLocation",
+          "keystorePassword", "keyPassword",
+          "trustStoreLocation", "trustStorePassword");
 
-  @BeforeClass
+  @BeforeAll
   public static void setUp() throws Exception {
     File base = new File(BASEDIR);
     FileUtil.fullyDelete(base);
@@ -62,29 +95,80 @@ public class TestSSLFactory {
     throws Exception {
     Configuration conf = new Configuration();
     KeyStoreTestUtil.setupSSLConfig(KEYSTORES_DIR, sslConfsDir, conf,
-      clientCert, trustStore);
+      clientCert, trustStore, excludeCiphers);
     return conf;
   }
 
-  @After
-  @Before
+  @AfterEach
+  @BeforeEach
   public void cleanUp() throws Exception {
     sslConfsDir = KeyStoreTestUtil.getClasspathDir(TestSSLFactory.class);
     KeyStoreTestUtil.cleanupSSLConfig(KEYSTORES_DIR, sslConfsDir);
   }
 
-  @Test(expected = IllegalStateException.class)
-  public void clientMode() throws Exception {
+  private String getClientTrustStoreKeyName() {
+    return FileBasedKeyStoresFactory.resolvePropertyName(
+        CLIENT, SSL_TRUSTSTORE_LOCATION_TPL_KEY);
+  }
+
+  @Test
+  public void testNonExistSslClientXml() throws Exception{
+    Configuration conf = new Configuration(false);
+    conf.setBoolean(SSL_REQUIRE_CLIENT_CERT_KEY, false);
+    conf.set(SSL_CLIENT_CONF_KEY, "non-exist-ssl-client.xml");
+    Configuration sslConf =
+        SSLFactory.readSSLConfiguration(conf, SSLFactory.Mode.CLIENT);
+    assertNull(sslConf.getResource("non-exist-ssl-client.xml"));
+    assertNull(sslConf.get("ssl.client.truststore.location"));
+  }
+
+  @Test
+  public void testSslConfFallback() throws Exception {
+    Configuration conf = new Configuration(FAKE_SSL_CONFIG);
+
+    // Set non-exist-ssl-client.xml that fails to load.
+    // This triggers fallback to SSL config from input conf.
+    conf.set(SSL_CLIENT_CONF_KEY, "non-exist-ssl-client.xml");
+    Configuration sslConf = SSLFactory.readSSLConfiguration(conf, CLIENT);
+
+    // Verify fallback to input conf when ssl conf can't be loaded from
+    // classpath.
+    String clientTsLoc = sslConf.get(getClientTrustStoreKeyName());
+    assertEquals("trustStoreLocation", clientTsLoc);
+    assertEquals(sslConf, conf);
+  }
+
+  @Test
+  public void testSslConfClassPathFirst() throws Exception {
+    // Generate a valid ssl-client.xml into classpath.
+    // This will be the preferred approach.
     Configuration conf = createConfiguration(false, true);
-    SSLFactory sslFactory = new SSLFactory(SSLFactory.Mode.CLIENT, conf);
-    try {
-      sslFactory.init();
-      Assert.assertNotNull(sslFactory.createSSLSocketFactory());
-      Assert.assertNotNull(sslFactory.getHostnameVerifier());
-      sslFactory.createSSLServerSocketFactory();
-    } finally {
-      sslFactory.destroy();
-    }
+
+    // Injecting fake ssl config into input conf.
+    conf.addResource(FAKE_SSL_CONFIG);
+
+    // Classpath SSL config will be preferred if both input conf and
+    // the classpath SSL config exist for backward compatibility.
+    Configuration sslConfLoaded = SSLFactory.readSSLConfiguration(conf, CLIENT);
+    String clientTsLoc = sslConfLoaded.get(getClientTrustStoreKeyName());
+    assertNotEquals("trustStoreLocation", clientTsLoc);
+    assertNotEquals(conf, sslConfLoaded);
+  }
+
+  @Test
+  public void clientMode() throws Exception {
+    assertThrows(IllegalStateException.class, () -> {
+      Configuration conf = createConfiguration(false, true);
+      SSLFactory sslFactory = new SSLFactory(SSLFactory.Mode.CLIENT, conf);
+      try {
+        sslFactory.init();
+        assertNotNull(sslFactory.createSSLSocketFactory());
+        assertNotNull(sslFactory.getHostnameVerifier());
+        sslFactory.createSSLServerSocketFactory();
+      } finally {
+        sslFactory.destroy();
+      }
+    });
   }
 
   private void serverMode(boolean clientCert, boolean socket) throws Exception {
@@ -92,8 +176,8 @@ public class TestSSLFactory {
     SSLFactory sslFactory = new SSLFactory(SSLFactory.Mode.SERVER, conf);
     try {
       sslFactory.init();
-      Assert.assertNotNull(sslFactory.createSSLServerSocketFactory());
-      Assert.assertEquals(clientCert, sslFactory.isClientCertRequired());
+      assertNotNull(sslFactory.createSSLServerSocketFactory());
+      assertEquals(clientCert, sslFactory.isClientCertRequired());
       if (socket) {
         sslFactory.createSSLSocketFactory();
       } else {
@@ -105,24 +189,140 @@ public class TestSSLFactory {
   }
 
 
-  @Test(expected = IllegalStateException.class)
+  @Test
   public void serverModeWithoutClientCertsSocket() throws Exception {
-    serverMode(false, true);
+    assertThrows(IllegalStateException.class,
+        () -> serverMode(false, true));
   }
 
-  @Test(expected = IllegalStateException.class)
+  @Test
   public void serverModeWithClientCertsSocket() throws Exception {
-    serverMode(true, true);
+    assertThrows(IllegalStateException.class, () -> serverMode(true, true));
   }
 
-  @Test(expected = IllegalStateException.class)
+  @Test
   public void serverModeWithoutClientCertsVerifier() throws Exception {
-    serverMode(false, false);
+    assertThrows(IllegalStateException.class, () -> serverMode(false, false));
   }
 
-  @Test(expected = IllegalStateException.class)
+  @Test
   public void serverModeWithClientCertsVerifier() throws Exception {
-    serverMode(true, false);
+    assertThrows(IllegalStateException.class, ()-> serverMode(true, false));
+  }
+
+  private void runDelegatedTasks(SSLEngineResult result, SSLEngine engine)
+    throws Exception {
+    Runnable runnable;
+    if (result.getHandshakeStatus() ==
+        SSLEngineResult.HandshakeStatus.NEED_TASK) {
+      while ((runnable = engine.getDelegatedTask()) != null) {
+        LOG.info("running delegated task...");
+        runnable.run();
+      }
+      SSLEngineResult.HandshakeStatus hsStatus = engine.getHandshakeStatus();
+      if (hsStatus == SSLEngineResult.HandshakeStatus.NEED_TASK) {
+        throw new Exception("handshake shouldn't need additional tasks");
+      }
+    }
+  }
+
+  private static boolean isEngineClosed(SSLEngine engine) {
+    return engine.isOutboundDone() && engine.isInboundDone();
+  }
+
+  private static void checkTransfer(ByteBuffer a, ByteBuffer b)
+    throws Exception {
+    a.flip();
+    b.flip();
+    assertTrue(a.equals(b), "transfer did not complete");
+
+    a.position(a.limit());
+    b.position(b.limit());
+    a.limit(a.capacity());
+    b.limit(b.capacity());
+  }
+  @Test
+  public void testServerWeakCiphers() throws Exception {
+    // a simple test case to verify that SSL server rejects weak cipher suites,
+    // inspired by https://docs.oracle.com/javase/8/docs/technotes/guides/
+    //            security/jsse/samples/sslengine/SSLEngineSimpleDemo.java
+
+    // set up a client and a server SSLEngine object, and let them exchange
+    // data over ByteBuffer instead of network socket.
+    GenericTestUtils.setLogLevel(SSLFactory.LOG, Level.DEBUG);
+    final Configuration conf = createConfiguration(true, true);
+
+    SSLFactory serverSSLFactory = new SSLFactory(SSLFactory.Mode.SERVER, conf);
+    SSLFactory clientSSLFactory = new SSLFactory(SSLFactory.Mode.CLIENT, conf);
+
+    serverSSLFactory.init();
+    clientSSLFactory.init();
+
+    SSLEngine serverSSLEngine = serverSSLFactory.createSSLEngine();
+    SSLEngine clientSSLEngine = clientSSLFactory.createSSLEngine();
+    // client selects cipher suites excluded by server
+    clientSSLEngine.setEnabledCipherSuites(
+        StringUtils.getTrimmedStrings(excludeCiphers));
+
+    // use the same buffer size for server and client.
+    SSLSession session = clientSSLEngine.getSession();
+    int appBufferMax = session.getApplicationBufferSize();
+    int netBufferMax = session.getPacketBufferSize();
+
+    ByteBuffer clientOut = ByteBuffer.wrap("client".getBytes());
+    ByteBuffer clientIn = ByteBuffer.allocate(appBufferMax);
+    ByteBuffer serverOut = ByteBuffer.wrap("server".getBytes());
+    ByteBuffer serverIn = ByteBuffer.allocate(appBufferMax);
+
+    // send data from client to server
+    ByteBuffer cTOs = ByteBuffer.allocateDirect(netBufferMax);
+    // send data from server to client
+    ByteBuffer sTOc = ByteBuffer.allocateDirect(netBufferMax);
+
+    boolean dataDone = false;
+    try {
+      /**
+       * Server and client engines call wrap()/unwrap() to perform handshaking,
+       * until both engines are closed.
+       */
+      while (!isEngineClosed(clientSSLEngine) ||
+          !isEngineClosed(serverSSLEngine)) {
+        LOG.info("client wrap " + wrap(clientSSLEngine, clientOut, cTOs));
+        LOG.info("server wrap " + wrap(serverSSLEngine, serverOut, sTOc));
+        cTOs.flip();
+        sTOc.flip();
+        LOG.info("client unwrap " + unwrap(clientSSLEngine, sTOc, clientIn));
+        LOG.info("server unwrap " + unwrap(serverSSLEngine, cTOs, serverIn));
+        cTOs.compact();
+        sTOc.compact();
+        if (!dataDone && (clientOut.limit() == serverIn.position()) &&
+            (serverOut.limit() == clientIn.position())) {
+          checkTransfer(serverOut, clientIn);
+          checkTransfer(clientOut, serverIn);
+
+          LOG.info("closing client");
+          clientSSLEngine.closeOutbound();
+          dataDone = true;
+        }
+      }
+      fail("The exception was not thrown");
+    } catch (SSLHandshakeException e) {
+      GenericTestUtils.assertExceptionContains("no cipher suites in common", e);
+    }
+  }
+
+  private SSLEngineResult wrap(SSLEngine engine, ByteBuffer from,
+      ByteBuffer to) throws Exception {
+    SSLEngineResult result = engine.wrap(from, to);
+    runDelegatedTasks(result, engine);
+    return result;
+  }
+
+  private SSLEngineResult unwrap(SSLEngine engine, ByteBuffer from,
+      ByteBuffer to) throws Exception {
+    SSLEngineResult result = engine.unwrap(from, to);
+    runDelegatedTasks(result, engine);
+    return result;
   }
 
   @Test
@@ -132,46 +332,62 @@ public class TestSSLFactory {
     SSLFactory sslFactory = new
       SSLFactory(SSLFactory.Mode.CLIENT, conf);
     sslFactory.init();
-    Assert.assertEquals("DEFAULT", sslFactory.getHostnameVerifier().toString());
+    assertEquals("DEFAULT", sslFactory.getHostnameVerifier().toString());
     sslFactory.destroy();
 
     conf.set(SSLFactory.SSL_HOSTNAME_VERIFIER_KEY, "ALLOW_ALL");
     sslFactory = new SSLFactory(SSLFactory.Mode.CLIENT, conf);
     sslFactory.init();
-    Assert.assertEquals("ALLOW_ALL",
+    assertEquals("ALLOW_ALL",
                         sslFactory.getHostnameVerifier().toString());
     sslFactory.destroy();
 
     conf.set(SSLFactory.SSL_HOSTNAME_VERIFIER_KEY, "DEFAULT_AND_LOCALHOST");
     sslFactory = new SSLFactory(SSLFactory.Mode.CLIENT, conf);
     sslFactory.init();
-    Assert.assertEquals("DEFAULT_AND_LOCALHOST",
+    assertEquals("DEFAULT_AND_LOCALHOST",
                         sslFactory.getHostnameVerifier().toString());
     sslFactory.destroy();
 
     conf.set(SSLFactory.SSL_HOSTNAME_VERIFIER_KEY, "STRICT");
     sslFactory = new SSLFactory(SSLFactory.Mode.CLIENT, conf);
     sslFactory.init();
-    Assert.assertEquals("STRICT", sslFactory.getHostnameVerifier().toString());
+    assertEquals("STRICT", sslFactory.getHostnameVerifier().toString());
     sslFactory.destroy();
 
     conf.set(SSLFactory.SSL_HOSTNAME_VERIFIER_KEY, "STRICT_IE6");
     sslFactory = new SSLFactory(SSLFactory.Mode.CLIENT, conf);
     sslFactory.init();
-    Assert.assertEquals("STRICT_IE6",
+    assertEquals("STRICT_IE6",
                         sslFactory.getHostnameVerifier().toString());
     sslFactory.destroy();
   }
 
-  @Test(expected = GeneralSecurityException.class)
+  @Test
   public void invalidHostnameVerifier() throws Exception {
+    assertThrows(GeneralSecurityException.class, () -> {
+      Configuration conf = createConfiguration(false, true);
+      conf.set(SSLFactory.SSL_HOSTNAME_VERIFIER_KEY, "foo");
+      SSLFactory sslFactory = new SSLFactory(SSLFactory.Mode.CLIENT, conf);
+      try {
+        sslFactory.init();
+      } finally {
+        sslFactory.destroy();
+      }
+    });
+  }
+
+  @Test
+  public void testDifferentAlgorithm() throws Exception {
     Configuration conf = createConfiguration(false, true);
-    conf.set(SSLFactory.SSL_HOSTNAME_VERIFIER_KEY, "foo");
+    String currAlg = getProperty("ssl.KeyManagerFactory.algorithm");
+    setProperty("ssl.KeyManagerFactory.algorithm", "PKIX");
     SSLFactory sslFactory = new SSLFactory(SSLFactory.Mode.CLIENT, conf);
     try {
       sslFactory.init();
     } finally {
       sslFactory.destroy();
+      setProperty("ssl.KeyManagerFactory.algorithm", currAlg);
     }
   }
 
@@ -184,10 +400,10 @@ public class TestSSLFactory {
       sslFactory.init();
       HttpsURLConnection sslConn =
           (HttpsURLConnection) new URL("https://foo").openConnection();
-      Assert.assertNotSame("STRICT_IE6",
+      assertNotSame("STRICT_IE6",
                            sslConn.getHostnameVerifier().toString());
       sslFactory.configure(sslConn);
-      Assert.assertEquals("STRICT_IE6",
+      assertEquals("STRICT_IE6",
                           sslConn.getHostnameVerifier().toString());
     } finally {
       sslFactory.destroy();
@@ -276,7 +492,7 @@ public class TestSSLFactory {
     String keystore = new File(KEYSTORES_DIR, "keystore.jks").getAbsolutePath();
     String truststore = new File(KEYSTORES_DIR, "truststore.jks")
       .getAbsolutePath();
-    String trustPassword = "trustP";
+    String trustPassword = TRUST_STORE_PASSWORD_DEFAULT;
 
     // Create keys, certs, keystore, and truststore.
     KeyPair keyPair = KeyStoreTestUtil.generateKeyPair("RSA");
@@ -302,10 +518,9 @@ public class TestSSLFactory {
     if (mode == SSLFactory.Mode.SERVER) {
       sslConfFileName = "ssl-server.xml";
       sslConf = KeyStoreTestUtil.createServerSSLConfig(keystore, confPassword,
-        confKeyPassword, truststore);
+        confKeyPassword, truststore, trustPassword);
       if (useCredProvider) {
-        File testDir = new File(System.getProperty("test.build.data",
-            "target/test-dir"));
+        File testDir = GenericTestUtils.getTestDir();
         final Path jksPath = new Path(testDir.toString(), "test.jks");
         final String ourUrl =
             JavaKeyStoreProvider.SCHEME_NAME + "://file" + jksPath.toUri();
@@ -314,14 +529,14 @@ public class TestSSLFactory {
     } else {
       sslConfFileName = "ssl-client.xml";
       sslConf = KeyStoreTestUtil.createClientSSLConfig(keystore, confPassword,
-        confKeyPassword, truststore);
+        confKeyPassword, truststore, trustPassword);
     }
     KeyStoreTestUtil.saveConfig(new File(sslConfsDir, sslConfFileName), sslConf);
 
     // Create the master configuration for use by the SSLFactory, which by
     // default refers to the ssl-server.xml or ssl-client.xml created above.
     Configuration conf = new Configuration();
-    conf.setBoolean(SSLFactory.SSL_REQUIRE_CLIENT_CERT_KEY, true);
+    conf.setBoolean(SSL_REQUIRE_CLIENT_CERT_KEY, true);
 
     // Try initializing an SSLFactory.
     SSLFactory sslFactory = new SSLFactory(mode, conf);
@@ -335,7 +550,7 @@ public class TestSSLFactory {
   @Test
   public void testNoClientCertsInitialization() throws Exception {
     Configuration conf = createConfiguration(false, true);
-    conf.unset(SSLFactory.SSL_REQUIRE_CLIENT_CERT_KEY);
+    conf.unset(SSL_REQUIRE_CLIENT_CERT_KEY);
     SSLFactory sslFactory = new SSLFactory(SSLFactory.Mode.CLIENT, conf);
     try {
       sslFactory.init();
@@ -347,7 +562,7 @@ public class TestSSLFactory {
   @Test
   public void testNoTrustStore() throws Exception {
     Configuration conf = createConfiguration(false, false);
-    conf.unset(SSLFactory.SSL_REQUIRE_CLIENT_CERT_KEY);
+    conf.unset(SSL_REQUIRE_CLIENT_CERT_KEY);
     SSLFactory sslFactory = new SSLFactory(SSLFactory.Mode.SERVER, conf);
     try {
       sslFactory.init();

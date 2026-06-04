@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.hdfs;
 
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.File;
 import java.io.FileNotFoundException;
@@ -28,9 +28,8 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FsShell;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.util.ToolRunner;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 public class TestDFSShellGenericOptions {
 
@@ -53,7 +52,7 @@ public class TestDFSShellGenericOptions {
     }
   }
 
-  private void testFsOption(String [] args, String namenode) {        
+  private void testFsOption(String [] args, String namenode) {
     // prepare arguments to create a directory /data
     args[0] = "-fs";
     args[1] = namenode;
@@ -81,7 +80,7 @@ public class TestDFSShellGenericOptions {
       // prepare arguments to create a directory /data
       args[0] = "-conf";
       args[1] = siteFile.getPath();
-      execute(args, namenode); 
+      execute(args, namenode);
     } catch (FileNotFoundException e) {
       e.printStackTrace();
     } finally {
@@ -94,7 +93,7 @@ public class TestDFSShellGenericOptions {
     // prepare arguments to create a directory /data
     args[0] = "-D";
     args[1] = "fs.defaultFS="+namenode;
-    execute(args, namenode);        
+    execute(args, namenode);
   }
     
   private void execute(String [] args, String namenode) {
@@ -102,10 +101,10 @@ public class TestDFSShellGenericOptions {
     FileSystem fs=null;
     try {
       ToolRunner.run(shell, args);
-      fs = FileSystem.get(NameNode.getUri(NameNode.getAddress(namenode)),
-          shell.getConf());
-      assertTrue("Directory does not get created", 
-                 fs.isDirectory(new Path("/data")));
+      fs = FileSystem.get(DFSUtilClient.getNNUri(
+          DFSUtilClient.getNNAddress(namenode)), shell.getConf());
+      assertTrue(fs.isDirectory(new Path("/data")),
+          "Directory does not get created");
       fs.delete(new Path("/data"), true);
     } catch (Exception e) {
       System.err.println(e.getMessage());

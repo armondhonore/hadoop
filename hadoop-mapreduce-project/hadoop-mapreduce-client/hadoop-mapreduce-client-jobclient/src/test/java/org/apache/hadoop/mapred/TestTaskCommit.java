@@ -17,9 +17,6 @@
  */
 package org.apache.hadoop.mapred;
 
-import java.io.File;
-import java.io.IOException;
-
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
@@ -27,9 +24,18 @@ import org.apache.hadoop.io.Text;
 import org.apache.hadoop.ipc.ProtocolSignature;
 import org.apache.hadoop.mapred.SortedRanges.Range;
 import org.apache.hadoop.mapreduce.TaskType;
-import org.apache.hadoop.mapreduce.checkpoint.CheckpointID;
-import org.apache.hadoop.mapreduce.checkpoint.FSCheckpointID;
 import org.apache.hadoop.mapreduce.checkpoint.TaskCheckpointID;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+
+import java.io.File;
+import java.io.IOException;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+
 
 
 public class TestTaskCommit extends HadoopTestCase {
@@ -80,12 +86,13 @@ public class TestTaskCommit extends HadoopTestCase {
     super(LOCAL_MR, LOCAL_FS, 1, 1);
   }
   
-  @Override
+  @AfterEach
   public void tearDown() throws Exception {
     super.tearDown();
     FileUtil.fullyDelete(new File(rootDir.toString()));
   }
-  
+
+  @Test
   public void testCommitFail() throws IOException {
     final Path inDir = new Path(rootDir, "./input");
     final Path outDir = new Path(rootDir, "./output");
@@ -117,7 +124,7 @@ public class TestTaskCommit extends HadoopTestCase {
     }
 
     @Override
-    public void fatalError(TaskAttemptID taskId, String message)
+    public void fatalError(TaskAttemptID taskId, String message, boolean fastFail)
         throws IOException { }
 
     @Override
@@ -199,6 +206,7 @@ public class TestTaskCommit extends HadoopTestCase {
    * 
    * @throws Exception
    */
+  @Test
   public void testTaskCleanupDoesNotCommit() throws Exception {
     // Mimic a job with a special committer that does not cleanup
     // files when a task fails.
@@ -242,38 +250,43 @@ public class TestTaskCommit extends HadoopTestCase {
     task.setTaskCleanupTask();
     MyUmbilical umbilical = new MyUmbilical();
     task.run(job, umbilical);
-    assertTrue("Task did not succeed", umbilical.taskDone);
+    assertTrue(umbilical.taskDone, "Task did not succeed");
   }
 
+  @Test
   public void testCommitRequiredForMapTask() throws Exception {
     Task testTask = createDummyTask(TaskType.MAP);
-    assertTrue("MapTask should need commit", testTask.isCommitRequired());
+    assertTrue(testTask.isCommitRequired(), "MapTask should need commit");
   }
 
+  @Test
   public void testCommitRequiredForReduceTask() throws Exception {
     Task testTask = createDummyTask(TaskType.REDUCE);
-    assertTrue("ReduceTask should need commit", testTask.isCommitRequired());
+    assertTrue(testTask.isCommitRequired(), "ReduceTask should need commit");
   }
-  
+
+  @Test
   public void testCommitNotRequiredForJobSetup() throws Exception {
     Task testTask = createDummyTask(TaskType.MAP);
     testTask.setJobSetupTask();
-    assertFalse("Job setup task should not need commit", 
-        testTask.isCommitRequired());
+    assertFalse(testTask.isCommitRequired(),
+        "Job setup task should not need commit");
   }
-  
+
+  @Test
   public void testCommitNotRequiredForJobCleanup() throws Exception {
     Task testTask = createDummyTask(TaskType.MAP);
     testTask.setJobCleanupTask();
-    assertFalse("Job cleanup task should not need commit", 
-        testTask.isCommitRequired());
+    assertFalse(testTask.isCommitRequired(),
+        "Job cleanup task should not need commit");
   }
 
+  @Test
   public void testCommitNotRequiredForTaskCleanup() throws Exception {
     Task testTask = createDummyTask(TaskType.REDUCE);
     testTask.setTaskCleanupTask();
-    assertFalse("Task cleanup task should not need commit", 
-        testTask.isCommitRequired());
+    assertFalse(testTask.isCommitRequired(),
+        "Task cleanup task should not need commit");
   }
 
   private Task createDummyTask(TaskType type) throws IOException, ClassNotFoundException,

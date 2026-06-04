@@ -17,30 +17,52 @@
  */
 package org.apache.hadoop.hdfs.server.blockmanagement;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.hdfs.protocol.Block;
+import org.apache.hadoop.hdfs.protocol.BlockType;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.server.common.GenerationStamp;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
+import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
+import org.apache.hadoop.hdfs.server.namenode.FSEditLog;
 
 import java.io.IOException;
 
+import static org.apache.hadoop.hdfs.protocol.BlockType.STRIPED;
+
 /**
  * BlockIdManager allocates the generation stamps and the block ID. The
- * {@see FSNamesystem} is responsible for persisting the allocations in the
- * {@see EditLog}.
+ * {@link FSNamesystem} is responsible for persisting the allocations in the
+ * {@link FSEditLog}.
  */
 public class BlockIdManager {
   /**
    * The global generation stamp for legacy blocks with randomly
    * generated block IDs.
    */
-  private final GenerationStamp generationStampV1 = new GenerationStamp();
+  private final GenerationStamp legacyGenerationStamp = new GenerationStamp();
   /**
    * The global generation stamp for this file system.
    */
-  private final GenerationStamp generationStampV2 = new GenerationStamp();
+  private final GenerationStamp generationStamp = new GenerationStamp();
+  /**
+   * Most recent global generation stamp as seen on Active NameNode.
+   * Used by StandbyNode only.<p/>
+   * StandbyNode does not update its global {@link #generationStamp} during
+   * edits tailing. The global generation stamp on StandbyNode is updated
+   * <ol><li>when the block with the next generation stamp is actually
+   * received</li>
+   * <li>during fail-over it is bumped to the last value received from the
+   * Active NN through edits and stored as
+   * {@link #impendingGenerationStamp}</li></ol>
+   * The former helps to avoid a race condition with IBRs during edits tailing.
+   * The latter guarantees that generation stamps are never reused by new
+   * Active after fail-over.
+   * <p/> See HDFS-14941 for more details.
+   */
+  private final GenerationStamp impendingGenerationStamp
+      = new GenerationStamp();
   /**
    * The value of the generation stamp when the first switch to sequential
    * block IDs was made. Blocks with generation stamps below this value
@@ -49,15 +71,18 @@ public class BlockIdManager {
    * (or initialized as an offset from the V1 (legacy) generation stamp on
    * upgrade).
    */
-  private long generationStampV1Limit;
+  private long legacyGenerationStampLimit;
   /**
    * The global block ID space for this file system.
    */
   private final SequentialBlockIdGenerator blockIdGenerator;
+  private final SequentialBlockGroupIdGenerator blockGroupIdGenerator;
 
   public BlockIdManager(BlockManager blockManager) {
-    this.generationStampV1Limit = HdfsConstants.GRANDFATHER_GENERATION_STAMP;
+    this.legacyGenerationStampLimit =
+        HdfsConstants.GRANDFATHER_GENERATION_STAMP;
     this.blockIdGenerator = new SequentialBlockIdGenerator(blockManager);
+    this.blockGroupIdGenerator = new SequentialBlockGroupIdGenerator(blockManager);
   }
 
   /**
@@ -66,14 +91,14 @@ public class BlockIdManager {
    * Should be invoked only during the first upgrade to
    * sequential block IDs.
    */
-  public long upgradeGenerationStampToV2() {
-    Preconditions.checkState(generationStampV2.getCurrentValue() ==
+  public long upgradeLegacyGenerationStamp() {
+    Preconditions.checkState(generationStamp.getCurrentValue() ==
       GenerationStamp.LAST_RESERVED_STAMP);
-    generationStampV2.skipTo(generationStampV1.getCurrentValue() +
-      HdfsServerConstants.RESERVED_GENERATION_STAMPS_V1);
+    generationStamp.skipTo(legacyGenerationStamp.getCurrentValue() +
+      HdfsServerConstants.RESERVED_LEGACY_GENERATION_STAMPS);
 
-    generationStampV1Limit = generationStampV2.getCurrentValue();
-    return generationStampV2.getCurrentValue();
+    legacyGenerationStampLimit = generationStamp.getCurrentValue();
+    return generationStamp.getCurrentValue();
   }
 
   /**
@@ -82,10 +107,10 @@ public class BlockIdManager {
    *
    * @param stamp set generation stamp limit to this value
    */
-  public void setGenerationStampV1Limit(long stamp) {
-    Preconditions.checkState(generationStampV1Limit == HdfsConstants
-      .GRANDFATHER_GENERATION_STAMP);
-    generationStampV1Limit = stamp;
+  public void setLegacyGenerationStampLimit(long stamp) {
+    Preconditions.checkState(legacyGenerationStampLimit ==
+        HdfsConstants.GRANDFATHER_GENERATION_STAMP);
+    legacyGenerationStampLimit = stamp;
   }
 
   /**
@@ -93,84 +118,130 @@ public class BlockIdManager {
    * and random block IDs.
    */
   public long getGenerationStampAtblockIdSwitch() {
-    return generationStampV1Limit;
+    return legacyGenerationStampLimit;
   }
 
   @VisibleForTesting
-  SequentialBlockIdGenerator getBlockIdGenerator() {
+  public SequentialBlockIdGenerator getBlockIdGenerator() {
     return blockIdGenerator;
   }
 
   /**
-   * Sets the maximum allocated block ID for this filesystem. This is
+   * Sets the maximum allocated contiguous block ID for this filesystem. This is
    * the basis for allocating new block IDs.
    */
-  public void setLastAllocatedBlockId(long blockId) {
+  public void setLastAllocatedContiguousBlockId(long blockId) {
     blockIdGenerator.skipTo(blockId);
   }
 
   /**
-   * Gets the maximum sequentially allocated block ID for this filesystem
+   * Gets the maximum sequentially allocated contiguous block ID for this
+   * filesystem
    */
-  public long getLastAllocatedBlockId() {
+  public long getLastAllocatedContiguousBlockId() {
     return blockIdGenerator.getCurrentValue();
+  }
+
+  /**
+   * Sets the maximum allocated striped block ID for this filesystem. This is
+   * the basis for allocating new block IDs.
+   */
+  public void setLastAllocatedStripedBlockId(long blockId) {
+    blockGroupIdGenerator.skipTo(blockId);
+  }
+
+  /**
+   * Gets the maximum sequentially allocated striped block ID for this
+   * filesystem
+   */
+  public long getLastAllocatedStripedBlockId() {
+    return blockGroupIdGenerator.getCurrentValue();
   }
 
   /**
    * Sets the current generation stamp for legacy blocks
    */
-  public void setGenerationStampV1(long stamp) {
-    generationStampV1.setCurrentValue(stamp);
+  public void setLegacyGenerationStamp(long stamp) {
+    legacyGenerationStamp.setCurrentValue(stamp);
   }
 
   /**
    * Gets the current generation stamp for legacy blocks
    */
-  public long getGenerationStampV1() {
-    return generationStampV1.getCurrentValue();
+  public long getLegacyGenerationStamp() {
+    return legacyGenerationStamp.getCurrentValue();
   }
 
   /**
    * Gets the current generation stamp for this filesystem
    */
-  public void setGenerationStampV2(long stamp) {
-    generationStampV2.setCurrentValue(stamp);
+  public void setGenerationStamp(long stamp) {
+    generationStamp.setCurrentValue(stamp);
   }
 
-  public long getGenerationStampV2() {
-    return generationStampV2.getCurrentValue();
+  /**
+   * Set the currently highest gen stamp from active. Used
+   * by Standby only.
+   * @param stamp new genstamp
+   */
+  public void setImpendingGenerationStamp(long stamp) {
+    impendingGenerationStamp.setIfGreater(stamp);
+  }
+
+  /**
+   * Set the current genstamp to the impending genstamp.
+   */
+  public void applyImpendingGenerationStamp() {
+    setGenerationStampIfGreater(impendingGenerationStamp.getCurrentValue());
+  }
+
+  @VisibleForTesting
+  public long getImpendingGenerationStamp() {
+    return impendingGenerationStamp.getCurrentValue();
+  }
+
+  /**
+   * Set genstamp only when the given one is higher.
+   * @param stamp
+   */
+  public void setGenerationStampIfGreater(long stamp) {
+    generationStamp.setIfGreater(stamp);
+  }
+
+  public long getGenerationStamp() {
+    return generationStamp.getCurrentValue();
   }
 
   /**
    * Increments, logs and then returns the stamp
    */
-  public long nextGenerationStamp(boolean legacyBlock) throws IOException {
-    return legacyBlock ? getNextGenerationStampV1() :
-      getNextGenerationStampV2();
+  long nextGenerationStamp(boolean legacyBlock) throws IOException {
+    return legacyBlock ? getNextLegacyGenerationStamp() :
+        getNextGenerationStamp();
   }
 
   @VisibleForTesting
-  long getNextGenerationStampV1() throws IOException {
-    long genStampV1 = generationStampV1.nextValue();
+  long getNextLegacyGenerationStamp() throws IOException {
+    long legacyGenStamp = legacyGenerationStamp.nextValue();
 
-    if (genStampV1 >= generationStampV1Limit) {
+    if (legacyGenStamp >= legacyGenerationStampLimit) {
       // We ran out of generation stamps for legacy blocks. In practice, it
-      // is extremely unlikely as we reserved 1T v1 generation stamps. The
+      // is extremely unlikely as we reserved 1T legacy generation stamps. The
       // result is that we can no longer append to the legacy blocks that
       // were created before the upgrade to sequential block IDs.
-      throw new OutOfV1GenerationStampsException();
+      throw new OutOfLegacyGenerationStampsException();
     }
 
-    return genStampV1;
+    return legacyGenStamp;
   }
 
   @VisibleForTesting
-  long getNextGenerationStampV2() {
-    return generationStampV2.nextValue();
+  long getNextGenerationStamp() {
+    return generationStamp.nextValue();
   }
 
-  public long getGenerationStampV1Limit() {
-    return generationStampV1Limit;
+  public long getLegacyGenerationStampLimit() {
+    return legacyGenerationStampLimit;
   }
 
   /**
@@ -180,30 +251,77 @@ public class BlockIdManager {
    *
    * @return true if the block ID was randomly generated, false otherwise.
    */
-  public boolean isLegacyBlock(Block block) {
-    return block.getGenerationStamp() < getGenerationStampV1Limit();
+  boolean isLegacyBlock(Block block) {
+    return block.getGenerationStamp() < getLegacyGenerationStampLimit();
   }
 
   /**
    * Increments, logs and then returns the block ID
    */
-  public long nextBlockId() {
-    return blockIdGenerator.nextValue();
-  }
-
-  public boolean isGenStampInFuture(Block block) {
-    if (isLegacyBlock(block)) {
-      return block.getGenerationStamp() > getGenerationStampV1();
-    } else {
-      return block.getGenerationStamp() > getGenerationStampV2();
+  long nextBlockId(BlockType blockType) {
+    switch(blockType) {
+    case CONTIGUOUS: return blockIdGenerator.nextValue();
+    case STRIPED: return blockGroupIdGenerator.nextValue();
+    default:
+      throw new IllegalArgumentException(
+          "nextBlockId called with an unsupported BlockType");
     }
   }
 
-  public void clear() {
-    generationStampV1.setCurrentValue(GenerationStamp.LAST_RESERVED_STAMP);
-    generationStampV2.setCurrentValue(GenerationStamp.LAST_RESERVED_STAMP);
+  boolean isGenStampInFuture(Block block) {
+    if (isLegacyBlock(block)) {
+      return block.getGenerationStamp() > getLegacyGenerationStamp();
+    } else {
+      return block.getGenerationStamp() > getGenerationStamp();
+    }
+  }
+
+  void clear() {
+    legacyGenerationStamp.setCurrentValue(GenerationStamp.LAST_RESERVED_STAMP);
+    generationStamp.setCurrentValue(GenerationStamp.LAST_RESERVED_STAMP);
     getBlockIdGenerator().setCurrentValue(SequentialBlockIdGenerator
       .LAST_RESERVED_BLOCK_ID);
-    generationStampV1Limit = HdfsConstants.GRANDFATHER_GENERATION_STAMP;
+    getBlockGroupIdGenerator().setCurrentValue(Long.MIN_VALUE);
+    legacyGenerationStampLimit = HdfsConstants.GRANDFATHER_GENERATION_STAMP;
+  }
+
+  /**
+   * Return true if the block is a striped block.
+   *
+   * Before HDFS-4645, block ID was randomly generated (legacy), so it is
+   * possible that legacy block ID to be negative, which should not be
+   * considered as striped block ID.
+   *
+   * @see #isLegacyBlock(Block) detecting legacy block IDs.
+   */
+  public boolean isStripedBlock(Block block) {
+    return isStripedBlockID(block.getBlockId()) && !isLegacyBlock(block);
+  }
+
+  /**
+   * See {@link #isStripedBlock(Block)}, we should not use this function alone
+   * to determine a block is striped block.
+   */
+  public static boolean isStripedBlockID(long id) {
+    return BlockType.fromBlockId(id) == STRIPED;
+  }
+
+  /**
+   * The last 4 bits of HdfsConstants.BLOCK_GROUP_INDEX_MASK(15) is 1111,
+   * so the last 4 bits of (~HdfsConstants.BLOCK_GROUP_INDEX_MASK) is 0000
+   * and the other 60 bits are 1. Group ID is the first 60 bits of any
+   * data/parity block id in the same striped block group.
+   */
+  static long convertToStripedID(long id) {
+    return id & (~HdfsServerConstants.BLOCK_GROUP_INDEX_MASK);
+  }
+
+  public static byte getBlockIndex(Block reportedBlock) {
+    return (byte) (reportedBlock.getBlockId() &
+        HdfsServerConstants.BLOCK_GROUP_INDEX_MASK);
+  }
+
+  SequentialBlockGroupIdGenerator getBlockGroupIdGenerator() {
+    return blockGroupIdGenerator;
   }
 }

@@ -25,13 +25,15 @@ import java.util.UUID;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.apache.hadoop.security.ProviderUtils;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestKeyShell {
   private final ByteArrayOutputStream outContent = new ByteArrayOutputStream();
@@ -43,12 +45,12 @@ public class TestKeyShell {
   /* The default JCEKS provider - for testing purposes */
   private String jceksProvider;
 
-  @Before
+  @BeforeEach
   public void setup() throws Exception {
     outContent.reset();
     errContent.reset();
-    final File tmpDir = new File(System.getProperty("test.build.data", "target"),
-        UUID.randomUUID().toString());
+    final File tmpDir = GenericTestUtils.getTestDir(UUID.randomUUID()
+        .toString());
     if (!tmpDir.mkdirs()) {
       throw new IOException("Unable to create " + tmpDir);
     }
@@ -60,7 +62,7 @@ public class TestKeyShell {
     System.setErr(new PrintStream(errContent));
   }
 
-  @After
+  @AfterEach
   public void cleanUp() throws Exception {
     System.setOut(initialStdOut);
     System.setErr(initialStdErr);
@@ -113,7 +115,13 @@ public class TestKeyShell {
     rc = ks.run(args1);
     assertEquals(0, rc);
     assertTrue(outContent.toString().contains(keyName + " has been " +
-            "successfully created"));
+        "successfully created"));
+    assertTrue(outContent.toString()
+        .contains(ProviderUtils.NO_PASSWORD_WARN));
+    assertTrue(outContent.toString()
+        .contains(ProviderUtils.NO_PASSWORD_INSTRUCTIONS_DOC));
+    assertTrue(outContent.toString()
+        .contains(ProviderUtils.NO_PASSWORD_CONT));
 
     String listOut = listKeys(ks, false);
     assertTrue(listOut.contains(keyName));
@@ -128,12 +136,21 @@ public class TestKeyShell {
     rc = ks.run(args2);
     assertEquals(0, rc);
     assertTrue(outContent.toString().contains("key1 has been successfully " +
-    		"rolled."));
+        "rolled."));
+
+    // jceks provider's invalidate is a no-op.
+    outContent.reset();
+    final String[] args3 =
+        {"invalidateCache", keyName, "-provider", jceksProvider};
+    rc = ks.run(args3);
+    assertEquals(0, rc);
+    assertTrue(outContent.toString()
+        .contains("key1 has been successfully " + "invalidated."));
 
     deleteKey(ks, keyName);
 
     listOut = listKeys(ks, false);
-    assertFalse(listOut, listOut.contains(keyName));
+    assertFalse(listOut.contains(keyName), listOut);
   }
   
   /* HADOOP-10586 KeyShell didn't allow -description. */
@@ -191,8 +208,7 @@ public class TestKeyShell {
     ks.setConf(new Configuration());
     rc = ks.run(args1);
     assertEquals(1, rc);
-    assertTrue(outContent.toString().contains("There are no valid " +
-    		"KeyProviders configured."));
+    assertTrue(outContent.toString().contains(KeyShell.NO_VALID_PROVIDERS));
   }
 
   @Test
@@ -206,7 +222,7 @@ public class TestKeyShell {
     rc = ks.run(args1);
     assertEquals(0, rc);
     assertTrue(outContent.toString().contains("WARNING: you are modifying a " +
-    		"transient provider."));
+        "transient provider."));
   }
   
   @Test
@@ -220,8 +236,23 @@ public class TestKeyShell {
     ks.setConf(config);
     rc = ks.run(args1);
     assertEquals(1, rc);
-    assertTrue(outContent.toString().contains("There are no valid " +
-    		"KeyProviders configured."));
+    assertTrue(outContent.toString().contains(KeyShell.NO_VALID_PROVIDERS));
+  }
+
+  @Test
+  public void testStrict() throws Exception {
+    outContent.reset();
+    int rc = 0;
+    KeyShell ks = new KeyShell();
+    ks.setConf(new Configuration());
+    final String[] args1 = {"create", "hello", "-provider", jceksProvider,
+        "-strict"};
+    rc = ks.run(args1);
+    assertEquals(1, rc);
+    assertTrue(outContent.toString()
+        .contains(ProviderUtils.NO_PASSWORD_ERROR));
+    assertTrue(outContent.toString()
+        .contains(ProviderUtils.NO_PASSWORD_INSTRUCTIONS_DOC));
   }
 
   @Test

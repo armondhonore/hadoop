@@ -36,8 +36,9 @@ import org.apache.hadoop.mapreduce.InputFormat;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.Mapper;
 import org.apache.hadoop.mapreduce.Reducer;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * @see TestDelegatingInputFormat
@@ -63,7 +64,7 @@ public class TestMultipleInputs extends HadoopTestCase {
     return dir;
   }
 
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     super.setUp();
     Path rootDir = getDir(ROOT_DIR);
@@ -132,14 +133,14 @@ public class TestMultipleInputs extends HadoopTestCase {
     BufferedReader output = new BufferedReader(new InputStreamReader(fs
         .open(new Path(outDir, "part-r-00000"))));
     // reducer should have counted one key from each file
-    assertTrue(output.readLine().equals("a 2"));
-    assertTrue(output.readLine().equals("b 2"));
-    assertTrue(output.readLine().equals("c 2"));
-    assertTrue(output.readLine().equals("d 2"));
-    assertTrue(output.readLine().equals("e 2"));
+    assertEquals("a 2", output.readLine());
+    assertEquals("b 2", output.readLine());
+    assertEquals("c 2", output.readLine());
+    assertEquals("d 2", output.readLine());
+    assertEquals("e 2", output.readLine());
   }
 
-  @SuppressWarnings("unchecked")
+  @Test
   public void testAddInputPathWithFormat() throws IOException {
     final Job conf = Job.getInstance();
     MultipleInputs.addInputPath(conf, new Path("/foo"), TextInputFormat.class);
@@ -152,7 +153,7 @@ public class TestMultipleInputs extends HadoopTestCase {
        .getClass());
   }
 
-  @SuppressWarnings("unchecked")
+  @Test
   public void testAddInputPathWithMapper() throws IOException {
     final Job conf = Job.getInstance();
     MultipleInputs.addInputPath(conf, new Path("/foo"), TextInputFormat.class,

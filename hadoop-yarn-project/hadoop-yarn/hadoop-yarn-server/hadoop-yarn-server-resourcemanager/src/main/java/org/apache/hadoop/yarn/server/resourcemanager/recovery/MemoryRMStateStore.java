@@ -19,6 +19,8 @@
 package org.apache.hadoop.yarn.server.resourcemanager.recovery;
 
 import java.io.IOException;
+import java.security.PrivateKey;
+import java.security.cert.X509Certificate;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
@@ -31,14 +33,14 @@ import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ReservationId;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
-import org.apache.hadoop.yarn.proto.YarnServerResourceManagerRecoveryProtos.ReservationAllocationStateProto;
+import org.apache.hadoop.yarn.proto.YarnProtos.ReservationAllocationStateProto;
 import org.apache.hadoop.yarn.security.client.RMDelegationTokenIdentifier;
 import org.apache.hadoop.yarn.server.records.Version;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.AMRMTokenSecretManagerState;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationAttemptStateData;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationStateData;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 @Private
 @Unstable
@@ -59,7 +61,7 @@ public class MemoryRMStateStore extends RMStateStore {
   @Override
   public synchronized long getAndIncrementEpoch() throws Exception {
     long currentEpoch = epoch;
-    epoch = epoch + 1;
+    epoch = nextEpoch(epoch);
     return currentEpoch;
   }
 
@@ -78,11 +80,21 @@ public class MemoryRMStateStore extends RMStateStore {
         state.amrmTokenSecretManagerState == null ? null
             : AMRMTokenSecretManagerState
               .newInstance(state.amrmTokenSecretManagerState);
+    if (state.proxyCAState.getCaCert() != null) {
+      byte[] caCertData = state.proxyCAState.getCaCert().getEncoded();
+      returnState.proxyCAState.setCaCert(caCertData);
+    }
+    if (state.proxyCAState.getCaPrivateKey() != null) {
+      byte[] caPrivateKeyData
+          = state.proxyCAState.getCaPrivateKey().getEncoded();
+      returnState.proxyCAState.setCaPrivateKey(caPrivateKeyData);
+    }
     return returnState;
   }
   
   @Override
   public synchronized void initInternal(Configuration conf) {
+    epoch = baseEpoch;
   }
 
   @Override
@@ -142,6 +154,19 @@ public class MemoryRMStateStore extends RMStateStore {
   }
 
   @Override
+  public synchronized void removeApplicationAttemptInternal(
+      ApplicationAttemptId appAttemptId) throws Exception {
+    ApplicationStateData appState =
+        state.getApplicationState().get(appAttemptId.getApplicationId());
+    ApplicationAttemptStateData attemptState =
+        appState.attempts.remove(appAttemptId);
+    LOG.info("Removing state for attempt: " + appAttemptId);
+    if (attemptState == null) {
+      throw new YarnRuntimeException("Application doesn't exist");
+    }
+  }
+
+  @Override
   public synchronized void removeApplicationStateInternal(
       ApplicationStateData appState) throws Exception {
     ApplicationId appId =
@@ -149,7 +174,7 @@ public class MemoryRMStateStore extends RMStateStore {
     ApplicationStateData removed = state.appState.remove(appId);
 
     if (removed == null) {
-      throw new YarnRuntimeException("Removing non-exsisting application state");
+      throw new YarnRuntimeException("Removing non-existing application state");
     }
   }
 
@@ -244,23 +269,6 @@ public class MemoryRMStateStore extends RMStateStore {
   }
 
   @Override
-  protected synchronized void updateReservationState(
-      ReservationAllocationStateProto reservationAllocation, String planName,
-      String reservationIdName) throws Exception {
-    LOG.info("Updating reservationallocation for " + reservationIdName + " " +
-            "for plan " + planName);
-    Map<ReservationId, ReservationAllocationStateProto> planState =
-        state.getReservationState().get(planName);
-    if (planState == null) {
-      throw new YarnRuntimeException("State for plan " + planName + " does " +
-          "not exist");
-    }
-    ReservationId reservationId =
-        ReservationId.parseReservationId(reservationIdName);
-    planState.put(reservationId, reservationAllocation);
-  }
-
-  @Override
   protected synchronized void removeReservationState(
       String planName, String reservationIdName) throws Exception {
     LOG.info("Removing reservationallocation " + reservationIdName
@@ -278,6 +286,13 @@ public class MemoryRMStateStore extends RMStateStore {
     if (planState.isEmpty()) {
       state.getReservationState().remove(planName);
     }
+  }
+
+  @Override
+  protected void storeProxyCACertState(
+      X509Certificate caCert, PrivateKey caPrivateKey) throws Exception {
+    state.getProxyCAState().setCaCert(caCert);
+    state.getProxyCAState().setCaPrivateKey(caPrivateKey);
   }
 
   @Override

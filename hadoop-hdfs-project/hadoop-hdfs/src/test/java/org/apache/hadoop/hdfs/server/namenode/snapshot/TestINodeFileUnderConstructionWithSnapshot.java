@@ -17,16 +17,15 @@
  */
 package org.apache.hadoop.hdfs.server.namenode.snapshot;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.util.EnumSet;
 import java.util.List;
 import java.util.Random;
 
-import org.apache.commons.logging.impl.Log4JLogger;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileStatus;
@@ -38,9 +37,9 @@ import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.client.HdfsDataOutputStream;
 import org.apache.hadoop.hdfs.client.HdfsDataOutputStream.SyncFlag;
+import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
-import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
 import org.apache.hadoop.hdfs.server.namenode.FSDirectory;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
 import org.apache.hadoop.hdfs.server.namenode.INode;
@@ -48,17 +47,20 @@ import org.apache.hadoop.hdfs.server.namenode.INodeDirectory;
 import org.apache.hadoop.hdfs.server.namenode.INodeFile;
 import org.apache.hadoop.hdfs.server.namenode.NameNodeAdapter;
 import org.apache.hadoop.hdfs.server.namenode.snapshot.DirectoryWithSnapshotFeature.DirectoryDiff;
-import org.apache.log4j.Level;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.apache.hadoop.hdfs.util.RwLockMode;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.slf4j.event.Level;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /**
  * Test snapshot functionalities while file appending.
  */
 public class TestINodeFileUnderConstructionWithSnapshot {
   {
-    ((Log4JLogger)INode.LOG).getLogger().setLevel(Level.ALL);
+    GenericTestUtils.setLogLevel(INode.LOG, Level.TRACE);
     SnapshotTestHelper.disableLogs();
   }
 
@@ -74,7 +76,7 @@ public class TestINodeFileUnderConstructionWithSnapshot {
   DistributedFileSystem hdfs;
   FSDirectory fsdir;
   
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     conf = new Configuration();
     conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, BLOCKSIZE);
@@ -87,17 +89,19 @@ public class TestINodeFileUnderConstructionWithSnapshot {
     hdfs.mkdirs(dir);
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws Exception {
     if (cluster != null) {
       cluster.shutdown();
+      cluster = null;
     }
   }
   
   /**
    * Test snapshot after file appending
    */
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testSnapshotAfterAppending() throws Exception {
     Path file = new Path(dir, "file");
     // 1. create snapshot --> create file --> append
@@ -123,7 +127,7 @@ public class TestINodeFileUnderConstructionWithSnapshot {
     
     // check corresponding inodes
     fileNode = (INodeFile) fsdir.getINode(file.toString());
-    assertEquals(REPLICATION - 1,  fileNode.getFileReplication());
+    assertEquals(REPLICATION - 1, fileNode.getFileReplication());
     assertEquals(BLOCKSIZE * 4, fileNode.computeFileSize());
   }
   
@@ -141,7 +145,8 @@ public class TestINodeFileUnderConstructionWithSnapshot {
    * Test snapshot during file appending, before the corresponding
    * {@link FSDataOutputStream} instance closes.
    */
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testSnapshotWhileAppending() throws Exception {
     Path file = new Path(dir, "file");
     DFSTestUtil.createFile(hdfs, file, BLOCKSIZE, REPLICATION, seed);
@@ -296,16 +301,15 @@ public class TestINodeFileUnderConstructionWithSnapshot {
       hdfs.delete(foo, true);
       Thread.sleep(1000);
       try {
-        fsn.writeLock();
+        fsn.writeLock(RwLockMode.GLOBAL);
         NameNodeAdapter.getLeaseManager(fsn).runLeaseChecks();
       } finally {
-        fsn.writeUnlock();
+        fsn.writeUnlock(RwLockMode.GLOBAL, "testLease");
       }
     } finally {
-      NameNodeAdapter.setLeasePeriod(
-          fsn,
-          HdfsServerConstants.LEASE_SOFTLIMIT_PERIOD,
-          HdfsServerConstants.LEASE_HARDLIMIT_PERIOD);
+      NameNodeAdapter.setLeasePeriod(fsn, HdfsConstants.LEASE_SOFTLIMIT_PERIOD,
+          conf.getLong(DFSConfigKeys.DFS_LEASE_HARDLIMIT_KEY,
+              DFSConfigKeys.DFS_LEASE_HARDLIMIT_DEFAULT) * 1000);
     }
   }
 }

@@ -17,13 +17,14 @@
  */
 package org.apache.hadoop.io;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.Map;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /**
  * Tests SortedMapWritable
@@ -45,7 +46,7 @@ public class TestSortedMapWritable {
         new BytesWritable("value3".getBytes())
     };
 
-    SortedMapWritable inMap = new SortedMapWritable();
+    SortedMapWritable<Text> inMap = new SortedMapWritable<Text>();
     for (int i = 0; i < keys.length; i++) {
       inMap.put(keys[i], values[i]);
     }
@@ -53,13 +54,14 @@ public class TestSortedMapWritable {
     assertEquals(0, inMap.firstKey().compareTo(keys[0]));
     assertEquals(0, inMap.lastKey().compareTo(keys[2]));
 
-    SortedMapWritable outMap = new SortedMapWritable(inMap);
+    SortedMapWritable<Text> outMap = new SortedMapWritable<Text>(inMap);
     assertEquals(inMap.size(), outMap.size());
     
-    for (Map.Entry<WritableComparable, Writable> e: inMap.entrySet()) {
+    for (Map.Entry<Text, Writable> e: inMap.entrySet()) {
       assertTrue(outMap.containsKey(e.getKey()));
-      assertEquals(0, ((WritableComparable) outMap.get(e.getKey())).compareTo(
-          e.getValue()));
+      WritableComparable<WritableComparable<?>> aValue = (WritableComparable<WritableComparable<?>>) outMap.get(e.getKey());
+      WritableComparable<WritableComparable<?>> bValue = (WritableComparable<WritableComparable<?>>) e.getValue();
+      assertEquals(0, aValue.compareTo(bValue));
     }
     
     // Now for something a little harder...
@@ -69,24 +71,24 @@ public class TestSortedMapWritable {
         new Text("map2")
     };
     
-    SortedMapWritable mapOfMaps = new SortedMapWritable();
+    SortedMapWritable<Text> mapOfMaps = new SortedMapWritable<Text>();
     mapOfMaps.put(maps[0], inMap);
     mapOfMaps.put(maps[1], outMap);
     
-    SortedMapWritable copyOfMapOfMaps = new SortedMapWritable(mapOfMaps);
+    SortedMapWritable<Text> copyOfMapOfMaps = new SortedMapWritable<Text>(mapOfMaps);
     for (int i = 0; i < maps.length; i++) {
       assertTrue(copyOfMapOfMaps.containsKey(maps[i]));
 
-      SortedMapWritable a = (SortedMapWritable) mapOfMaps.get(maps[i]);
-      SortedMapWritable b = (SortedMapWritable) copyOfMapOfMaps.get(maps[i]);
+      SortedMapWritable<Text> a = (SortedMapWritable<Text>) mapOfMaps.get(maps[i]);
+      SortedMapWritable<Text> b = (SortedMapWritable<Text>) copyOfMapOfMaps.get(maps[i]);
       assertEquals(a.size(), b.size());
       for (Writable key: a.keySet()) {
         assertTrue(b.containsKey(key));
         
         // This will work because we know what we put into each set
         
-        WritableComparable aValue = (WritableComparable) a.get(key);
-        WritableComparable bValue = (WritableComparable) b.get(key);
+        WritableComparable<WritableComparable<?>> aValue = (WritableComparable<WritableComparable<?>>) a.get(key);
+        WritableComparable<WritableComparable<?>> bValue = (WritableComparable<WritableComparable<?>>) b.get(key);
         assertEquals(0, aValue.compareTo(bValue));
       }
     }
@@ -98,11 +100,11 @@ public class TestSortedMapWritable {
   @Test
   @SuppressWarnings("deprecation")
   public void testForeignClass() {
-    SortedMapWritable inMap = new SortedMapWritable();
+    SortedMapWritable<Text> inMap = new SortedMapWritable<Text>();
     inMap.put(new Text("key"), new UTF8("value"));
     inMap.put(new Text("key2"), new UTF8("value2"));
-    SortedMapWritable outMap = new SortedMapWritable(inMap);
-    SortedMapWritable copyOfCopy = new SortedMapWritable(outMap);
+    SortedMapWritable<Text> outMap = new SortedMapWritable<Text>(inMap);
+    SortedMapWritable<Text> copyOfCopy = new SortedMapWritable<Text>(outMap);
     assertEquals(1, copyOfCopy.getNewClasses());
   }
   
@@ -112,19 +114,19 @@ public class TestSortedMapWritable {
   @Test
   public void testEqualsAndHashCode() {
     String failureReason;
-    SortedMapWritable mapA = new SortedMapWritable();
-    SortedMapWritable mapB = new SortedMapWritable();
+    SortedMapWritable<Text> mapA = new SortedMapWritable<Text>();
+    SortedMapWritable<Text> mapB = new SortedMapWritable<Text>();
     
     // Sanity checks
     failureReason = "SortedMapWritable couldn't be initialized. Got null reference";
-    assertNotNull(failureReason, mapA);
-    assertNotNull(failureReason, mapB);
+    assertNotNull(mapA, failureReason);
+    assertNotNull(mapB, failureReason);
     
     // Basic null check
-    assertFalse("equals method returns true when passed null", mapA.equals(null));
+    assertFalse(mapA.equals(null), "equals method returns true when passed null");
     
     // When entry set is empty, they should be equal
-    assertTrue("Two empty SortedMapWritables are no longer equal", mapA.equals(mapB));
+    assertTrue(mapA.equals(mapB), "Two empty SortedMapWritables are no longer equal");
     
     // Setup
     Text[] keys = {
@@ -142,40 +144,40 @@ public class TestSortedMapWritable {
     
     // entrySets are different
     failureReason = "Two SortedMapWritables with different data are now equal";
-    assertTrue(failureReason, mapA.hashCode() != mapB.hashCode());
-    assertTrue(failureReason, !mapA.equals(mapB));
-    assertTrue(failureReason, !mapB.equals(mapA));
+    assertTrue(mapA.hashCode() != mapB.hashCode(), failureReason);
+    assertTrue(!mapA.equals(mapB), failureReason);
+    assertTrue(!mapB.equals(mapA), failureReason);
     
     mapA.put(keys[1], values[1]);
     mapB.put(keys[0], values[0]);
     
     // entrySets are now same
     failureReason = "Two SortedMapWritables with same entry sets formed in different order are now different";
-    assertEquals(failureReason, mapA.hashCode(), mapB.hashCode());
-    assertTrue(failureReason, mapA.equals(mapB));
-    assertTrue(failureReason, mapB.equals(mapA));
+    assertEquals(mapA.hashCode(), mapB.hashCode(), failureReason);
+    assertTrue(mapA.equals(mapB), failureReason);
+    assertTrue(mapB.equals(mapA), failureReason);
     
     // Let's check if entry sets of same keys but different values
     mapA.put(keys[0], values[1]);
     mapA.put(keys[1], values[0]);
     
     failureReason = "Two SortedMapWritables with different content are now equal";
-    assertTrue(failureReason, mapA.hashCode() != mapB.hashCode());
-    assertTrue(failureReason, !mapA.equals(mapB));
-    assertTrue(failureReason, !mapB.equals(mapA));
+    assertTrue(mapA.hashCode() != mapB.hashCode(), failureReason);
+    assertTrue(!mapA.equals(mapB), failureReason);
+    assertTrue(!mapB.equals(mapA), failureReason);
   }
 
-  @Test(timeout = 1000)
+  @Test
+  @Timeout(value = 10)
   public void testPutAll() {
-    SortedMapWritable map1 = new SortedMapWritable();
-    SortedMapWritable map2 = new SortedMapWritable();
+    SortedMapWritable<Text> map1 = new SortedMapWritable<Text>();
+    SortedMapWritable<Text> map2 = new SortedMapWritable<Text>();
     map1.put(new Text("key"), new Text("value"));
     map2.putAll(map1);
 
-    assertEquals("map1 entries don't match map2 entries", map1, map2);
-    assertTrue(
-        "map2 doesn't have class information from map1",
-        map2.classToIdMap.containsKey(Text.class)
-            && map2.idToClassMap.containsValue(Text.class));
+    assertEquals(map1, map2, "map1 entries don't match map2 entries");
+    assertTrue(map2.classToIdMap.containsKey(Text.class)
+        && map2.idToClassMap.containsValue(Text.class),
+        "map2 doesn't have class information from map1");
   }
 }

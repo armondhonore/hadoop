@@ -18,15 +18,12 @@
 package org.apache.hadoop.hdfs.server.blockmanagement;
 
 import java.util.Iterator;
+import java.util.concurrent.atomic.LongAdder;
 
 import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.server.namenode.INodeId;
-import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage;
 import org.apache.hadoop.util.GSet;
 import org.apache.hadoop.util.LightWeightGSet;
-
-import com.google.common.base.Predicate;
-import com.google.common.collect.Iterables;
 
 /**
  * This class maintains the map from a block to its metadata.
@@ -34,18 +31,25 @@ import com.google.common.collect.Iterables;
  * the datanodes that store the block.
  */
 class BlocksMap {
-  private static class StorageIterator implements Iterator<DatanodeStorageInfo> {
+  public static class StorageIterator implements Iterator<DatanodeStorageInfo> {
     private final BlockInfo blockInfo;
     private int nextIdx = 0;
-      
+
     StorageIterator(BlockInfo blkInfo) {
       this.blockInfo = blkInfo;
     }
 
     @Override
     public boolean hasNext() {
-      return blockInfo != null && nextIdx < blockInfo.getCapacity()
-              && blockInfo.getDatanode(nextIdx) != null;
+      if (blockInfo == null) {
+        return false;
+      }
+      while (nextIdx < blockInfo.getCapacity() &&
+          blockInfo.getDatanode(nextIdx) == null) {
+        // note that for striped blocks there may be null in the triplets
+        nextIdx++;
+      }
+      return nextIdx < blockInfo.getCapacity();
     }
 
     @Override
@@ -63,6 +67,9 @@ class BlocksMap {
   private final int capacity;
   
   private GSet<Block, BlockInfo> blocks;
+
+  private final LongAdder totalReplicatedBlocks = new LongAdder();
+  private final LongAdder totalECBlockGroups = new LongAdder();
 
   BlocksMap(int capacity) {
     // Use 2% of total memory to size the GSet capacity
@@ -92,6 +99,8 @@ class BlocksMap {
   void clear() {
     if (blocks != null) {
       blocks.clear();
+      totalReplicatedBlocks.reset();
+      totalECBlockGroups.reset();
     }
   }
 
@@ -103,6 +112,7 @@ class BlocksMap {
     if (info != b) {
       info = b;
       blocks.put(info);
+      incrementBlockStat(info);
     }
     info.setBlockCollectionId(bc.getId());
     return info;
@@ -113,19 +123,25 @@ class BlocksMap {
    * remove it from all data-node lists it belongs to;
    * and remove all data-node locations associated with the block.
    */
-  void removeBlock(Block block) {
+  void removeBlock(BlockInfo block) {
     BlockInfo blockInfo = blocks.remove(block);
-    if (blockInfo == null)
+    if (blockInfo == null) {
       return;
+    }
+    decrementBlockStat(block);
 
-    blockInfo.setBlockCollectionId(INodeId.INVALID_INODE_ID);
-    for(int idx = blockInfo.numNodes()-1; idx >= 0; idx--) {
+    assert blockInfo.getBlockCollectionId() == INodeId.INVALID_INODE_ID;
+    final int size = blockInfo.isStriped() ?
+        blockInfo.getCapacity() : blockInfo.numNodes();
+    for(int idx = size - 1; idx >= 0; idx--) {
       DatanodeDescriptor dn = blockInfo.getDatanode(idx);
-      dn.removeBlock(blockInfo); // remove from the list and wipe the location
+      if (dn != null) {
+        removeBlock(dn, blockInfo); // remove from the list and wipe the location
+      }
     }
   }
-  
-  /** Returns the block object it it exists in the map. */
+
+  /** Returns the block object if it exists in the map. */
   BlockInfo getStoredBlock(Block b) {
     return blocks.get(b);
   }
@@ -136,22 +152,6 @@ class BlocksMap {
    */
   Iterable<DatanodeStorageInfo> getStorages(Block b) {
     return getStorages(blocks.get(b));
-  }
-
-  /**
-   * Searches for the block in the BlocksMap and 
-   * returns {@link Iterable} of the storages the block belongs to
-   * <i>that are of the given {@link DatanodeStorage.State state}</i>.
-   * 
-   * @param state DatanodeStorage state by which to filter the returned Iterable
-   */
-  Iterable<DatanodeStorageInfo> getStorages(Block b, final DatanodeStorage.State state) {
-    return Iterables.filter(getStorages(blocks.get(b)), new Predicate<DatanodeStorageInfo>() {
-      @Override
-      public boolean apply(DatanodeStorageInfo storage) {
-        return storage.getState() == state;
-      }
-    });
   }
 
   /**
@@ -184,13 +184,24 @@ class BlocksMap {
       return false;
 
     // remove block from the data-node list and the node from the block info
-    boolean removed = node.removeBlock(info);
+    boolean removed = removeBlock(node, info);
 
-    if (info.getDatanode(0) == null     // no datanodes left
-              && info.isDeleted()) {  // does not belong to a file
+    if (info.hasNoStorage()    // no datanodes left
+        && info.isDeleted()) { // does not belong to a file
       blocks.remove(b);  // remove block from the map
+      decrementBlockStat(info);
     }
     return removed;
+  }
+
+  /**
+   * Remove block from the list of blocks belonging to the data-node. Remove
+   * data-node from the block.
+   */
+  static boolean removeBlock(DatanodeDescriptor dn, BlockInfo b) {
+    final DatanodeStorageInfo s = b.findStorageInfo(dn);
+    // if block exists on this datanode
+    return s != null && s.removeBlock(b);
   }
 
   int size() {
@@ -210,19 +221,31 @@ class BlocksMap {
     return capacity;
   }
 
-  /**
-   * Replace a block in the block map by a new block.
-   * The new block and the old one have the same key.
-   * @param newBlock - block for replacement
-   * @return new block
-   */
-  BlockInfo replaceBlock(BlockInfo newBlock) {
-    BlockInfo currentBlock = blocks.get(newBlock);
-    assert currentBlock != null : "the block if not in blocksMap";
-    // replace block in data-node lists
-    currentBlock.replaceBlock(newBlock);
-    // replace block in the map itself
-    blocks.put(newBlock);
-    return newBlock;
+  private void incrementBlockStat(BlockInfo block) {
+    if (block.isStriped()) {
+      totalECBlockGroups.increment();
+    } else {
+      totalReplicatedBlocks.increment();
+    }
+  }
+
+  private void decrementBlockStat(BlockInfo block) {
+    if (block.isStriped()) {
+      totalECBlockGroups.decrement();
+      assert totalECBlockGroups.longValue() >= 0 :
+          "Total number of ec block groups should be non-negative";
+    } else {
+      totalReplicatedBlocks.decrement();
+      assert totalReplicatedBlocks.longValue() >= 0 :
+          "Total number of replicated blocks should be non-negative";
+    }
+  }
+
+  long getReplicatedBlocks() {
+    return totalReplicatedBlocks.longValue();
+  }
+
+  long getECBlockGroups() {
+    return totalECBlockGroups.longValue();
   }
 }

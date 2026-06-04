@@ -18,17 +18,21 @@
 
 package org.apache.hadoop.tools.mapred;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.SequenceFile;
 import org.apache.hadoop.io.IOUtils;
+import org.apache.hadoop.mapreduce.InputFormat;
+import org.apache.hadoop.mapreduce.InputSplit;
+import org.apache.hadoop.mapreduce.JobContext;
+import org.apache.hadoop.mapreduce.RecordReader;
+import org.apache.hadoop.mapreduce.TaskAttemptContext;
 import org.apache.hadoop.tools.CopyListingFileStatus;
 import org.apache.hadoop.tools.DistCpConstants;
 import org.apache.hadoop.tools.util.DistCpUtils;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.mapreduce.*;
 import org.apache.hadoop.mapreduce.lib.input.SequenceFileRecordReader;
 import org.apache.hadoop.mapreduce.lib.input.FileSplit;
 import org.apache.hadoop.conf.Configuration;
@@ -46,8 +50,8 @@ import java.util.ArrayList;
  */
 public class UniformSizeInputFormat
     extends InputFormat<Text, CopyListingFileStatus> {
-  private static final Log LOG
-                = LogFactory.getLog(UniformSizeInputFormat.class);
+  private static final Logger LOG
+                = LoggerFactory.getLogger(UniformSizeInputFormat.class);
 
   /**
    * Implementation of InputFormat::getSplits(). Returns a list of InputSplits,
@@ -95,7 +99,8 @@ public class UniformSizeInputFormat
       while (reader.next(srcRelPath, srcFileStatus)) {
         // If adding the current file would cause the bytes per map to exceed
         // limit. Add the current file to new split
-        if (currentSplitSize + srcFileStatus.getLen() > nBytesPerSplit && lastPosition != 0) {
+        if (currentSplitSize + srcFileStatus.getChunkLength() > nBytesPerSplit
+            && lastPosition != 0) {
           FileSplit split = new FileSplit(listingFilePath, lastSplitStart,
               lastPosition - lastSplitStart, null);
           if (LOG.isDebugEnabled()) {
@@ -105,14 +110,15 @@ public class UniformSizeInputFormat
           lastSplitStart = lastPosition;
           currentSplitSize = 0;
         }
-        currentSplitSize += srcFileStatus.getLen();
+        currentSplitSize += srcFileStatus.getChunkLength();
         lastPosition = reader.getPosition();
       }
       if (lastPosition > lastSplitStart) {
         FileSplit split = new FileSplit(listingFilePath, lastSplitStart,
             lastPosition - lastSplitStart, null);
         if (LOG.isDebugEnabled()) {
-          LOG.info ("Creating split : " + split + ", bytes in split: " + currentSplitSize);
+          LOG.debug("Creating split : " + split + ", bytes in split: "
+              + currentSplitSize);
         }
         splits.add(split);
       }

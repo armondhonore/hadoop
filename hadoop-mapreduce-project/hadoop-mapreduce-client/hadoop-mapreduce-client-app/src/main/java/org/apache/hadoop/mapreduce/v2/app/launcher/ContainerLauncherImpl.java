@@ -32,8 +32,6 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.mapred.ShuffleHandler;
 import org.apache.hadoop.mapreduce.MRJobConfig;
@@ -45,6 +43,9 @@ import org.apache.hadoop.mapreduce.v2.app.job.event.TaskAttemptEvent;
 import org.apache.hadoop.mapreduce.v2.app.job.event.TaskAttemptEventType;
 import org.apache.hadoop.service.AbstractService;
 import org.apache.hadoop.util.StringUtils;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
+import org.apache.hadoop.util.concurrent.HadoopThreadPoolExecutor;
+import org.apache.hadoop.yarn.api.protocolrecords.SignalContainerRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.StartContainerRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.StartContainersRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.StartContainersResponse;
@@ -52,11 +53,14 @@ import org.apache.hadoop.yarn.api.protocolrecords.StopContainersRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.StopContainersResponse;
 import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.ContainerLaunchContext;
+import org.apache.hadoop.yarn.api.records.SignalContainerCommand;
 import org.apache.hadoop.yarn.client.api.impl.ContainerManagementProtocolProxy;
 import org.apache.hadoop.yarn.client.api.impl.ContainerManagementProtocolProxy.ContainerManagementProtocolProxyData;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 
-import com.google.common.util.concurrent.ThreadFactoryBuilder;
+import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * This class is responsible for launching of containers.
@@ -64,7 +68,8 @@ import com.google.common.util.concurrent.ThreadFactoryBuilder;
 public class ContainerLauncherImpl extends AbstractService implements
     ContainerLauncher {
 
-  static final Log LOG = LogFactory.getLog(ContainerLauncherImpl.class);
+  static final Logger LOG =
+      LoggerFactory.getLogger(ContainerLauncherImpl.class);
 
   private ConcurrentHashMap<ContainerId, Container> containers = 
     new ConcurrentHashMap<ContainerId, Container>(); 
@@ -99,7 +104,7 @@ public class ContainerLauncherImpl extends AbstractService implements
     }
   }
   
-  private static enum ContainerState {
+  private enum ContainerState {
     PREP, FAILED, RUNNING, DONE, KILLED_BEFORE_LAUNCH
   }
 
@@ -190,9 +195,13 @@ public class ContainerLauncherImpl extends AbstractService implements
         }
       }
     }
-    
+
+    public void kill() {
+      kill(false);
+    }
+
     @SuppressWarnings("unchecked")
-    public synchronized void kill() {
+    public synchronized void kill(boolean dumpThreads) {
 
       if(this.state == ContainerState.PREP) {
         this.state = ContainerState.KILLED_BEFORE_LAUNCH;
@@ -202,6 +211,13 @@ public class ContainerLauncherImpl extends AbstractService implements
         ContainerManagementProtocolProxyData proxy = null;
         try {
           proxy = getCMProxy(this.containerMgrAddress, this.containerID);
+
+          if (dumpThreads) {
+            final SignalContainerRequest request = SignalContainerRequest
+                .newInstance(containerID,
+                    SignalContainerCommand.OUTPUT_THREAD_DUMP);
+            proxy.getContainerManagementProtocol().signalToContainer(request);
+          }
 
           // kill the remote container if already launched
           List<ContainerId> ids = new ArrayList<ContainerId>();
@@ -266,13 +282,13 @@ public class ContainerLauncherImpl extends AbstractService implements
         "ContainerLauncher #%d").setDaemon(true).build();
 
     // Start with a default core-pool size of 10 and change it dynamically.
-    launcherPool = new ThreadPoolExecutor(initialPoolSize,
+    launcherPool = new HadoopThreadPoolExecutor(initialPoolSize,
         Integer.MAX_VALUE, 1, TimeUnit.HOURS,
         new LinkedBlockingQueue<Runnable>(),
         tf);
-    eventHandlingThread = new Thread() {
+    eventHandlingThread = new SubjectInheritingThread() {
       @Override
-      public void run() {
+      public void work() {
         ContainerLauncherEvent event = null;
         Set<String> allNodes = new HashSet<String>();
 
@@ -364,27 +380,38 @@ public class ContainerLauncherImpl extends AbstractService implements
 
     @Override
     public void run() {
-      LOG.info("Processing the event " + event.toString());
+      LOG.info("Processing the event {}", event);
 
       // Load ContainerManager tokens before creating a connection.
       // TODO: Do it only once per NodeManager.
       ContainerId containerID = event.getContainerID();
 
-      Container c = getContainer(event);
       switch(event.getType()) {
 
       case CONTAINER_REMOTE_LAUNCH:
         ContainerRemoteLaunchEvent launchEvent
             = (ContainerRemoteLaunchEvent) event;
-        c.launch(launchEvent);
+        getContainer(event).launch(launchEvent);
         break;
 
       case CONTAINER_REMOTE_CLEANUP:
-        c.kill();
+        // If the container failed to launch earlier (due to dead node for example),
+        // it has been marked as FAILED and removed from containers during
+        // CONTAINER_REMOTE_LAUNCH event handling.
+        // Skip kill() such container during CONTAINER_REMOTE_CLEANUP as
+        // it is not necessary and could cost 15 minutes delay if the node is dead.
+        if (!containers.containsKey(containerID)) {
+          LOG.info("Skip cleanup of already-removed container {}", containerID);
+          // send killed event to task attempt regardless like in kill().
+          context.getEventHandler().handle(new TaskAttemptEvent(event.getTaskAttemptID(),
+              TaskAttemptEventType.TA_CONTAINER_CLEANED));
+          return;
+        }
+        getContainer(event).kill(event.getDumpContainerThreads());
         break;
 
       case CONTAINER_COMPLETED:
-        c.done();
+        getContainer(event).done();
         break;
 
       }

@@ -19,17 +19,18 @@
 package org.apache.hadoop.mapred;
 
 import org.apache.hadoop.mapreduce.TaskCounter;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestReduceFetch extends TestReduceFetchFromPartialMem {
-
-  static {
-    setSuite(TestReduceFetch.class);
-  }
 
   /**
    * Verify that all segments are read from disk
    * @throws Exception might be thrown
    */
+  @Test
   public void testReduceFromDisk() throws Exception {
     final int MAP_TASKS = 8;
     JobConf job = mrCluster.createJobConf();
@@ -43,16 +44,18 @@ public class TestReduceFetch extends TestReduceFetchFromPartialMem {
     Counters c = runJob(job);
     final long spill = c.findCounter(TaskCounter.SPILLED_RECORDS).getCounter();
     final long out = c.findCounter(TaskCounter.MAP_OUTPUT_RECORDS).getCounter();
-    assertTrue("Expected all records spilled during reduce (" + spill + ")",
-        spill >= 2 * out); // all records spill at map, reduce
-    assertTrue("Expected intermediate merges (" + spill + ")",
-        spill >= 2 * out + (out / MAP_TASKS)); // some records hit twice
+    assertTrue(spill >= 2 * out,
+        "Expected all records spilled during reduce (" +
+        spill + ")"); // all records spill at map, reduce
+    assertTrue(spill >= 2 * out + (out / MAP_TASKS),
+        "Expected intermediate merges (" + spill + ")"); // some records hit twice
   }
 
   /**
    * Verify that no segment hits disk.
    * @throws Exception might be thrown
    */
+  @Test
   public void testReduceFromMem() throws Exception {
     final int MAP_TASKS = 3;
     JobConf job = mrCluster.createJobConf();
@@ -63,6 +66,6 @@ public class TestReduceFetch extends TestReduceFetchFromPartialMem {
     Counters c = runJob(job);
     final long spill = c.findCounter(TaskCounter.SPILLED_RECORDS).getCounter();
     final long out = c.findCounter(TaskCounter.MAP_OUTPUT_RECORDS).getCounter();
-    assertEquals("Spilled records: " + spill, out, spill); // no reduce spill
+    assertEquals(out, spill, "Spilled records: " + spill); // no reduce spill
   }
 }

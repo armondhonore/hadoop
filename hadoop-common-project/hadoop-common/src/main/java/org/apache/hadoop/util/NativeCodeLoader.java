@@ -18,10 +18,10 @@
 
 package org.apache.hadoop.util;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A helper to load the native hadoop code i.e. libhadoop.so.
@@ -31,10 +31,10 @@ import org.apache.hadoop.classification.InterfaceStability;
  */
 @InterfaceAudience.Private
 @InterfaceStability.Unstable
-public class NativeCodeLoader {
+public final class NativeCodeLoader {
 
-  private static final Log LOG =
-    LogFactory.getLog(NativeCodeLoader.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(NativeCodeLoader.class);
   
   private static boolean nativeCodeLoaded = false;
   
@@ -62,6 +62,8 @@ public class NativeCodeLoader {
     }
   }
 
+  private NativeCodeLoader() {}
+
   /**
    * Check if native-hadoop code is loaded for this platform.
    * 
@@ -73,12 +75,16 @@ public class NativeCodeLoader {
   }
 
   /**
-   * Returns true only if this build was compiled with support for snappy.
+   * Returns true only if this build was compiled with support for ISA-L.
+   *
+   * @return if this build was compiled with support for ISA-L true, not false.
    */
-  public static native boolean buildSupportsSnappy();
-  
+  public static native boolean buildSupportsIsal();
+
   /**
    * Returns true only if this build was compiled with support for openssl.
+   *
+   * @return if this build was compiled with support for openssl true,not false.
    */
   public static native boolean buildSupportsOpenssl();
 

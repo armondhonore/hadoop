@@ -34,15 +34,15 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import javax.crypto.SecretKey;
 
-import com.google.common.annotations.VisibleForTesting;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configurable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.LocalDirAllocator;
+import org.apache.hadoop.fs.LocalFileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.FileSystem.Statistics;
 import org.apache.hadoop.io.BytesWritable;
@@ -62,14 +62,19 @@ import org.apache.hadoop.mapreduce.MRConfig;
 import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.lib.reduce.WrappedReducer;
 import org.apache.hadoop.mapreduce.task.ReduceContextImpl;
+import org.apache.hadoop.mapreduce.util.MRJobConfUtil;
 import org.apache.hadoop.yarn.util.ResourceCalculatorProcessTree;
 import org.apache.hadoop.net.NetUtils;
+import org.apache.hadoop.util.ExitUtil;
 import org.apache.hadoop.util.Progress;
 import org.apache.hadoop.util.Progressable;
 import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.hadoop.util.ShutdownHookManager;
 import org.apache.hadoop.util.StringInterner;
 import org.apache.hadoop.util.StringUtils;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Base class for tasks.
@@ -77,17 +82,18 @@ import org.apache.hadoop.util.StringUtils;
 @InterfaceAudience.LimitedPrivate({"MapReduce"})
 @InterfaceStability.Unstable
 abstract public class Task implements Writable, Configurable {
-  private static final Log LOG =
-    LogFactory.getLog(Task.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(Task.class);
 
   public static String MERGED_OUTPUT_PREFIX = ".merged";
   public static final long DEFAULT_COMBINE_RECORDS_BEFORE_PROGRESS = 10000;
+  private static final String HDFS_URI_SCHEME = "hdfs";
   
   /**
    * @deprecated Provided for compatibility. Use {@link TaskCounter} instead.
    */
   @Deprecated
-  public static enum Counter { 
+  public enum Counter {
     MAP_INPUT_RECORDS, 
     MAP_OUTPUT_RECORDS,
     MAP_SKIPPED_RECORDS,
@@ -107,7 +113,11 @@ abstract public class Task implements Writable, Configurable {
     CPU_MILLISECONDS,
     PHYSICAL_MEMORY_BYTES,
     VIRTUAL_MEMORY_BYTES,
-    COMMITTED_HEAP_BYTES
+    COMMITTED_HEAP_BYTES,
+    MAP_PHYSICAL_MEMORY_BYTES_MAX,
+    MAP_VIRTUAL_MEMORY_BYTES_MAX,
+    REDUCE_PHYSICAL_MEMORY_BYTES_MAX,
+    REDUCE_VIRTUAL_MEMORY_BYTES_MAX
   }
 
   /**
@@ -192,6 +202,7 @@ abstract public class Task implements Writable, Configurable {
   protected SecretKey shuffleSecret;
   protected GcTimeUpdater gcUpdater;
   final AtomicBoolean mustPreempt = new AtomicBoolean(false);
+  private boolean uberized = false;
 
   ////////////////////////////////////////////
   // Constructors
@@ -347,8 +358,8 @@ abstract public class Task implements Writable, Configurable {
    * Report a fatal error to the parent (task) tracker.
    */
   protected void reportFatalError(TaskAttemptID id, Throwable throwable, 
-                                  String logMsg) {
-    LOG.fatal(logMsg);
+                                  String logMsg, boolean fastFail) {
+    LOG.error(logMsg);
     
     if (ShutdownHookManager.get().isShutdownInProgress()) {
       return;
@@ -359,9 +370,9 @@ abstract public class Task implements Writable, Configurable {
                    ? StringUtils.stringifyException(throwable)
                    : StringUtils.stringifyException(tCause);
     try {
-      umbilical.fatalError(id, cause);
+      umbilical.fatalError(id, cause, fastFail);
     } catch (IOException ioe) {
-      LOG.fatal("Failed to contact the tasktracker", ioe);
+      LOG.error("Failed to contact the tasktracker", ioe);
       System.exit(-1);
     }
   }
@@ -645,6 +656,8 @@ abstract public class Task implements Writable, Configurable {
     private Thread pingThread = null;
     private boolean done = true;
     private Object lock = new Object();
+    private volatile String diskLimitCheckStatus = null;
+    private Thread diskLimitCheckThread = null;
 
     /**
      * flag that indicates whether progress update needs to be sent to parent.
@@ -730,20 +743,121 @@ abstract public class Task implements Writable, Configurable {
       } else {
         return split;
       }
-    }  
-    /** 
-     * The communication thread handles communication with the parent (Task Tracker). 
-     * It sends progress updates if progress has been made or if the task needs to 
-     * let the parent know that it's alive. It also pings the parent to see if it's alive. 
+    }
+
+    /**
+     * exception thrown when the task exceeds some configured limits.
+     */
+    public class TaskLimitException extends IOException {
+      public TaskLimitException(String str) {
+        super(str);
+      }
+    }
+
+    /**
+     * disk limit checker, runs in separate thread when activated.
+     */
+    public class DiskLimitCheck implements Runnable {
+      private LocalFileSystem localFS;
+      private long fsLimit;
+      private long checkInterval;
+      private String[] localDirs;
+      private boolean killOnLimitExceeded;
+
+      public DiskLimitCheck(JobConf conf) throws IOException {
+        this.localFS = FileSystem.getLocal(conf);
+        this.fsLimit = conf.getLong(MRJobConfig.JOB_SINGLE_DISK_LIMIT_BYTES,
+            MRJobConfig.DEFAULT_JOB_SINGLE_DISK_LIMIT_BYTES);
+        this.localDirs = conf.getLocalDirs();
+        this.checkInterval = conf.getLong(
+            MRJobConfig.JOB_SINGLE_DISK_LIMIT_CHECK_INTERVAL_MS,
+            MRJobConfig.DEFAULT_JOB_SINGLE_DISK_LIMIT_CHECK_INTERVAL_MS);
+        this.killOnLimitExceeded = conf.getBoolean(
+            MRJobConfig.JOB_SINGLE_DISK_LIMIT_KILL_LIMIT_EXCEED,
+            MRJobConfig.DEFAULT_JOB_SINGLE_DISK_LIMIT_KILL_LIMIT_EXCEED);
+      }
+
+      @Override
+      public void run() {
+        while (!taskDone.get()) {
+          try {
+            long localWritesSize = 0L;
+            String largestWorkDir = null;
+            for (String local : localDirs) {
+              long size = FileUtil.getDU(localFS.pathToFile(new Path(local)));
+              if (localWritesSize < size) {
+                localWritesSize = size;
+                largestWorkDir = local;
+              }
+            }
+            if (localWritesSize > fsLimit) {
+              String localStatus =
+                  "too much data in local scratch dir="
+                      + largestWorkDir
+                      + ". current size is "
+                      + localWritesSize
+                      + " the limit is " + fsLimit;
+              if (killOnLimitExceeded) {
+                LOG.error(localStatus);
+                diskLimitCheckStatus = localStatus;
+              } else {
+                LOG.warn(localStatus);
+              }
+              break;
+            }
+            Thread.sleep(checkInterval);
+          } catch (Exception e) {
+            LOG.error(e.getMessage(), e);
+          }
+        }
+      }
+    }
+
+    /**
+     * check the counters to see whether the task has exceeded any configured
+     * limits.
+     * @throws TaskLimitException
+     */
+    protected void checkTaskLimits() throws TaskLimitException {
+      // check the limit for writing to local file system
+      long limit = conf.getLong(MRJobConfig.TASK_LOCAL_WRITE_LIMIT_BYTES,
+              MRJobConfig.DEFAULT_TASK_LOCAL_WRITE_LIMIT_BYTES);
+      if (limit >= 0) {
+        Counters.Counter localWritesCounter = null;
+        try {
+          LocalFileSystem localFS = FileSystem.getLocal(conf);
+          localWritesCounter = counters.findCounter(localFS.getScheme(),
+                  FileSystemCounter.BYTES_WRITTEN);
+        } catch (IOException e) {
+          LOG.warn("Could not get LocalFileSystem BYTES_WRITTEN counter");
+        }
+        if (localWritesCounter != null
+                && localWritesCounter.getCounter() > limit) {
+          throw new TaskLimitException("too much write to local file system." +
+                  " current value is " + localWritesCounter.getCounter() +
+                  " the limit is " + limit);
+        }
+      }
+      if (diskLimitCheckStatus != null) {
+        throw new TaskLimitException(diskLimitCheckStatus);
+      }
+    }
+
+    /**
+     * The communication thread handles communication with the parent (Task
+     * Tracker). It sends progress updates if progress has been made or if
+     * the task needs to let the parent know that it's alive. It also pings
+     * the parent to see if it's alive.
      */
     public void run() {
       final int MAX_RETRIES = 3;
       int remainingRetries = MAX_RETRIES;
       // get current flag value and reset it as well
       boolean sendProgress = resetProgressFlag();
-      long taskProgressInterval =
-          conf.getLong(MRJobConfig.TASK_PROGRESS_REPORT_INTERVAL,
-                       MRJobConfig.DEFAULT_TASK_PROGRESS_REPORT_INTERVAL);
+
+      long taskProgressInterval = MRJobConfUtil.
+          getTaskProgressReportInterval(conf);
+
       while (!taskDone.get()) {
         synchronized (lock) {
           done = false;
@@ -765,8 +879,9 @@ abstract public class Task implements Writable, Configurable {
           if (sendProgress) {
             // we need to send progress update
             updateCounters();
+            checkTaskLimits();
             taskStatus.statusUpdate(taskProgress.get(),
-                                    taskProgress.toString(), 
+                                    taskProgress.toString(),
                                     counters);
             amFeedback = umbilical.statusUpdate(taskId, taskStatus);
             taskFound = amFeedback.getTaskFound();
@@ -781,9 +896,14 @@ abstract public class Task implements Writable, Configurable {
           // if Task Tracker is not aware of our task ID (probably because it died and 
           // came back up), kill ourselves
           if (!taskFound) {
-            LOG.warn("Parent died.  Exiting "+taskId);
-            resetDoneFlag();
-            System.exit(66);
+            if (uberized) {
+              taskDone.set(true);
+              break;
+            } else {
+              LOG.warn("Parent died.  Exiting "+taskId);
+              resetDoneFlag();
+              System.exit(66);
+            }
           }
 
           // Set a flag that says we should preempt this is read by
@@ -797,10 +917,21 @@ abstract public class Task implements Writable, Configurable {
                 mustPreempt.get() + " given " + amFeedback.getPreemption() +
                 " for "+ taskId + " task status: " +taskStatus.getPhase());
           }
-          sendProgress = resetProgressFlag(); 
+          sendProgress = resetProgressFlag();
           remainingRetries = MAX_RETRIES;
-        } 
-        catch (Throwable t) {
+        } catch (TaskLimitException e) {
+          String errMsg = "Task exceeded the limits: " +
+                  StringUtils.stringifyException(e);
+          LOG.error(errMsg);
+          try {
+            umbilical.fatalError(taskId, errMsg, true);
+          } catch (IOException ioe) {
+            LOG.error("Failed to update failure diagnosis", ioe);
+          }
+          LOG.error("Killing " + taskId);
+          resetDoneFlag();
+          ExitUtil.terminate(69);
+        } catch (Throwable t) {
           LOG.info("Communication exception: " + StringUtils.stringifyException(t));
           remainingRetries -=1;
           if (remainingRetries == 0) {
@@ -822,14 +953,30 @@ abstract public class Task implements Writable, Configurable {
     }
     public void startCommunicationThread() {
       if (pingThread == null) {
-        pingThread = new Thread(this, "communication thread");
+        pingThread = new SubjectInheritingThread(this, "communication thread");
         pingThread.setDaemon(true);
         pingThread.start();
+      }
+      startDiskLimitCheckerThreadIfNeeded();
+    }
+    public void startDiskLimitCheckerThreadIfNeeded() {
+      if (diskLimitCheckThread == null && conf.getLong(
+          MRJobConfig.JOB_SINGLE_DISK_LIMIT_BYTES,
+          MRJobConfig.DEFAULT_JOB_SINGLE_DISK_LIMIT_BYTES) >= 0) {
+        try {
+          diskLimitCheckThread = new SubjectInheritingThread(new DiskLimitCheck(conf),
+              "disk limit check thread");
+          diskLimitCheckThread.setDaemon(true);
+          diskLimitCheckThread.start();
+        } catch (IOException e) {
+          LOG.error("Issues starting disk monitor thread: "
+              + e.getMessage(), e);
+        }
       }
     }
     public void stopCommunicationThread() throws InterruptedException {
       if (pingThread != null) {
-        // Intent of the lock is to not send an interupt in the middle of an
+        // Intent of the lock is to not send an interrupt in the middle of an
         // umbilical.ping or umbilical.statusUpdate
         synchronized(lock) {
         //Interrupt if sleeping. Otherwise wait for the RPC call to return.
@@ -910,6 +1057,24 @@ abstract public class Task implements Writable, Configurable {
     if (vMem != ResourceCalculatorProcessTree.UNAVAILABLE) {
       counters.findCounter(TaskCounter.VIRTUAL_MEMORY_BYTES).setValue(vMem);
     }
+
+    if (pMem != ResourceCalculatorProcessTree.UNAVAILABLE) {
+      TaskCounter counter = isMapTask() ?
+          TaskCounter.MAP_PHYSICAL_MEMORY_BYTES_MAX :
+          TaskCounter.REDUCE_PHYSICAL_MEMORY_BYTES_MAX;
+      Counters.Counter pMemCounter =
+          counters.findCounter(counter);
+      pMemCounter.setValue(Math.max(pMemCounter.getValue(), pMem));
+    }
+
+    if (vMem != ResourceCalculatorProcessTree.UNAVAILABLE) {
+      TaskCounter counter = isMapTask() ?
+          TaskCounter.MAP_VIRTUAL_MEMORY_BYTES_MAX :
+          TaskCounter.REDUCE_VIRTUAL_MEMORY_BYTES_MAX;
+      Counters.Counter vMemCounter =
+          counters.findCounter(counter);
+      vMemCounter.setValue(Math.max(vMemCounter.getValue(), vMem));
+    }
   }
 
   /**
@@ -962,7 +1127,8 @@ abstract public class Task implements Writable, Configurable {
   class FileSystemStatisticUpdater {
     private List<FileSystem.Statistics> stats;
     private Counters.Counter readBytesCounter, writeBytesCounter,
-        readOpsCounter, largeReadOpsCounter, writeOpsCounter;
+        readOpsCounter, largeReadOpsCounter, writeOpsCounter,
+        readBytesEcCounter;
     private String scheme;
     FileSystemStatisticUpdater(List<FileSystem.Statistics> stats, String scheme) {
       this.stats = stats;
@@ -990,23 +1156,33 @@ abstract public class Task implements Writable, Configurable {
         writeOpsCounter = counters.findCounter(scheme,
             FileSystemCounter.WRITE_OPS);
       }
+      if (readBytesEcCounter == null && scheme.equals(HDFS_URI_SCHEME)) {
+        // EC bytes only applies to hdfs
+        readBytesEcCounter =
+            counters.findCounter(scheme, FileSystemCounter.BYTES_READ_EC);
+      }
       long readBytes = 0;
       long writeBytes = 0;
       long readOps = 0;
       long largeReadOps = 0;
       long writeOps = 0;
+      long readBytesEC = 0;
       for (FileSystem.Statistics stat: stats) {
         readBytes = readBytes + stat.getBytesRead();
         writeBytes = writeBytes + stat.getBytesWritten();
         readOps = readOps + stat.getReadOps();
         largeReadOps = largeReadOps + stat.getLargeReadOps();
         writeOps = writeOps + stat.getWriteOps();
+        readBytesEC = readBytesEC + stat.getBytesReadErasureCoded();
       }
       readBytesCounter.setValue(readBytes);
       writeBytesCounter.setValue(writeBytes);
       readOpsCounter.setValue(readOps);
       largeReadOpsCounter.setValue(largeReadOps);
       writeOpsCounter.setValue(writeOps);
+      if (readBytesEcCounter != null) {
+        readBytesEcCounter.setValue(readBytesEC);
+      }
     }
   }
   
@@ -1098,6 +1274,18 @@ abstract public class Task implements Writable, Configurable {
     sendLastUpdate(umbilical);
     //signal the tasktracker that we are done
     sendDone(umbilical);
+    LOG.info("Final Counters for " + taskId + ": " +
+              getCounters().toString());
+    /**
+     *   File System Counters
+     *           FILE: Number of bytes read=0
+     *           FILE: Number of bytes written=146972
+     *           ...
+     *   Map-Reduce Framework
+     *           Map output records=6
+     *           Map output records=6
+     *           ...
+     */
   }
 
   /**
@@ -1124,11 +1312,17 @@ abstract public class Task implements Writable, Configurable {
   public void statusUpdate(TaskUmbilicalProtocol umbilical) 
   throws IOException {
     int retries = MAX_RETRIES;
+
     while (true) {
       try {
         if (!umbilical.statusUpdate(getTaskID(), taskStatus).getTaskFound()) {
-          LOG.warn("Parent died.  Exiting "+taskId);
-          System.exit(66);
+          if (uberized) {
+            LOG.warn("Task no longer available: " + taskId);
+            break;
+          } else {
+            LOG.warn("Parent died.  Exiting " + taskId);
+            ExitUtil.terminate(66);
+          }
         }
         taskStatus.clearStatus();
         return;
@@ -1260,7 +1454,7 @@ abstract public class Task implements Writable, Configurable {
     setPhase(TaskStatus.Phase.CLEANUP);
     getProgress().setStatus("cleanup");
     statusUpdate(umbilical);
-    LOG.info("Runnning cleanup for the task");
+    LOG.info("Running cleanup for the task");
     // do the cleanup
     committer.abortTask(taskContext);
   }
@@ -1341,6 +1535,8 @@ abstract public class Task implements Writable, Configurable {
         NetUtils.addStaticResolution(name, resolvedName);
       }
     }
+
+    uberized = conf.getBoolean("mapreduce.task.uberized", false);
   }
 
   public Configuration getConf() {

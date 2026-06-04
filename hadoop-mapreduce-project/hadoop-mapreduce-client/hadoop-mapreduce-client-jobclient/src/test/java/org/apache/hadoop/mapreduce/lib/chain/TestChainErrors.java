@@ -29,6 +29,10 @@ import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.MapReduceTestUtil;
 import org.apache.hadoop.mapreduce.Mapper;
 import org.apache.hadoop.mapreduce.Reducer;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /**
  * Tests error conditions in ChainMapper/ChainReducer.
@@ -51,6 +55,7 @@ public class TestChainErrors extends HadoopTestCase {
    * 
    * @throws Exception
    */
+  @Test
   public void testChainSubmission() throws Exception {
 
     Configuration conf = createJobConf();
@@ -89,6 +94,7 @@ public class TestChainErrors extends HadoopTestCase {
    * 
    * @throws Exception
    */
+  @Test
   public void testChainFail() throws Exception {
 
     Configuration conf = createJobConf();
@@ -106,7 +112,7 @@ public class TestChainErrors extends HadoopTestCase {
         LongWritable.class, Text.class, null);
 
     job.waitForCompletion(true);
-    assertTrue("Job Not failed", !job.isSuccessful());
+    assertTrue(!job.isSuccessful(), "Job Not failed");
   }
 
   /**
@@ -114,6 +120,7 @@ public class TestChainErrors extends HadoopTestCase {
    * 
    * @throws Exception
    */
+  @Test
   public void testReducerFail() throws Exception {
 
     Configuration conf = createJobConf();
@@ -131,7 +138,7 @@ public class TestChainErrors extends HadoopTestCase {
         LongWritable.class, Text.class, null);
 
     job.waitForCompletion(true);
-    assertTrue("Job Not failed", !job.isSuccessful());
+    assertTrue(!job.isSuccessful(), "Job Not failed");
   }
 
   /**
@@ -139,6 +146,7 @@ public class TestChainErrors extends HadoopTestCase {
    * 
    * @throws Exception
    */
+  @Test
   public void testChainMapNoOuptut() throws Exception {
     Configuration conf = createJobConf();
     String expectedOutput = "";
@@ -153,9 +161,9 @@ public class TestChainErrors extends HadoopTestCase {
         LongWritable.class, Text.class, null);
 
     job.waitForCompletion(true);
-    assertTrue("Job failed", job.isSuccessful());
-    assertEquals("Outputs doesn't match", expectedOutput, MapReduceTestUtil
-        .readOutput(outDir, conf));
+    assertTrue(job.isSuccessful(), "Job failed");
+    assertEquals(expectedOutput, MapReduceTestUtil
+        .readOutput(outDir, conf), "Outputs doesn't match");
   }
 
   /**
@@ -163,6 +171,7 @@ public class TestChainErrors extends HadoopTestCase {
    * 
    * @throws Exception
    */
+  @Test
   public void testChainReduceNoOuptut() throws Exception {
     Configuration conf = createJobConf();
     String expectedOutput = "";
@@ -180,9 +189,9 @@ public class TestChainErrors extends HadoopTestCase {
         LongWritable.class, Text.class, null);
 
     job.waitForCompletion(true);
-    assertTrue("Job failed", job.isSuccessful());
-    assertEquals("Outputs doesn't match", expectedOutput, MapReduceTestUtil
-        .readOutput(outDir, conf));
+    assertTrue(job.isSuccessful(), "Job failed");
+    assertEquals(expectedOutput, MapReduceTestUtil
+        .readOutput(outDir, conf), "Outputs doesn't match");
   }
 
   // this map consumes all the input and output nothing

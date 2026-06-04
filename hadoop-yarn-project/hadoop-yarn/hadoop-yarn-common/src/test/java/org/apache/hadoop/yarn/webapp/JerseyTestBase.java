@@ -18,25 +18,28 @@
 
 package org.apache.hadoop.yarn.webapp;
 
-import org.junit.Before;
-import com.sun.jersey.test.framework.JerseyTest;
-import com.sun.jersey.test.framework.WebAppDescriptor;
+import org.glassfish.jersey.jettison.internal.entity.JettisonObjectProvider;
+import org.glassfish.jersey.test.JerseyTest;
+import org.junit.jupiter.api.BeforeEach;
+
+import javax.ws.rs.client.WebTarget;
+import javax.ws.rs.core.Application;
 
 public abstract class JerseyTestBase extends JerseyTest {
-  public JerseyTestBase(WebAppDescriptor appDescriptor) {
-    super(appDescriptor);
+  public static final String JERSEY_RANDOM_PORT = "0";
+
+  @Override
+  protected Application configure() {
+    return new Application();
   }
 
-  @Before
-  public void initializeJerseyPort() {
-    int jerseyPort = 9998;
-    String port = System.getProperty("jersey.test.port");
-    if(null != port) {
-      jerseyPort = Integer.parseInt(port) + 10;
-      if(jerseyPort > 65535) {
-        jerseyPort = 9998;
-      }
-    }
-    System.setProperty("jersey.test.port", Integer.toString(jerseyPort));
+  @BeforeEach
+  @Override
+  public void setUp() throws Exception {
+    super.setUp();
+  }
+
+  public final WebTarget targetWithJsonObject() {
+    return target().register(new JettisonObjectProvider.App());
   }
 }

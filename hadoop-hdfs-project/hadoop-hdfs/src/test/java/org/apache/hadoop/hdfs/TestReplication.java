@@ -17,29 +17,29 @@
  */
 package org.apache.hadoop.hdfs;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
+import static org.apache.hadoop.test.MetricsAsserts.assertCounter;
+import static org.apache.hadoop.test.MetricsAsserts.getMetrics;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.ArgumentMatchers.any;
 
-import java.io.File;
+import java.util.function.Supplier;
+
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
-import java.io.RandomAccessFile;
 import java.net.InetSocketAddress;
-import java.nio.file.FileVisitResult;
-import java.nio.file.Files;
-import java.nio.file.SimpleFileVisitor;
-import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.TimeoutException;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.BlockLocation;
+import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
@@ -47,13 +47,28 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.protocol.ClientProtocol;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
-import org.apache.hadoop.hdfs.protocol.HdfsConstants.DatanodeReportType;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
-import org.apache.hadoop.hdfs.protocol.Block;
+import org.apache.hadoop.hdfs.protocol.HdfsConstants.DatanodeReportType;
+import org.apache.hadoop.hdfs.protocolPB.DatanodeProtocolClientSideTranslatorPB;
+import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
+import org.apache.hadoop.hdfs.server.blockmanagement.BlockManagerTestUtil;
+import org.apache.hadoop.hdfs.server.datanode.DataNode;
+import org.apache.hadoop.hdfs.server.datanode.DataStorage;
+import org.apache.hadoop.hdfs.server.datanode.DataNodeTestUtils;
+import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsDatasetSpi;
+import org.apache.hadoop.hdfs.server.datanode.FsDatasetTestUtils.MaterializedReplica;
+import org.apache.hadoop.hdfs.server.datanode.InternalDataNodeTestUtils;
 import org.apache.hadoop.hdfs.server.datanode.SimulatedFSDataset;
+import org.apache.hadoop.hdfs.server.namenode.NameNode;
+import org.apache.hadoop.io.IOUtils;
+import org.apache.hadoop.metrics2.MetricsRecordBuilder;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.hadoop.test.GenericTestUtils.DelayAnswer;
 import org.apache.hadoop.util.Time;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.mockito.Mockito;
 
 /**
  * This class tests the replication of a DFS file.
@@ -66,8 +81,8 @@ public class TestReplication {
     "/d1/r1", "/d1/r1", "/d1/r2", "/d1/r2", "/d1/r2", "/d2/r3", "/d2/r3"
   };
   private static final int numDatanodes = racks.length;
-  private static final Log LOG = LogFactory.getLog(
-                                       "org.apache.hadoop.hdfs.TestReplication");
+  private static final Logger LOG = LoggerFactory.getLogger(
+                                       TestReplication.class);
   
   /* check if there are at least two nodes are on the same rack */
   private void checkFile(FileSystem fileSys, Path name, int repl)
@@ -143,6 +158,67 @@ public class TestReplication {
     assertTrue(!fileSys.exists(name));
   }
 
+  private static class CorruptFileSimulatedFSDataset
+      extends SimulatedFSDataset {
+    /**
+     * Simulated input and output streams.
+     *
+     */
+    static private class CorruptFileSimulatedInputStream
+        extends java.io.InputStream {
+      private InputStream inputStream;
+
+      CorruptFileSimulatedInputStream(InputStream is) {
+        inputStream = is;
+      }
+
+      @Override
+      public int read() throws IOException {
+        int ret = inputStream.read();
+        if (ret > 0) {
+          throw new IOException("Input/output error");
+        }
+        return ret;
+      }
+
+      @Override
+      public int read(byte[] b) throws IOException {
+        int ret = inputStream.read(b);
+        if (ret > 0) {
+          throw new IOException("Input/output error");
+        }
+        return ret;
+      }
+    }
+
+    CorruptFileSimulatedFSDataset(DataNode datanode, DataStorage storage,
+        Configuration conf) {
+      super(storage, conf);
+    }
+
+    @Override
+    public synchronized InputStream getBlockInputStream(ExtendedBlock b,
+        long seekOffset) throws IOException {
+      InputStream result = super.getBlockInputStream(b);
+      IOUtils.skipFully(result, seekOffset);
+      return new CorruptFileSimulatedInputStream(result);
+    }
+
+    static class Factory
+        extends FsDatasetSpi.Factory<CorruptFileSimulatedFSDataset> {
+      @Override
+      public CorruptFileSimulatedFSDataset newInstance(DataNode datanode,
+          DataStorage storage, Configuration conf) throws IOException {
+        return new CorruptFileSimulatedFSDataset(datanode, storage, conf);
+      }
+
+      @Override
+      public boolean isSimulated() {
+        return true;
+      }
+    }
+  }
+
   private void testBadBlockReportOnTransfer(
       boolean corruptBlockByDeletingBlockFile) throws Exception {
     Configuration conf = new HdfsConfiguration();
@@ -170,7 +246,7 @@ public class TestReplication {
             cluster.corruptBlockOnDataNodesByDeletingBlockFile(block) :
               cluster.corruptBlockOnDataNodes(block);       
 
-    assertEquals("Corrupted too few blocks", replFactor, blockFilesCorrupted); 
+    assertEquals(replFactor, blockFilesCorrupted, "Corrupted too few blocks");
 
     // Increase replication factor, this should invoke transfer request
     // Receiving datanode fails on checksum and reports it to namenode
@@ -192,6 +268,54 @@ public class TestReplication {
     replicaCount = blocks.get(0).getLocations().length;
     assertTrue(replicaCount == 1);
     cluster.shutdown();
+  }
+
+  @Test
+  @Timeout(value = 30)
+  public void testBadBlockReportOnTransferCorruptFile() throws Exception {
+    Configuration conf = new HdfsConfiguration();
+    conf.set(DFSConfigKeys.DFS_DATANODE_FSDATASET_FACTORY_KEY,
+        CorruptFileSimulatedFSDataset.Factory.class.getName());
+    // Disable BlockScanner to trigger reportBadBlocks
+    conf.setLong(DFSConfigKeys.DFS_DATANODE_SCAN_PERIOD_HOURS_KEY, -1L);
+    FileSystem fs;
+    int replicaCount = 0;
+    short replFactor = 1;
+    MiniDFSCluster cluster =
+        new MiniDFSCluster.Builder(conf).numDataNodes(2).build();
+    cluster.waitActive();
+    try {
+      fs = cluster.getFileSystem();
+      final DFSClient dfsClient = new DFSClient(
+          new InetSocketAddress("localhost", cluster.getNameNodePort()), conf);
+
+      // Create file with replication factor of 1
+      Path file1 = new Path("/tmp/testBadBlockReportOnTransfer/file1");
+      DFSTestUtil.createFile(fs, file1, 1024, replFactor, 0);
+      DFSTestUtil.waitReplication(fs, file1, replFactor);
+
+      // Increase replication factor, this should invoke transfer request
+      // Receiving datanode fails on checksum and reports it to namenode
+      replFactor = 2;
+      fs.setReplication(file1, replFactor);
+
+      // Now get block details and check if the block is corrupt
+      GenericTestUtils.waitFor(() -> {
+        try {
+          return dfsClient.getNamenode()
+              .getBlockLocations(file1.toString(), 0, Long.MAX_VALUE).get(0)
+              .isCorrupt();
+        } catch (IOException ie) {
+          return false;
+        }
+      }, 1000, 15000);
+      replicaCount = dfsClient.getNamenode()
+          .getBlockLocations(file1.toString(), 0, Long.MAX_VALUE).get(0)
+          .getLocations().length;
+      assertEquals(1, replicaCount, "replication should not success");
+    } finally {
+      cluster.shutdown();
+    }
   }
 
   /* 
@@ -216,7 +340,6 @@ public class TestReplication {
    */
   public void runReplication(boolean simulated) throws IOException {
     Configuration conf = new HdfsConfiguration();
-    conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_REPLICATION_CONSIDERLOAD_KEY, false);
     if (simulated) {
       SimulatedFSDataset.setFactory(conf);
     }
@@ -230,7 +353,7 @@ public class TestReplication {
     DFSClient client = new DFSClient(addr, conf);
     
     DatanodeInfo[] info = client.datanodeReport(DatanodeReportType.LIVE);
-    assertEquals("Number of Datanodes ", numDatanodes, info.length);
+    assertEquals(numDatanodes, info.length, "Number of Datanodes ");
     FileSystem fileSys = cluster.getFileSystem();
     try {
       Path file1 = new Path("/smallblocktest.dat");
@@ -278,6 +401,14 @@ public class TestReplication {
                                        ClientProtocol namenode,
                                        int expected, long maxWaitSec) 
                                        throws IOException {
+    waitForBlockReplication(filename, namenode, expected, maxWaitSec, false, false);
+  }
+
+  private void waitForBlockReplication(String filename,
+      ClientProtocol namenode,
+      int expected, long maxWaitSec,
+      boolean isUnderConstruction, boolean noOverReplication)
+      throws IOException {
     long start = Time.monotonicNow();
     
     //wait for all the blocks to be replicated;
@@ -290,7 +421,13 @@ public class TestReplication {
       for (Iterator<LocatedBlock> iter = blocks.getLocatedBlocks().iterator();
            iter.hasNext();) {
         LocatedBlock block = iter.next();
+        if (isUnderConstruction && !iter.hasNext()) {
+          break; // do not check the last block
+        }
         int actual = block.getLocations().length;
+        if (noOverReplication) {
+          assertTrue(actual <= expected);
+        }
         if ( actual < expected ) {
           LOG.info("Not enough replicas for " + block.getBlock()
               + " yet. Expecting " + expected + ", got " + actual + ".");
@@ -334,7 +471,7 @@ public class TestReplication {
     for (int i=0; i<buffer.length; i++) {
       buffer[i] = '1';
     }
-    
+
     try {
       Configuration conf = new HdfsConfiguration();
       conf.set(DFSConfigKeys.DFS_REPLICATION_KEY, Integer.toString(numDataNodes));
@@ -354,41 +491,29 @@ public class TestReplication {
       // get first block of the file.
       ExtendedBlock block = dfsClient.getNamenode().getBlockLocations(testFile,
           0, Long.MAX_VALUE).get(0).getBlock();
-      
-      cluster.shutdown();
-      
-      for (int i=0; i<25; i++) {
-        buffer[i] = '0';
+
+      List<MaterializedReplica> replicas = new ArrayList<>();
+      for (int dnIndex=0; dnIndex<3; dnIndex++) {
+        replicas.add(cluster.getMaterializedReplica(dnIndex, block));
       }
-      
+      assertEquals(3, replicas.size());
+
+      cluster.shutdown();
+
       int fileCount = 0;
       // Choose 3 copies of block file - delete 1 and corrupt the remaining 2
-      for (int dnIndex=0; dnIndex<3; dnIndex++) {
-        File blockFile = cluster.getBlockFile(dnIndex, block);
-        LOG.info("Checking for file " + blockFile);
-        
-        if (blockFile != null && blockFile.exists()) {
-          if (fileCount == 0) {
-            LOG.info("Deleting file " + blockFile);
-            assertTrue(blockFile.delete());
-          } else {
-            // corrupt it.
-            LOG.info("Corrupting file " + blockFile);
-            long len = blockFile.length();
-            assertTrue(len > 50);
-            RandomAccessFile blockOut = new RandomAccessFile(blockFile, "rw");
-            try {
-              blockOut.seek(len/3);
-              blockOut.write(buffer, 0, 25);
-            } finally {
-              blockOut.close();
-            }
-          }
-          fileCount++;
+      for (MaterializedReplica replica : replicas) {
+        if (fileCount == 0) {
+          LOG.info("Deleting block " + replica);
+          replica.deleteData();
+        } else {
+          // corrupt it.
+          LOG.info("Corrupting file " + replica);
+          replica.corruptData();
         }
+        fileCount++;
       }
-      assertEquals(3, fileCount);
-      
+
       /* Start the MiniDFSCluster with more datanodes since once a writeBlock
        * to a datanode node fails, same block can not be written to it
        * immediately. In our case some replication attempts will fail.
@@ -397,7 +522,7 @@ public class TestReplication {
       LOG.info("Restarting minicluster after deleting a replica and corrupting 2 crcs");
       conf = new HdfsConfiguration();
       conf.set(DFSConfigKeys.DFS_REPLICATION_KEY, Integer.toString(numDataNodes));
-      conf.set(DFSConfigKeys.DFS_NAMENODE_REPLICATION_PENDING_TIMEOUT_SEC_KEY, Integer.toString(2));
+      conf.set(DFSConfigKeys.DFS_NAMENODE_RECONSTRUCTION_PENDING_TIMEOUT_SEC_KEY, Integer.toString(2));
       conf.set("dfs.datanode.block.write.timeout.sec", Integer.toString(5));
       conf.set(DFSConfigKeys.DFS_NAMENODE_SAFEMODE_THRESHOLD_PCT_KEY, "0.75f"); // only 3 copies exist
       
@@ -488,76 +613,202 @@ public class TestReplication {
    * Simulate rbw blocks by creating dummy copies, then a DN restart to detect
    * those corrupted blocks asap.
    */
-  @Test(timeout=30000)
+  @Test
+  @Timeout(value = 30)
   public void testReplicationWhenBlockCorruption() throws Exception {
     MiniDFSCluster cluster = null;
     try {
       Configuration conf = new HdfsConfiguration();
       conf.setLong(
-          DFSConfigKeys.DFS_NAMENODE_REPLICATION_PENDING_TIMEOUT_SEC_KEY, 1);
-      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(3).build();
+          DFSConfigKeys.DFS_NAMENODE_RECONSTRUCTION_PENDING_TIMEOUT_SEC_KEY, 1);
+      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(3)
+          .storagesPerDatanode(1).build();
       FileSystem fs = cluster.getFileSystem();
-      FSDataOutputStream create = fs.create(new Path("/test"));
-      fs.setReplication(new Path("/test"), (short) 1);
+      Path filePath = new Path("/test");
+      FSDataOutputStream create = fs.create(filePath);
+      fs.setReplication(filePath, (short) 1);
       create.write(new byte[1024]);
       create.close();
 
-      List<File> nonParticipatedNodeDirs = new ArrayList<File>();
-      File participatedNodeDirs = null;
-      for (int i = 0; i < cluster.getDataNodes().size(); i++) {
-        File storageDir = cluster.getInstanceStorageDir(i, 0);
-        String bpid = cluster.getNamesystem().getBlockPoolId();
-        File data_dir = MiniDFSCluster.getFinalizedDir(storageDir, bpid);
-        if (data_dir.listFiles().length == 0) {
-          nonParticipatedNodeDirs.add(data_dir);
-        } else {
-          assertNull("participatedNodeDirs has already been set.",
-              participatedNodeDirs);
-          participatedNodeDirs = data_dir;
-        }
-      }
-      assertEquals(2, nonParticipatedNodeDirs.size());
-
-      String blockFile = null;
-      final List<File> listFiles = new ArrayList<>();
-      Files.walkFileTree(participatedNodeDirs.toPath(),
-          new SimpleFileVisitor<java.nio.file.Path>() {
-            @Override
-            public FileVisitResult visitFile(
-                java.nio.file.Path file, BasicFileAttributes attrs)
-                throws IOException {
-              listFiles.add(file.toFile());
-              return FileVisitResult.CONTINUE;
-            }
-          }
-      );
-      assertFalse(listFiles.isEmpty());
+      ExtendedBlock block = DFSTestUtil.getFirstBlock(fs, filePath);
       int numReplicaCreated = 0;
-      for (File file : listFiles) {
-        if (file.getName().startsWith(Block.BLOCK_FILE_PREFIX)
-            && !file.getName().endsWith("meta")) {
-          blockFile = file.getName();
-          for (File file1 : nonParticipatedNodeDirs) {
-            file1.mkdirs();
-            new File(file1, blockFile).createNewFile();
-            new File(file1, blockFile + "_1000.meta").createNewFile();
-            numReplicaCreated++;
-          }
-          break;
+      for (final DataNode dn : cluster.getDataNodes()) {
+        if (!dn.getFSDataset().contains(block)) {
+          cluster.getFsDatasetTestUtils(dn).injectCorruptReplica(block);
+          numReplicaCreated++;
         }
       }
       assertEquals(2, numReplicaCreated);
 
-      fs.setReplication(new Path("/test"), (short) 3);
+      fs.setReplication(filePath, (short) 3);
       cluster.restartDataNodes(); // Lets detect all DNs about dummy copied
       // blocks
       cluster.waitActive();
       cluster.triggerBlockReports();
-      DFSTestUtil.waitReplication(fs, new Path("/test"), (short) 3);
+      DFSTestUtil.waitReplication(fs, filePath, (short) 3);
     } finally {
       if (cluster != null) {
         cluster.shutdown();
       }
+    }
+  }
+
+
+  /**
+   * This test makes sure that, when a file is closed before all
+   * of the datanodes in the pipeline have reported their replicas,
+   * the NameNode doesn't consider the block under-replicated too
+   * aggressively. It is a regression test for HDFS-1172.
+   */
+  @Test
+  @Timeout(value = 60)
+  public void testNoExtraReplicationWhenBlockReceivedIsLate()
+      throws Exception {
+    LOG.info("Test block replication when blockReceived is late" );
+    final short numDataNodes = 3;
+    final short replication = 3;
+    final Configuration conf = new Configuration();
+        conf.setInt(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, 1024);
+    final MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf)
+        .numDataNodes(numDataNodes).build();
+    final String testFile = "/replication-test-file";
+    final Path testPath = new Path(testFile);
+    final BlockManager bm =
+        cluster.getNameNode().getNamesystem().getBlockManager();
+
+    try {
+      cluster.waitActive();
+
+      // Artificially delay IBR from 1 DataNode.
+      // this ensures that the client's completeFile() RPC will get to the
+      // NN before some of the replicas are reported.
+      NameNode nn = cluster.getNameNode();
+      DataNode dn = cluster.getDataNodes().get(0);
+      DatanodeProtocolClientSideTranslatorPB spy =
+          InternalDataNodeTestUtils.spyOnBposToNN(dn, nn);
+      DelayAnswer delayer = new GenericTestUtils.DelayAnswer(LOG);
+      Mockito.doAnswer(delayer).when(spy).blockReceivedAndDeleted(
+          any(),
+          Mockito.anyString(),
+          any());
+
+      FileSystem fs = cluster.getFileSystem();
+      // Create and close a small file with two blocks
+      DFSTestUtil.createFile(fs, testPath, 1500, replication, 0);
+
+      // schedule replication via BlockManager#computeReplicationWork
+      BlockManagerTestUtil.computeAllPendingWork(bm);
+
+      // Initially, should have some pending replication since the close()
+      // is earlier than at lease one of the reportReceivedDeletedBlocks calls
+      assertTrue(pendingReplicationCount(bm) > 0);
+
+      // release pending IBR.
+      delayer.waitForCall();
+      delayer.proceed();
+      delayer.waitForResult();
+
+      // make sure DataNodes do replication work if exists
+      for (DataNode d : cluster.getDataNodes()) {
+        DataNodeTestUtils.triggerHeartbeat(d);
+      }
+
+      // Wait until there is nothing pending
+      try {
+        GenericTestUtils.waitFor(new Supplier<Boolean>() {
+          @Override
+          public Boolean get() {
+            return pendingReplicationCount(bm) == 0;
+          }
+        }, 100, 3000);
+      } catch (TimeoutException e) {
+        fail("timed out while waiting for no pending replication.");
+      }
+
+      // Check that none of the datanodes have serviced a replication request.
+      // i.e. that the NameNode didn't schedule any spurious replication.
+      assertNoReplicationWasPerformed(cluster);
+    } finally {
+      if (cluster != null) {
+        cluster.shutdown();
+      }
+    }
+  }
+
+  /**
+   * This test makes sure that, if a file is under construction, blocks
+   * in the middle of that file are properly re-replicated if they
+   * become corrupt.
+   */
+  @Test
+  @Timeout(value = 60)
+  public void testReplicationWhileUnderConstruction()
+      throws Exception {
+    LOG.info("Test block replication in under construction" );
+    MiniDFSCluster cluster = null;
+    final short numDataNodes = 6;
+    final short replication = 3;
+    String testFile = "/replication-test-file";
+    Path testPath = new Path(testFile);
+    FSDataOutputStream stm = null;
+    try {
+      Configuration conf = new Configuration();
+      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(numDataNodes).build();
+      cluster.waitActive();
+
+      FileSystem fs = cluster.getFileSystem();
+
+      stm = AppendTestUtil.createFile(fs, testPath, replication);
+
+      // Write a full block
+      byte[] buffer = AppendTestUtil.initBuffer(AppendTestUtil.BLOCK_SIZE);
+      stm.write(buffer); // block 1
+      stm.write(buffer); // block 2
+      stm.write(buffer, 0, 1); // start block 3
+      stm.hflush(); // make sure blocks are persisted, etc
+
+      // Everything should be fully replicated
+      waitForBlockReplication(testFile, cluster.getNameNodeRpc(), replication, 30000, true, true);
+
+      // Check that none of the datanodes have serviced a replication request.
+      // i.e. that the NameNode didn't schedule any spurious replication.
+      assertNoReplicationWasPerformed(cluster);
+
+      // Mark one the blocks corrupt
+      List<LocatedBlock> blocks;
+      FSDataInputStream in = fs.open(testPath);
+      try {
+        blocks = DFSTestUtil.getAllBlocks(in);
+      } finally {
+        in.close();
+      }
+      LocatedBlock lb = blocks.get(0);
+      LocatedBlock lbOneReplica = new LocatedBlock(lb.getBlock(),
+          new DatanodeInfo[] { lb.getLocations()[0] });
+      cluster.getNameNodeRpc().reportBadBlocks(
+          new LocatedBlock[] { lbOneReplica });
+
+      // Everything should be fully replicated
+      waitForBlockReplication(testFile, cluster.getNameNodeRpc(), replication, 30000, true, true);
+    } finally {
+      if (stm != null) {
+        IOUtils.closeStream(stm);
+      }
+      if (cluster != null) {
+        cluster.shutdown();
+      }
+    }
+  }
+
+  private long pendingReplicationCount(BlockManager bm) {
+    BlockManagerTestUtil.updateState(bm);
+    return bm.getPendingReconstructionBlocksCount();
+  }
+
+  private void assertNoReplicationWasPerformed(MiniDFSCluster cluster) {
+    for (DataNode dn : cluster.getDataNodes()) {
+      MetricsRecordBuilder rb = getMetrics(dn.getMetrics().name());
+      assertCounter("BlocksReplicated", 0L, rb);
     }
   }
 }

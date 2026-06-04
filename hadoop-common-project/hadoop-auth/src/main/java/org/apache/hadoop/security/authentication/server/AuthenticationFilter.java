@@ -40,86 +40,26 @@ import java.text.SimpleDateFormat;
 import java.util.*;
 
 /**
- * <p>The {@link AuthenticationFilter} enables protecting web application
+ * The {@link AuthenticationFilter} enables protecting web application
  * resources with different (pluggable)
  * authentication mechanisms and signer secret providers.
- * </p>
  * <p>
- * Out of the box it provides 2 authentication mechanisms: Pseudo and Kerberos SPNEGO.
- * </p>
  * Additional authentication mechanisms are supported via the {@link AuthenticationHandler} interface.
  * <p>
  * This filter delegates to the configured authentication handler for authentication and once it obtains an
  * {@link AuthenticationToken} from it, sets a signed HTTP cookie with the token. For client requests
  * that provide the signed HTTP cookie, it verifies the validity of the cookie, extracts the user information
  * and lets the request proceed to the target resource.
- * </p>
- * The supported configuration properties are:
- * <ul>
- * <li>config.prefix: indicates the prefix to be used by all other configuration properties, the default value
- * is no prefix. See below for details on how/why this prefix is used.</li>
- * <li>[#PREFIX#.]type: simple|kerberos|#CLASS#, 'simple' is short for the
- * {@link PseudoAuthenticationHandler}, 'kerberos' is short for {@link KerberosAuthenticationHandler}, otherwise
- * the full class name of the {@link AuthenticationHandler} must be specified.</li>
- * <li>[#PREFIX#.]signature.secret: when signer.secret.provider is set to
- * "string" or not specified, this is the value for the secret used to sign the
- * HTTP cookie.</li>
- * <li>[#PREFIX#.]token.validity: time -in seconds- that the generated token is
- * valid before a new authentication is triggered, default value is
- * <code>3600</code> seconds. This is also used for the rollover interval for
- * the "random" and "zookeeper" SignerSecretProviders.</li>
- * <li>[#PREFIX#.]cookie.domain: domain to use for the HTTP cookie that stores the authentication token.</li>
- * <li>[#PREFIX#.]cookie.path: path to use for the HTTP cookie that stores the authentication token.</li>
- * </ul>
  * <p>
  * The rest of the configuration properties are specific to the {@link AuthenticationHandler} implementation and the
  * {@link AuthenticationFilter} will take all the properties that start with the prefix #PREFIX#, it will remove
  * the prefix from it and it will pass them to the the authentication handler for initialization. Properties that do
  * not start with the prefix will not be passed to the authentication handler initialization.
- * </p>
  * <p>
- * Out of the box it provides 3 signer secret provider implementations:
- * "string", "random", and "zookeeper"
- * </p>
- * Additional signer secret providers are supported via the
- * {@link SignerSecretProvider} class.
- * <p>
- * For the HTTP cookies mentioned above, the SignerSecretProvider is used to
- * determine the secret to use for signing the cookies. Different
- * implementations can have different behaviors.  The "string" implementation
- * simply uses the string set in the [#PREFIX#.]signature.secret property
- * mentioned above.  The "random" implementation uses a randomly generated
- * secret that rolls over at the interval specified by the
- * [#PREFIX#.]token.validity mentioned above.  The "zookeeper" implementation
- * is like the "random" one, except that it synchronizes the random secret
- * and rollovers between multiple servers; it's meant for HA services.
- * </p>
- * The relevant configuration properties are:
- * <ul>
- * <li>signer.secret.provider: indicates the name of the SignerSecretProvider
- * class to use. Possible values are: "string", "random", "zookeeper", or a
- * classname. If not specified, the "string" implementation will be used with
- * [#PREFIX#.]signature.secret; and if that's not specified, the "random"
- * implementation will be used.</li>
- * <li>[#PREFIX#.]signature.secret: When the "string" implementation is
- * specified, this value is used as the secret.</li>
- * <li>[#PREFIX#.]token.validity: When the "random" or "zookeeper"
- * implementations are specified, this value is used as the rollover
- * interval.</li>
- * </ul>
+ * Details of the configurations are listed on <a href="../../../../../../../Configuration.html">Configuration Page</a>
  * <p>
  * The "zookeeper" implementation has additional configuration properties that
  * must be specified; see {@link ZKSignerSecretProvider} for details.
- * </p>
- * For subclasses of AuthenticationFilter that want additional control over the
- * SignerSecretProvider, they can use the following attribute set in the
- * ServletContext:
- * <ul>
- * <li>signer.secret.provider.object: A SignerSecretProvider implementation can
- * be passed here that will be used instead of the signer.secret.provider
- * configuration property. Note that the class should already be
- * initialized.</li>
- * </ul>
  */
 
 @InterfaceAudience.Private
@@ -150,7 +90,7 @@ public class AuthenticationFilter implements Filter {
    * that indicates the max inactive interval of the generated token.
    */
   public static final String
-      AUTH_TOKEN_MAX_INACTIVE_INTERVAL = "token.MaxInactiveInterval";
+      AUTH_TOKEN_MAX_INACTIVE_INTERVAL = "token.max-inactive-interval";
 
   /**
    * Constant for the configuration property that indicates the validity of the generated token.
@@ -176,10 +116,10 @@ public class AuthenticationFilter implements Filter {
   /**
    * Constant for the configuration property that indicates the name of the
    * SignerSecretProvider class to use.
-   * Possible values are: "string", "random", "zookeeper", or a classname.
-   * If not specified, the "string" implementation will be used with
-   * SIGNATURE_SECRET; and if that's not specified, the "random" implementation
-   * will be used.
+   * Possible values are: "file", "random", "zookeeper", or a classname.
+   * If not specified, the "file" implementation will be used with
+   * SIGNATURE_SECRET_FILE; and if that's not specified, the "random"
+   * implementation will be used.
    */
   public static final String SIGNER_SECRET_PROVIDER =
           "signer.secret.provider";
@@ -202,7 +142,7 @@ public class AuthenticationFilter implements Filter {
   private String cookieDomain;
   private String cookiePath;
   private boolean isCookiePersistent;
-  private boolean isInitializedByTomcat;
+  private boolean destroySecretProvider;
 
   /**
    * <p>Initializes the authentication filter and signer secret provider.</p>
@@ -225,18 +165,14 @@ public class AuthenticationFilter implements Filter {
           PseudoAuthenticationHandler.TYPE + "|" + 
           KerberosAuthenticationHandler.TYPE + "|<class>");
     }
-    if (authHandlerName.toLowerCase(Locale.ENGLISH).equals(
-        PseudoAuthenticationHandler.TYPE)) {
-      authHandlerClassName = PseudoAuthenticationHandler.class.getName();
-    } else if (authHandlerName.toLowerCase(Locale.ENGLISH).equals(
-        KerberosAuthenticationHandler.TYPE)) {
-      authHandlerClassName = KerberosAuthenticationHandler.class.getName();
-    } else {
-      authHandlerClassName = authHandlerName;
-    }
-
+    authHandlerClassName =
+        AuthenticationHandlerUtil
+            .getAuthenticationHandlerClassName(authHandlerName);
     maxInactiveInterval = Long.parseLong(config.getProperty(
-        AUTH_TOKEN_MAX_INACTIVE_INTERVAL, "1800")) * 1000; // 30 minutes;
+        AUTH_TOKEN_MAX_INACTIVE_INTERVAL, "-1")); // By default, disable.
+    if (maxInactiveInterval > 0) {
+      maxInactiveInterval *= 1000;
+    }
     validity = Long.parseLong(config.getProperty(AUTH_TOKEN_VALIDITY, "36000"))
         * 1000; //10 hours
     initializeSecretProvider(filterConfig);
@@ -273,7 +209,7 @@ public class AuthenticationFilter implements Filter {
         secretProvider = constructSecretProvider(
             filterConfig.getServletContext(),
             config, false);
-        isInitializedByTomcat = true;
+        destroySecretProvider = true;
       } catch (Exception ex) {
         throw new ServletException(ex);
       }
@@ -301,8 +237,8 @@ public class AuthenticationFilter implements Filter {
         provider.init(config, ctx, validity);
       } catch (Exception e) {
         if (!disallowFallbackToRandomSecretProvider) {
-          LOG.info("Unable to initialize FileSignerSecretProvider, " +
-                       "falling back to use random secrets.");
+          LOG.warn("Unable to initialize FileSignerSecretProvider, " +
+              "falling back to use random secrets. Reason: " + e.getMessage());
           provider = new RandomSignerSecretProvider();
           provider.init(config, ctx, validity);
         } else {
@@ -420,7 +356,7 @@ public class AuthenticationFilter implements Filter {
       authHandler.destroy();
       authHandler = null;
     }
-    if (secretProvider != null && isInitializedByTomcat) {
+    if (secretProvider != null && destroySecretProvider) {
       secretProvider.destroy();
       secretProvider = null;
     }
@@ -496,6 +432,9 @@ public class AuthenticationFilter implements Filter {
       for (Cookie cookie : cookies) {
         if (cookie.getName().equals(AuthenticatedURL.AUTH_COOKIE)) {
           tokenStr = cookie.getValue();
+          if (tokenStr.isEmpty()) {
+            throw new AuthenticationException("Unauthorized access");
+          }
           try {
             tokenStr = signer.verifyAndExtract(tokenStr);
           } catch (SignerException ex) {
@@ -507,7 +446,8 @@ public class AuthenticationFilter implements Filter {
     }
     if (tokenStr != null) {
       token = AuthenticationToken.parse(tokenStr);
-      if (!token.getType().equals(authHandler.getType())) {
+      boolean match = verifyTokenType(getAuthenticationHandler(), token);
+      if (!match) {
         throw new AuthenticationException("Invalid AuthenticationToken type");
       }
       if (token.isExpired()) {
@@ -515,6 +455,38 @@ public class AuthenticationFilter implements Filter {
       }
     }
     return token;
+  }
+
+  /**
+   * This method verifies if the specified token type matches one of the the
+   * token types supported by a specified {@link AuthenticationHandler}. This
+   * method is specifically designed to work with
+   * {@link CompositeAuthenticationHandler} implementation which supports
+   * multiple authentication schemes while the {@link AuthenticationHandler}
+   * interface supports a single type via
+   * {@linkplain AuthenticationHandler#getType()} method.
+   *
+   * @param handler The authentication handler whose supported token types
+   *                should be used for verification.
+   * @param token   The token whose type needs to be verified.
+   * @return true   If the token type matches one of the supported token types
+   *         false  Otherwise
+   */
+  protected boolean verifyTokenType(AuthenticationHandler handler,
+      AuthenticationToken token) {
+    if(!(handler instanceof CompositeAuthenticationHandler)) {
+      return handler.getType().equals(token.getType());
+    }
+    boolean match = false;
+    Collection<String> tokenTypes =
+        ((CompositeAuthenticationHandler) handler).getTokenTypes();
+    for (String tokenType : tokenTypes) {
+      if (tokenType.equals(token.getType())) {
+        match = true;
+        break;
+      }
+    }
+    return match;
   }
 
   /**
@@ -544,6 +516,10 @@ public class AuthenticationFilter implements Filter {
       AuthenticationToken token;
       try {
         token = getToken(httpRequest);
+        if (LOG.isDebugEnabled()) {
+          LOG.debug("Got token {} from httpRequest {}", token,
+              getRequestURL(httpRequest));
+        }
       }
       catch (AuthenticationException ex) {
         LOG.warn("AuthenticationToken ignored: " + ex.getMessage());
@@ -554,12 +530,12 @@ public class AuthenticationFilter implements Filter {
       if (authHandler.managementOperation(token, httpRequest, httpResponse)) {
         if (token == null) {
           if (LOG.isDebugEnabled()) {
-            LOG.debug("Request [{}] triggering authentication",
-                getRequestURL(httpRequest));
+            LOG.debug("Request [{}] triggering authentication. handler: {}",
+                getRequestURL(httpRequest), authHandler.getClass());
           }
           token = authHandler.authenticate(httpRequest, httpResponse);
           if (token != null && token != AuthenticationToken.ANONYMOUS) {
-            if (token.getMaxInactives() != 0) {
+            if (token.getMaxInactives() > 0) {
               token.setMaxInactives(System.currentTimeMillis()
                   + getMaxInactiveInterval() * 1000);
             }
@@ -603,6 +579,7 @@ public class AuthenticationFilter implements Filter {
               && getMaxInactiveInterval() > 0) {
             token.setMaxInactives(System.currentTimeMillis()
                 + getMaxInactiveInterval() * 1000);
+            token.setExpires(token.getExpires());
             newToken = true;
           }
           if (newToken && !token.isExpired()
@@ -615,6 +592,10 @@ public class AuthenticationFilter implements Filter {
           doFilter(filterChain, httpRequest, httpResponse);
         }
       } else {
+        if (LOG.isDebugEnabled()) {
+          LOG.debug("managementOperation returned false for request {}."
+                  + " token: {}", getRequestURL(httpRequest), token);
+        }
         unauthorizedResponse = false;
       }
     } catch (AuthenticationException ex) {
@@ -635,14 +616,22 @@ public class AuthenticationFilter implements Filter {
         // present.. reset to 403 if not found..
         if ((errCode == HttpServletResponse.SC_UNAUTHORIZED)
             && (!httpResponse.containsHeader(
-                KerberosAuthenticator.WWW_AUTHENTICATE))) {
+                KerberosAuthenticator.WWW_AUTHENTICATE)
+                && !httpResponse.containsHeader(
+                KerberosAuthenticator.WWW_AUTHENTICATE.toLowerCase()))) {
           errCode = HttpServletResponse.SC_FORBIDDEN;
         }
+        // After Jetty 9.4.21, sendError() no longer allows a custom message.
+        // use setStatus() to set a custom message.
+        String reason;
         if (authenticationEx == null) {
-          httpResponse.sendError(errCode, "Authentication required");
+          reason = "Authentication required";
         } else {
-          httpResponse.sendError(errCode, authenticationEx.getMessage());
+          reason = authenticationEx.getMessage();
         }
+
+        httpResponse.setStatus(errCode, reason);
+        httpResponse.sendError(errCode, reason);
       }
     }
   }
@@ -700,7 +689,7 @@ public class AuthenticationFilter implements Filter {
     if (expires >= 0 && isCookiePersistent) {
       Date date = new Date(expires);
       SimpleDateFormat df = new SimpleDateFormat("EEE, " +
-              "dd-MMM-yyyy HH:mm:ss zzz");
+              "dd-MMM-yyyy HH:mm:ss zzz", Locale.US);
       df.setTimeZone(TimeZone.getTimeZone("GMT"));
       sb.append("; Expires=").append(df.format(date));
     }

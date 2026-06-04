@@ -17,14 +17,16 @@
  */
 package org.apache.hadoop.hdfs.server.namenode;
 
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.management.ManagementFactory;
-import java.io.File;
+import java.util.Arrays;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
-import org.apache.commons.io.FileUtils;
+import org.junit.jupiter.params.ParameterizedClass;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.BlockLocation;
 import org.apache.hadoop.fs.FileSystem;
@@ -34,7 +36,11 @@ import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
-import org.junit.Test;
+import org.apache.hadoop.hdfs.server.blockmanagement.CombinedHostFileManager;
+import org.apache.hadoop.hdfs.server.blockmanagement.HostConfigManager;
+import org.apache.hadoop.hdfs.server.blockmanagement.HostFileManager;
+import org.apache.hadoop.hdfs.util.HostsFileWriter;
+import org.junit.jupiter.api.Test;
 
 import javax.management.MBeanServer;
 import javax.management.ObjectName;
@@ -43,9 +49,21 @@ import javax.management.ObjectName;
  * DFS_HOSTS and DFS_HOSTS_EXCLUDE tests
  * 
  */
+@MethodSource("data")
+@ParameterizedClass
 public class TestHostsFiles {
-  private static final Log LOG =
-    LogFactory.getLog(TestHostsFiles.class.getName());
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestHostsFiles.class.getName());
+  private Class hostFileMgrClass;
+
+  public TestHostsFiles(Class hostFileMgrClass) {
+    this.hostFileMgrClass = hostFileMgrClass;
+  }
+
+  public static Iterable<Object[]> data() {
+    return Arrays.asList(new Object[][]{
+        {HostFileManager.class}, {CombinedHostFileManager.class}});
+  }
 
   /*
    * Return a configuration object with low timeouts for testing and 
@@ -59,19 +77,23 @@ public class TestHostsFiles {
     // commands quickly (as replies to heartbeats)
     conf.setLong(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1L);
 
-    // Have the NN ReplicationMonitor compute the replication and
+    // Have the NN RedundancyMonitor compute the low redundant blocks and
     // invalidation commands to send DNs every second.
-    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_INTERVAL_KEY, 1);
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY, 1);
 
     // Have the NN check for pending replications every second so it
     // quickly schedules additional replicas as they are identified.
-    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_PENDING_TIMEOUT_SEC_KEY, 1);
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_RECONSTRUCTION_PENDING_TIMEOUT_SEC_KEY, 1);
 
     // The DNs report blocks every second.
     conf.setLong(DFSConfigKeys.DFS_BLOCKREPORT_INTERVAL_MSEC_KEY, 1000L);
 
     // Indicates we have multiple racks
     conf.set(DFSConfigKeys.NET_TOPOLOGY_SCRIPT_FILE_NAME_KEY, "xyz");
+
+    // Host file manager
+    conf.setClass(DFSConfigKeys.DFS_NAMENODE_HOSTS_PROVIDER_CLASSNAME_KEY,
+        hostFileMgrClass, HostConfigManager.class);
     return conf;
   }
 
@@ -80,18 +102,8 @@ public class TestHostsFiles {
     Configuration conf = getConf();
     short REPLICATION_FACTOR = 2;
     final Path filePath = new Path("/testFile");
-
-    // Configure an excludes file
-    FileSystem localFileSys = FileSystem.getLocal(conf);
-    Path workingDir = localFileSys.getWorkingDirectory();
-    Path dir = new Path(workingDir, "build/test/data/temp/decommission");
-    Path excludeFile = new Path(dir, "exclude");
-    Path includeFile = new Path(dir, "include");
-    assertTrue(localFileSys.mkdirs(dir));
-    DFSTestUtil.writeFile(localFileSys, excludeFile, "");
-    DFSTestUtil.writeFile(localFileSys, includeFile, "");
-    conf.set(DFSConfigKeys.DFS_HOSTS_EXCLUDE, excludeFile.toUri().getPath());
-    conf.set(DFSConfigKeys.DFS_HOSTS, includeFile.toUri().getPath());
+    HostsFileWriter hostsFileWriter = new HostsFileWriter();
+    hostsFileWriter.initialize(conf, "temp/decommission");
 
     // Two blocks and four racks
     String racks[] = {"/rack1", "/rack1", "/rack2", "/rack2"};
@@ -112,9 +124,8 @@ public class TestHostsFiles {
       BlockLocation locs[] = fs.getFileBlockLocations(
           fs.getFileStatus(filePath), 0, Long.MAX_VALUE);
       String name = locs[0].getNames()[0];
-      String names = name + "\n" + "localhost:42\n";
-      LOG.info("adding '" + names + "' to exclude file " + excludeFile.toUri().getPath());
-      DFSTestUtil.writeFile(localFileSys, excludeFile, name);
+      LOG.info("adding '" + name + "' to decommission");
+      hostsFileWriter.initExcludeHost(name);
       ns.getBlockManager().getDatanodeManager().refreshNodes(conf);
       DFSTestUtil.waitForDecommission(fs, name);
 
@@ -125,15 +136,13 @@ public class TestHostsFiles {
       ObjectName mxbeanName = new ObjectName(
               "Hadoop:service=NameNode,name=NameNodeInfo");
       String nodes = (String) mbs.getAttribute(mxbeanName, "LiveNodes");
-      assertTrue("Live nodes should contain the decommissioned node",
-              nodes.contains("Decommissioned"));
+      assertTrue(nodes.contains("Decommissioned"),
+          "Live nodes should contain the decommissioned node");
     } finally {
       if (cluster != null) {
         cluster.shutdown();
       }
-      if (localFileSys.exists(dir)) {
-        FileUtils.deleteQuietly(new File(dir.toUri().getPath()));
-      }
+      hostsFileWriter.cleanup();
     }
   }
 
@@ -141,20 +150,10 @@ public class TestHostsFiles {
   public void testHostsIncludeForDeadCount() throws Exception {
     Configuration conf = getConf();
 
-    // Configure an excludes file
-    FileSystem localFileSys = FileSystem.getLocal(conf);
-    Path workingDir = localFileSys.getWorkingDirectory();
-    Path dir = new Path(workingDir, "build/test/data/temp/decommission");
-    Path excludeFile = new Path(dir, "exclude");
-    Path includeFile = new Path(dir, "include");
-    assertTrue(localFileSys.mkdirs(dir));
-    StringBuilder includeHosts = new StringBuilder();
-    includeHosts.append("localhost:52").append("\n").append("127.0.0.1:7777")
-        .append("\n");
-    DFSTestUtil.writeFile(localFileSys, excludeFile, "");
-    DFSTestUtil.writeFile(localFileSys, includeFile, includeHosts.toString());
-    conf.set(DFSConfigKeys.DFS_HOSTS_EXCLUDE, excludeFile.toUri().getPath());
-    conf.set(DFSConfigKeys.DFS_HOSTS, includeFile.toUri().getPath());
+    HostsFileWriter hostsFileWriter = new HostsFileWriter();
+    hostsFileWriter.initialize(conf, "temp/decommission");
+    hostsFileWriter.initIncludeHosts(new String[]
+        {"localhost:52","127.0.0.1:7777"});
 
     MiniDFSCluster cluster = null;
     try {
@@ -174,9 +173,41 @@ public class TestHostsFiles {
       if (cluster != null) {
         cluster.shutdown();
       }
-      if (localFileSys.exists(dir)) {
-        FileUtils.deleteQuietly(new File(dir.toUri().getPath()));
+      hostsFileWriter.cleanup();
+    }
+  }
+
+  @Test
+  public void testNewHostAndExcludeFile() throws Exception {
+    Configuration conf = getConf();
+
+    HostsFileWriter writer1 = new HostsFileWriter();
+    writer1.initialize(conf, "old_temp/decommission");
+    writer1.initIncludeHosts(new String[]{"localhost:52", "127.0.0.1:7777"});
+
+    // Write all hosts to a new dfs.hosts file.
+    HostsFileWriter writer2 = new HostsFileWriter();
+    Configuration newConf = new Configuration(getConf());
+    writer2.initialize(newConf, "new_temp/decommission");
+    writer2.initIncludeHosts(new String[]{
+        "localhost:52", "127.0.0.1:7777", "localhost:100"});
+
+    MiniDFSCluster cluster = null;
+    try {
+      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(0).build();
+      final FSNamesystem ns = cluster.getNameNode().getNamesystem();
+      assertEquals(2, ns.getNumDeadDataNodes());
+      assertEquals(0, ns.getNumLiveDataNodes());
+
+      ns.getBlockManager().getDatanodeManager().refreshNodes(newConf);
+      assertEquals(3, ns.getNumDeadDataNodes());
+      assertEquals(0, ns.getNumLiveDataNodes());
+    } finally {
+      if (cluster != null) {
+        cluster.shutdown();
       }
+      writer1.cleanup();
+      writer2.cleanup();
     }
   }
 }

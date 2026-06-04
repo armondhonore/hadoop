@@ -27,8 +27,11 @@ import java.lang.management.GarbageCollectorMXBean;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.classification.InterfaceAudience;
-import org.apache.hadoop.log.metrics.EventCounter;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.metrics2.MetricsCollector;
 import org.apache.hadoop.metrics2.MetricsInfo;
 import org.apache.hadoop.metrics2.MetricsRecordBuilder;
@@ -38,6 +41,8 @@ import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
 import org.apache.hadoop.metrics2.lib.Interns;
 import static org.apache.hadoop.metrics2.source.JvmMetricsInfo.*;
 import static org.apache.hadoop.metrics2.impl.MsInfo.*;
+
+import org.apache.hadoop.util.GcTimeMonitor;
 import org.apache.hadoop.util.JvmPauseMonitor;
 
 /**
@@ -57,36 +62,82 @@ public class JvmMetrics implements MetricsSource {
       }
       return impl;
     }
+
+    synchronized void shutdown() {
+      DefaultMetricsSystem.instance().unregisterSource(JvmMetrics.name());
+      impl = null;
+    }
+  }
+
+  @VisibleForTesting
+  public synchronized void registerIfNeeded(){
+    // during tests impl might exist, but is not registered
+    MetricsSystem ms = DefaultMetricsSystem.instance();
+    if (ms.getSource("JvmMetrics") == null) {
+      ms.register(JvmMetrics.name(), JvmMetrics.description(), this);
+    }
   }
 
   static final float M = 1024*1024;
+  static public final float MEMORY_MAX_UNLIMITED_MB = -1;
 
   final MemoryMXBean memoryMXBean = ManagementFactory.getMemoryMXBean();
   final List<GarbageCollectorMXBean> gcBeans =
       ManagementFactory.getGarbageCollectorMXBeans();
-  final ThreadMXBean threadMXBean = ManagementFactory.getThreadMXBean();
+  private ThreadMXBean threadMXBean;
   final String processName, sessionId;
   private JvmPauseMonitor pauseMonitor = null;
   final ConcurrentHashMap<String, MetricsInfo[]> gcInfoCache =
       new ConcurrentHashMap<String, MetricsInfo[]>();
+  private GcTimeMonitor gcTimeMonitor = null;
 
-  JvmMetrics(String processName, String sessionId) {
+  @VisibleForTesting
+  JvmMetrics(String processName, String sessionId, boolean useThreadMXBean) {
     this.processName = processName;
     this.sessionId = sessionId;
+    if (useThreadMXBean) {
+      this.threadMXBean = ManagementFactory.getThreadMXBean();
+    }
   }
 
   public void setPauseMonitor(final JvmPauseMonitor pauseMonitor) {
     this.pauseMonitor = pauseMonitor;
   }
 
+  public void setGcTimeMonitor(GcTimeMonitor gcTimeMonitor) {
+    Preconditions.checkNotNull(gcTimeMonitor);
+    this.gcTimeMonitor = gcTimeMonitor;
+  }
+
   public static JvmMetrics create(String processName, String sessionId,
                                   MetricsSystem ms) {
+    // Reloading conf instead of getting from outside since it's redundant in
+    // code level to update all the callers across lots of modules,
+    // this method is called at most once for components (NN/DN/RM/NM/...)
+    // so that the overall cost is not expensive.
+    boolean useThreadMXBean = new Configuration().getBoolean(
+        CommonConfigurationKeys.HADOOP_METRICS_JVM_USE_THREAD_MXBEAN,
+        CommonConfigurationKeys.HADOOP_METRICS_JVM_USE_THREAD_MXBEAN_DEFAULT);
     return ms.register(JvmMetrics.name(), JvmMetrics.description(),
-                       new JvmMetrics(processName, sessionId));
+                       new JvmMetrics(processName, sessionId, useThreadMXBean));
+  }
+
+  public static void reattach(MetricsSystem ms, JvmMetrics jvmMetrics) {
+    ms.register(JvmMetrics.name(), JvmMetrics.description(), jvmMetrics);
   }
 
   public static JvmMetrics initSingleton(String processName, String sessionId) {
     return Singleton.INSTANCE.init(processName, sessionId);
+  }
+
+  /**
+   * Shutdown the JvmMetrics singleton. This is not necessary if the JVM itself
+   * is shutdown, but may be necessary for scenarios where JvmMetrics instance
+   * needs to be re-created while the JVM is still around. One such scenario
+   * is unit-testing.
+   */
+  public static void shutdownSingleton() {
+    Singleton.INSTANCE.shutdown();
   }
 
   @Override
@@ -96,8 +147,11 @@ public class JvmMetrics implements MetricsSource {
         .tag(SessionId, sessionId);
     getMemoryUsage(rb);
     getGcUsage(rb);
-    getThreadUsage(rb);
-    getEventCounters(rb);
+    if (threadMXBean != null) {
+      getThreadUsage(rb);
+    } else {
+      getThreadUsageFromGroup(rb);
+    }
   }
 
   private void getMemoryUsage(MetricsRecordBuilder rb) {
@@ -106,17 +160,34 @@ public class JvmMetrics implements MetricsSource {
     Runtime runtime = Runtime.getRuntime();
     rb.addGauge(MemNonHeapUsedM, memNonHeap.getUsed() / M)
       .addGauge(MemNonHeapCommittedM, memNonHeap.getCommitted() / M)
-      .addGauge(MemNonHeapMaxM, memNonHeap.getMax() / M)
+      .addGauge(MemNonHeapMaxM, calculateMaxMemoryUsage(memNonHeap))
       .addGauge(MemHeapUsedM, memHeap.getUsed() / M)
       .addGauge(MemHeapCommittedM, memHeap.getCommitted() / M)
-      .addGauge(MemHeapMaxM, memHeap.getMax() / M)
+      .addGauge(MemHeapMaxM, calculateMaxMemoryUsage(memHeap))
       .addGauge(MemMaxM, runtime.maxMemory() / M);
+  }
+
+  private float calculateMaxMemoryUsage(MemoryUsage memHeap) {
+    long max =  memHeap.getMax() ;
+
+     if (max == -1) {
+       return MEMORY_MAX_UNLIMITED_MB;
+     }
+
+    return max / M;
   }
 
   private void getGcUsage(MetricsRecordBuilder rb) {
     long count = 0;
     long timeMillis = 0;
     for (GarbageCollectorMXBean gcBean : gcBeans) {
+      if (gcBean.getName() != null) {
+        String name = gcBean.getName();
+        // JDK-8265136 Skip concurrent phase
+        if (name.startsWith("ZGC") && name.endsWith("Cycles")) {
+          continue;
+        }
+      }
       long c = gcBean.getCollectionCount();
       long t = gcBean.getCollectionTime();
       MetricsInfo[] gcInfo = getGcInfo(gcBean.getName());
@@ -129,11 +200,16 @@ public class JvmMetrics implements MetricsSource {
     
     if (pauseMonitor != null) {
       rb.addCounter(GcNumWarnThresholdExceeded,
-          pauseMonitor.getNumGcWarnThreadholdExceeded());
+          pauseMonitor.getNumGcWarnThresholdExceeded());
       rb.addCounter(GcNumInfoThresholdExceeded,
           pauseMonitor.getNumGcInfoThresholdExceeded());
       rb.addCounter(GcTotalExtraSleepTime,
           pauseMonitor.getTotalGcExtraSleepTime());
+    }
+
+    if (gcTimeMonitor != null) {
+      rb.addGauge(GcTimePercentage,
+          gcTimeMonitor.getLatestGcData().getGcTimePercentage());
     }
   }
 
@@ -179,10 +255,37 @@ public class JvmMetrics implements MetricsSource {
       .addGauge(ThreadsTerminated, threadsTerminated);
   }
 
-  private void getEventCounters(MetricsRecordBuilder rb) {
-    rb.addCounter(LogFatal, EventCounter.getFatal())
-      .addCounter(LogError, EventCounter.getError())
-      .addCounter(LogWarn, EventCounter.getWarn())
-      .addCounter(LogInfo, EventCounter.getInfo());
+  private void getThreadUsageFromGroup(MetricsRecordBuilder rb) {
+    int threadsNew = 0;
+    int threadsRunnable = 0;
+    int threadsBlocked = 0;
+    int threadsWaiting = 0;
+    int threadsTimedWaiting = 0;
+    int threadsTerminated = 0;
+    ThreadGroup threadGroup = Thread.currentThread().getThreadGroup();
+    Thread[] threads = new Thread[threadGroup.activeCount()];
+    threadGroup.enumerate(threads);
+    for (Thread thread : threads) {
+      if (thread == null) {
+        // race protection
+        continue;
+      }
+      switch (thread.getState()) {
+      case NEW:           threadsNew++;           break;
+      case RUNNABLE:      threadsRunnable++;      break;
+      case BLOCKED:       threadsBlocked++;       break;
+      case WAITING:       threadsWaiting++;       break;
+      case TIMED_WAITING: threadsTimedWaiting++;  break;
+      case TERMINATED:    threadsTerminated++;    break;
+      default:
+      }
+    }
+    rb.addGauge(ThreadsNew, threadsNew)
+        .addGauge(ThreadsRunnable, threadsRunnable)
+        .addGauge(ThreadsBlocked, threadsBlocked)
+        .addGauge(ThreadsWaiting, threadsWaiting)
+        .addGauge(ThreadsTimedWaiting, threadsTimedWaiting)
+        .addGauge(ThreadsTerminated, threadsTerminated);
   }
+
 }

@@ -22,12 +22,13 @@ import java.io.FileNotFoundException;
 import java.net.URI;
 import java.util.Random;
 
-import org.apache.commons.lang.RandomStringUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.security.token.Token;
-import org.junit.Assert;
+import org.apache.hadoop.test.GenericTestUtils;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 
 /**
@@ -45,7 +46,7 @@ public class FileSystemTestHelper {
    * Create helper with test root located at <wd>/build/test/data
    */
   public FileSystemTestHelper() {
-      this(System.getProperty("test.build.data", "target/test/data") + "/" + RandomStringUtils.randomAlphanumeric(10));
+    this(GenericTestUtils.getRandomizedTempPath());
   }
 
   /**
@@ -237,19 +238,19 @@ public class FileSystemTestHelper {
     return containsPath(fSys, new Path(path), dirList);
   }
   
-  public static enum fileType {isDir, isFile, isSymlink};
+  public enum fileType {isDir, isFile, isSymlink};
   public static void checkFileStatus(FileSystem aFs, String path,
       fileType expectedType) throws IOException {
     FileStatus s = aFs.getFileStatus(new Path(path));
-    Assert.assertNotNull(s);
+    assertNotNull(s);
     if (expectedType == fileType.isDir) {
-      Assert.assertTrue(s.isDirectory());
+      assertTrue(s.isDirectory());
     } else if (expectedType == fileType.isFile) {
-      Assert.assertTrue(s.isFile());
+      assertTrue(s.isFile());
     } else if (expectedType == fileType.isSymlink) {
-      Assert.assertTrue(s.isSymlink());
+      assertTrue(s.isSymlink());
     }
-    Assert.assertEquals(aFs.makeQualified(new Path(path)), s.getPath());
+    assertEquals(aFs.makeQualified(new Path(path)), s.getPath());
   }
   
   /**

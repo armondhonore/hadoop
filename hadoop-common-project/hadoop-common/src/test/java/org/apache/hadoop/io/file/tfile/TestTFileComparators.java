@@ -17,16 +17,20 @@
 
 package org.apache.hadoop.io.file.tfile;
 
+import static org.junit.jupiter.api.Assertions.fail;
+
 import java.io.IOException;
 
-import org.junit.Assert;
-import junit.framework.TestCase;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.file.tfile.TFile.Writer;
+import org.apache.hadoop.test.GenericTestUtils;
 
 /**
  * 
@@ -34,10 +38,8 @@ import org.apache.hadoop.io.file.tfile.TFile.Writer;
  * and LZO compression classes.
  * 
  */
-public class TestTFileComparators extends TestCase {
-  private static String ROOT =
-      System.getProperty("test.build.data", "/tmp/tfile-test");
-
+public class TestTFileComparators {
+  private static String ROOT = GenericTestUtils.getTestDir().getAbsolutePath();
   private final static int BLOCK_SIZE = 512;
   private FileSystem fs;
   private Configuration conf;
@@ -56,7 +58,7 @@ public class TestTFileComparators extends TestCase {
   private int records1stBlock = 4480;
   private int records2ndBlock = 4263;
 
-  @Override
+  @BeforeEach
   public void setUp() throws IOException {
     conf = new Configuration();
     path = new Path(ROOT, outputFile);
@@ -64,16 +66,17 @@ public class TestTFileComparators extends TestCase {
     out = fs.create(path);
   }
 
-  @Override
+  @AfterEach
   public void tearDown() throws IOException {
     fs.delete(path, true);
   }
 
   // bad comparator format
+  @Test
   public void testFailureBadComparatorNames() throws IOException {
     try {
       writer = new Writer(out, BLOCK_SIZE, compression, "badcmp", conf);
-      Assert.fail("Failed to catch unsupported comparator names");
+      fail("Failed to catch unsupported comparator names");
     }
     catch (Exception e) {
       // noop, expecting exceptions
@@ -82,12 +85,13 @@ public class TestTFileComparators extends TestCase {
   }
 
   // jclass that doesn't exist
+  @Test
   public void testFailureBadJClassNames() throws IOException {
     try {
       writer =
           new Writer(out, BLOCK_SIZE, compression,
               "jclass: some.non.existence.clazz", conf);
-      Assert.fail("Failed to catch unsupported comparator names");
+      fail("Failed to catch unsupported comparator names");
     }
     catch (Exception e) {
       // noop, expecting exceptions
@@ -96,12 +100,13 @@ public class TestTFileComparators extends TestCase {
   }
 
   // class exists but not a RawComparator
+  @Test
   public void testFailureBadJClasses() throws IOException {
     try {
       writer =
           new Writer(out, BLOCK_SIZE, compression,
               "jclass:org.apache.hadoop.io.file.tfile.Chunk", conf);
-      Assert.fail("Failed to catch unsupported comparator names");
+      fail("Failed to catch unsupported comparator names");
     }
     catch (Exception e) {
       // noop, expecting exceptions

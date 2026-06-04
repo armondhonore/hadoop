@@ -17,21 +17,23 @@
  */
 package org.apache.hadoop.fs.shell.find;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.apache.hadoop.fs.shell.find.TestHelper.*;
 
 import java.io.IOException;
 
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.shell.PathData;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
+@Timeout(10)
 public class TestName {
   private FileSystem mockFs;
   private Name name;
 
-  @Before
+  @BeforeEach
   public void resetMock() throws IOException {
     mockFs = MockFileSystem.setup();
   }
@@ -44,7 +46,7 @@ public class TestName {
   }
 
   // test a matching name
-  @Test(timeout = 1000)
+  @Test
   public void applyMatch() throws IOException {
     setup("name");
     PathData item = new PathData("/directory/path/name", mockFs.getConf());
@@ -52,7 +54,7 @@ public class TestName {
   }
 
   // test a non-matching name
-  @Test(timeout = 1000)
+  @Test
   public void applyNotMatch() throws IOException {
     setup("name");
     PathData item = new PathData("/directory/path/notname", mockFs.getConf());
@@ -60,7 +62,7 @@ public class TestName {
   }
 
   // test a different case name
-  @Test(timeout = 1000)
+  @Test
   public void applyMixedCase() throws IOException {
     setup("name");
     PathData item = new PathData("/directory/path/NaMe", mockFs.getConf());
@@ -68,7 +70,7 @@ public class TestName {
   }
 
   // test a matching glob pattern
-  @Test(timeout = 1000)
+  @Test
   public void applyGlob() throws IOException {
     setup("n*e");
     PathData item = new PathData("/directory/path/name", mockFs.getConf());
@@ -76,7 +78,7 @@ public class TestName {
   }
 
   // test a glob pattern with different case
-  @Test(timeout = 1000)
+  @Test
   public void applyGlobMixedCase() throws IOException {
     setup("n*e");
     PathData item = new PathData("/directory/path/NaMe", mockFs.getConf());
@@ -84,7 +86,7 @@ public class TestName {
   }
 
   // test a non-matching glob pattern
-  @Test(timeout = 1000)
+  @Test
   public void applyGlobNotMatch() throws IOException {
     setup("n*e");
     PathData item = new PathData("/directory/path/notmatch", mockFs.getConf());

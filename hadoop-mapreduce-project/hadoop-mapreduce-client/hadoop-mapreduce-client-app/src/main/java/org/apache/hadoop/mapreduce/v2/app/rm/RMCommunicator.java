@@ -26,8 +26,6 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.mapreduce.JobID;
 import org.apache.hadoop.mapreduce.MRJobConfig;
@@ -42,6 +40,7 @@ import org.apache.hadoop.mapreduce.v2.app.job.impl.JobImpl;
 import org.apache.hadoop.mapreduce.v2.util.MRWebAppUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.service.AbstractService;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 import org.apache.hadoop.yarn.api.ApplicationMasterProtocol;
 import org.apache.hadoop.yarn.api.protocolrecords.FinishApplicationMasterRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.FinishApplicationMasterResponse;
@@ -59,15 +58,18 @@ import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 import org.apache.hadoop.yarn.factories.RecordFactory;
 import org.apache.hadoop.yarn.factory.providers.RecordFactoryProvider;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.yarn.proto.YarnServiceProtos.SchedulerResourceTypes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Registers/unregisters to RM and sends heartbeats to RM.
  */
 public abstract class RMCommunicator extends AbstractService
     implements RMHeartbeatHandler {
-  private static final Log LOG = LogFactory.getLog(RMCommunicator.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(RMCommunicator.class);
   private int rmPollInterval;//millis
   protected ApplicationId applicationId;
   private final AtomicBoolean stopped;
@@ -209,15 +211,13 @@ public abstract class RMCommunicator extends AbstractService
         || jobImpl.getInternalState() == JobStateInternal.ERROR) {
       finishState = FinalApplicationStatus.FAILED;
     }
-    StringBuffer sb = new StringBuffer();
+    StringBuilder sb = new StringBuilder();
     for (String s : job.getDiagnostics()) {
       sb.append(s).append("\n");
     }
     LOG.info("Setting job diagnostics to " + sb.toString());
 
-    String historyUrl =
-        MRWebAppUtil.getApplicationWebURLOnJHSWithScheme(getConfig(),
-            context.getApplicationID());
+    String historyUrl = context.getHistoryUrl();
     LOG.info("History url is " + historyUrl);
     FinishApplicationMasterRequest request =
         FinishApplicationMasterRequest.newInstance(finishState,
@@ -301,7 +301,7 @@ public abstract class RMCommunicator extends AbstractService
   }
 
   protected void startAllocatorThread() {
-    allocatorThread = new Thread(new AllocatorRunnable());
+    allocatorThread = new SubjectInheritingThread(new AllocatorRunnable());
     allocatorThread.setName("RMCommunicator Allocator");
     allocatorThread.start();
   }

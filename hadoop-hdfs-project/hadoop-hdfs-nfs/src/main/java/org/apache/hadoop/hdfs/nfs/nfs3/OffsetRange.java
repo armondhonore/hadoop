@@ -19,7 +19,7 @@ package org.apache.hadoop.hdfs.nfs.nfs3;
 
 import java.util.Comparator;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.util.Preconditions;
 
 /**
  * OffsetRange is the range of read/write request. A single point (e.g.,[5,5])
@@ -69,5 +69,9 @@ public class OffsetRange {
       return (min == range.getMin()) && (max == range.getMax());
     }
     return false;
+  }
+
+  public String toString() {
+    return "[" + getMin() + ", " + getMax() + ")";
   }
 }

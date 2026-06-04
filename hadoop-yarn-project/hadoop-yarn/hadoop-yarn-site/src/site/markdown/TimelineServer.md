@@ -15,17 +15,7 @@
 The YARN Timeline Server
 ========================
 
-* [Overview](#Overview)
-    * [Introduction](#Introduction)
-    * [Current Status](#Current_Status)
-    * [Timeline Structure](#Timeline_Structure)
-* [Deployment](#Deployment)
-    * [Configurations](#Configurations)
-    * [Running the Timeline Server](#Running_Timeline_Server)
-    * [Accessing generic-data via command-line](#Accessing_generic-data_via_command-line)
-* [Publishing of application specific data](#Publishing_of_application_specific_data)
-* [Timeline Server REST API](#Timeline_Server_REST_API_v1)
-* [Generic Data REST APIs](#GENERIC_DATA_REST_APIS)
+<!-- MACRO{toc|fromDepth=1|toDepth=1} -->
 
 <a name="Overview"></a>Overview
 ---------
@@ -51,8 +41,9 @@ Previously this was supported purely for MapReduce jobs by the Application Histo
 With the introduction of the timeline server, the Application History Server becomes just one use of
 the Timeline Server.
 
-Generic information includes application level data such as 
-* queue-name, 
+Generic information includes application level data such as
+
+* queue-name,
 * user information and the like set in the `ApplicationSubmissionContext`,
 * a list of application-attempts that ran for an application
 * information about each application-attempt
@@ -77,13 +68,13 @@ Current status
 1. The "Timeline Server v1" REST API has been declared one of the REST APIs
   whose compatibility will be maintained in future releases.
 1. The single-server implementation of the Timeline Server places a limit on
-  the scalability of the service; it also prevents the service being 
+  the scalability of the service; it also prevents the service being
   High-Availability component of the YARN infrastructure.
 
 Future Plans
 
 1. Future releases will introduce a next generation timeline service
-which is scalable and reliable, "Timeline Server v2".
+which is scalable and reliable, ["Timeline Service v2"](./TimelineServiceV2.html).
 1. The expanded features of this service *may not* be available to
 applications using the Timeline Server v1 REST API. That includes extended
 data structures as well as the ability of the client to failover between Timeline Server instances.
@@ -97,14 +88,14 @@ data structures as well as the ability of the client to failover between Timelin
 The Timeline Domain offers a namespace for Timeline server allowing
 users to host multiple entities, isolating them from other users and applications.
 Timeline server Security is defined at this level.
- 
-A "Domain" primarily stores owner info, read and& write ACL information,
-created and modified time stamp information. Each Domain is identified by an ID which 
+
+A "Domain" primarily stores owner info, read and write ACL information,
+created and modified time stamp information. Each Domain is identified by an ID which
 must be unique across all users in the YARN cluster.
 
 #### Timeline Entity
 
-A Timeline Entity contains the the meta information of a conceptual entity
+A Timeline Entity contains the meta information of a conceptual entity
 and its related events.
 
 The entity can be an application, an application attempt, a container or
@@ -120,7 +111,7 @@ Each Entity is uniquely identified by an `EntityId` and `EntityType`.
 #### Timeline Events
 
 A Timeline Event describes an event that is related to a specific
-Timeline Entity of an application. 
+Timeline Entity of an application.
 
 Users are free to define what an event means —such as starting
 an application, getting allocated a container,
@@ -137,7 +128,7 @@ and cluster operators.
 
 | Configuration Property | Description |
 |:---- |:---- |
-| `yarn.timeline-service.enabled` | Indicate to clients whether Timeline service is enabled or not. If enabled, the `TimelineClient` library used by applications will post entities and events to the Timeline server. Defaults to `false`. |
+| `yarn.timeline-service.enabled` | In the server side it indicates whether timeline service is enabled or not. And in the client side, users can enable it to indicate whether client wants to use timeline service. If it's enabled in the client side along with security, then yarn client tries to fetch the delegation tokens for the timeline server. Defaults to `false`. |
 | `yarn.resourcemanager.system-metrics-publisher.enabled` | The setting that controls whether or not YARN system metrics are published on the timeline server by RM. Defaults to `false`. |
 | `yarn.timeline-service.generic-application-history.enabled` | Indicate to clients whether to query generic application data from timeline history-service or not. If not enabled then application data is queried only from Resource Manager. Defaults to `false`. |
 
@@ -146,7 +137,7 @@ and cluster operators.
 | Configuration Property | Description |
 |:---- |:---- |
 | `yarn.timeline-service.store-class` | Store class name for timeline store. Defaults to `org.apache.hadoop.yarn.server.timeline.LeveldbTimelineStore`. |
-| `yarn.timeline-service.leveldb-timeline-store.path` | Store file name for leveldb timeline store. Defaults to `${hadoop.tmp.dir}/yarn/timelin`e. |
+| `yarn.timeline-service.leveldb-timeline-store.path` | Store file name for leveldb timeline store. Defaults to `${hadoop.tmp.dir}/yarn/timeline`. |
 | `yarn.timeline-service.leveldb-timeline-store.ttl-interval-ms` | Length of time to wait between deletion cycles of leveldb timeline store in milliseconds. Defaults to `300000`. |
 | `yarn.timeline-service.leveldb-timeline-store.read-cache-size` | Size of read cache for uncompressed blocks for leveldb timeline store in bytes. Defaults to `104857600`. |
 | `yarn.timeline-service.leveldb-timeline-store.start-time-read-cache-size` | Size of cache for recently read entity start times for leveldb timeline store in number of entities. Defaults to `10000`. |
@@ -165,14 +156,14 @@ and cluster operators.
 | `yarn.timeline-service.webapp.https.address` | The https address of the Timeline service web application. Defaults to `${yarn.timeline-service.hostname}:8190`. |
 | `yarn.timeline-service.bind-host` | The actual address the server will bind to. If this optional address is set, the RPC and webapp servers will bind to this address and the port specified in `yarn.timeline-service.address` and `yarn.timeline-service.webapp.address`, respectively. This is most useful for making the service listen on all interfaces by setting to `0.0.0.0`. |
 | `yarn.timeline-service.http-cross-origin.enabled` | Enables cross-origin support (CORS) for web services where cross-origin web response headers are needed. For example, javascript making a web services request to the timeline server. Defaults to `false`. |
-| `yarn.timeline-service.http-cross-origin.allowed-origins` | Comma separated list of origins that are allowed for web services needing cross-origin (CORS) support. Wildcards `(*)` and patterns allowed. Defaults to `*`. |
+| `yarn.timeline-service.http-cross-origin.allowed-origins` | Comma separated list of origins that are allowed. Values prefixed with `regex:` are interpreted as regular expressions. Values containing wildcards (`*`) are possible as well, here a regular expression is generated, the use is discouraged and support is only available for backward compatibility. Defaults to `*`. |
 | `yarn.timeline-service.http-cross-origin.allowed-methods` | Comma separated list of methods that are allowed for web services needing cross-origin (CORS) support. Defaults to `GET,POST,HEAD`. |
 | `yarn.timeline-service.http-cross-origin.allowed-headers` | Comma separated list of headers that are allowed for web services needing cross-origin (CORS) support. Defaults to `X-Requested-With,Content-Type,Accept,Origin`. |
 | `yarn.timeline-service.http-cross-origin.max-age` | The number of seconds a pre-flighted request can be cached for web services needing cross-origin (CORS) support. Defaults to `1800`. |
 
 Note that the selection between the HTTP and HTTPS binding is made in the `TimelineClient` based
 upon the value of the YARN-wide configuration option `yarn.http.policy`; the HTTPS endpoint will be
-selected if this policy is either of `HTTPS_ONLY` or `HTTP_AND_HTTPS`.
+selected if this policy is `HTTPS_ONLY`.
 
 #### Advanced Server-side configuration
 
@@ -185,6 +176,15 @@ selected if this policy is either of `HTTPS_ONLY` or `HTTP_AND_HTTPS`.
 | `yarn.timeline-service.client.retry-interval-ms` | The interval in milliseconds between retries for the timeline service client. Defaults to `1000`. |
 | `yarn.timeline-service.generic-application-history.max-applications` | The max number of applications could be fetched by using REST API or application history protocol and shown in timeline server web ui. Defaults to `10000`. |
 
+#### UI Hosting Configuration
+
+The timeline service can host multiple UIs if enabled. The service can support both static web sites hosted in a directory or war files bundled. The web UI is then hosted on the timeline service HTTP port under the path configured.
+
+| Configuration Property | Description |
+|:---- |:---- |
+| `yarn.timeline-service.ui-names` | Comma separated list of UIs that will be hosted. Defaults to `none`. |
+| `yarn.timeline-service.ui-on-disk-path.$name` | For each of the ui-names, an on disk path should be specified to the directory service static content or the location of a web archive (war file). |
+| `yarn.timeline-service.ui-web-path.$name` | For each of the ui-names, the web path should be specified relative to the Timeline server root. Paths should begin with a starting slash. |
 
 
 #### Security Configuration
@@ -199,11 +199,11 @@ to `kerberos`, after which the following configuration options are available:
 | `yarn.timeline-service.http-authentication.type` | Defines authentication used for the timeline server HTTP endpoint. Supported values are: `simple` / `kerberos` / #AUTHENTICATION_HANDLER_CLASSNAME#. Defaults to `simple`. |
 | `yarn.timeline-service.http-authentication.simple.anonymous.allowed` | Indicates if anonymous requests are allowed by the timeline server when using 'simple' authentication. Defaults to `true`. |
 | `yarn.timeline-service.principal` | The Kerberos principal for the timeline server. |
-| `yarn.timeline-service.keytab` | The Kerberos keytab for the timeline server. Defaults on Unix to to `/etc/krb5.keytab`. |
+| `yarn.timeline-service.keytab` | The Kerberos keytab for the timeline server. Defaults on Unix to `/etc/krb5.keytab`. |
 | `yarn.timeline-service.delegation.key.update-interval` | Defaults to `86400000` (1 day). |
 | `yarn.timeline-service.delegation.token.renew-interval` | Defaults to `86400000` (1 day). |
 | `yarn.timeline-service.delegation.token.max-lifetime` | Defaults to `604800000` (7 days). |
-| `yarn.timeline-service.best-effort` | Should the failure to obtain a delegation token be considered an application failure (option = false),  or should the client attempt to continue to publish information without it (option=true). Default: `false` |
+| `yarn.timeline-service.client.best-effort` | Should the failure to obtain a delegation token be considered an application failure (option = false),  or should the client attempt to continue to publish information without it (option=true). Default: `false` |
 
 #### Enabling the timeline service and the generic history service
 
@@ -274,7 +274,7 @@ Here is an example:
 
     try {
       TimelineDomain myDomain = new TimelineDomain();
-      myDomain.setID("MyDomain");
+      myDomain.setId("MyDomain");
       // Compose other Domain info ....
 
       client.putDomain(myDomain);
@@ -282,7 +282,7 @@ Here is an example:
       TimelineEntity myEntity = new TimelineEntity();
       myEntity.setDomainId(myDomain.getId());
       myEntity.setEntityType("APPLICATION");
-      myEntity.setEntityID("MyApp1")
+      myEntity.setEntityId("MyApp1");
       // Compose other entity info
 
       TimelinePutResponse response = client.putEntities(entity);
@@ -420,7 +420,7 @@ response: `TimelinePutResponse`
 
 ### List domains of a user: GET `/ws/v1/timeline/domain`
 
-Retrieves a list of all domains of a user. 
+Retrieves a list of all domains of a user.
 
 If an owner is specified, that owner name overrides that of the caller.
 
@@ -598,8 +598,8 @@ Request Body:
 Required fields
 
 Entity: `type` and `id`. `starttime` is required unless the
-entity contains one or more event). 
-Event: `type` and `timestamp`. 
+entity contains one or more event).
+Event: `type` and `timestamp`.
 
 ## <a name="REST_API_LIST_TIMELINE_ENTITIES"></a>Timeline Entity List
 
@@ -618,7 +618,7 @@ Use the following URI to obtain all the entity objects of a given
 
 ### HTTP Operations Supported:
 
-    GET  http://localhost:8188/ws/v1/timeline/DS_APP_ATTEMPT
+    GET
 
 
 ### Query Parameters Supported:
@@ -673,7 +673,7 @@ will be returned as a collection of container objects. See also
 
 HTTP Request:
 
-    GET http://<timeline server http address:port>/ws/v1/timeline/{entity-type}
+    GET http://localhost:8188/ws/v1/timeline/DS_APP_ATTEMPT
 
 Response Header:
 
@@ -771,8 +771,8 @@ String.
 | `entitytype` | string | The entity type |
 | `relatedentities` | map | The related entities' identifiers, which are organized in a map of entityType : [entity1, entity2, ...] |
 | `events` | list | The events of the entity |
-| `primaryfilters` | map | The primary filters of the entity, which are orgainzied in a map of key : [value1, value2, ...] |
-| `otherinfo` | map | The other information of the entity, which is orgainzied in a map of key : value |
+| `primaryfilters` | map | The primary filters of the entity, which are organized in a map of key : [value1, value2, ...] |
+| `otherinfo` | map | The other information of the entity, which is organized in a map of key : value |
 | `starttime` | long | The start time of the entity |
 
 ### Response Examples:
@@ -781,7 +781,7 @@ String.
 
 HTTP Request:
 
-    GET http://<timeline server http address:port>/ws/v1/timeline/{entity-type}/{entity-id}
+    GET http://localhost:8188/ws/v1/timeline/DS_APP_ATTEMPT/appattempt_1430424020775_0003_000001
 
 Response Header:
 
@@ -790,8 +790,6 @@ Response Header:
     Transfer-Encoding: chunked
 
 Response Body:
-
-    http://localhost:8188/ws/v1/timeline/DS_APP_ATTEMPT/appattempt_1430424020775_0003_000001
 
     {
       "events":[
@@ -811,7 +809,7 @@ Response Body:
         }
       ]
     }
-  
+
 
 
 
@@ -833,15 +831,17 @@ Use the following URI to obtain the event objects of the given `entityType`.
 
 ### Query Parameters Supported:
 
-1. `entityIds` - The entity IDs to retrieve events for.
+1. `entityId` - The entity IDs to retrieve events for. If null, no events will be returned.
+  Multiple entityIds can be given as comma separated values.
 1. `limit` - A limit on the number of events to return for each entity. If null,
   defaults to 100 events per entity.
 1. `windowStart` - If not null, retrieves only events later than the given time
   (exclusive)
 1. `windowEnd` - If not null, retrieves only events earlier than the given time
   (inclusive)
-1. `eventTypes` - Restricts the events returned to the given types. If null,
-  events of all types will be returned.
+1. `eventType` - Restricts the events returned to the given types. If null,
+  events of all types will be returned. Multiple eventTypes can be given as
+  comma separated values.
 
 ### Elements of the `events` (Timeline Entity List) Object
 
@@ -859,7 +859,7 @@ Below is the elements of a single event object.  Note that `value` of
 | Item | Data Type | Description|
 |:---- |:---- |:---- |
 | `eventtype` | string  | The event type |
-| `eventinfo` | map | The information of the event, which is orgainzied in a map of `key` : `value` |
+| `eventinfo` | map | The information of the event, which is organized in a map of `key` : `value` |
 | `timestamp` | long | The timestamp of the event |
 
 ### Response Examples:
@@ -868,7 +868,7 @@ Below is the elements of a single event object.  Note that `value` of
 
 HTTP Request:
 
-    GET http://<timeline server http address:port>/ws/v1/timeline/entity%20type%200/events
+    GET http://localhost:8188/ws/v1/timeline/DS_APP_ATTEMPT/events?entityId=appattempt_1430424020775_0003_000001
 
 Response Header:
 
@@ -879,9 +879,6 @@ Response Header:
 Response Body:
 
 
-    GET http://localhost:8188/ws/v1/timeline/DS_APP_ATTEMPT/events?entityId=appattempt_1430424020775_0003_000001
-    
-    
     {
     "events": [
       {
@@ -1089,7 +1086,10 @@ Response Body:
           "finishedTime":1430425008861,
           "elapsedTime":7857,
           "unmanagedApplication":"false",
-          "applicationPriority":0},
+          "applicationPriority":0,
+          "appNodeLabelExpression":"",
+          "amNodeLabelExpression":""
+          },
           {
           "appId":"application_1430424020775_0003",
           "currentAppAttemptId":"appattempt_1430424020775_0003_000001",
@@ -1110,7 +1110,10 @@ Response Body:
           "finishedTime":1430424963907,
           "elapsedTime":7257,
           "unmanagedApplication":"false",
-          "applicationPriority":0},
+          "applicationPriority":0,
+          "appNodeLabelExpression":"",
+          "amNodeLabelExpression":""
+          },
           {
           "appId":"application_1430424020775_0002",
           "currentAppAttemptId":"appattempt_1430424020775_0002_000001",
@@ -1131,7 +1134,10 @@ Response Body:
           "finishedTime":1430424776594,
           "elapsedTime":7199,
           "unmanagedApplication":"false",
-          "applicationPriority":0},
+          "applicationPriority":0,
+          "appNodeLabelExpression":"",
+          "amNodeLabelExpression":""
+          },
           {
           "appId":"application_1430424020775_0001",
           "currentAppAttemptId":"appattempt_1430424020775_0001_000001",
@@ -1153,7 +1159,9 @@ Response Body:
           "elapsedTime":18344,
           "applicationTags":"mrapplication,ta-example",
           "unmanagedApplication":"false",
-          "applicationPriority":0
+          "applicationPriority":0,
+          "appNodeLabelExpression":"",
+          "amNodeLabelExpression":""
           }
       ]
     }
@@ -1197,6 +1205,8 @@ Response Body:
         <elapsedTime>7857</elapsedTime>
         <unmanagedApplication>false</unmanagedApplication>
         <applicationPriority>0</applicationPriority>
+        <appNodeLabelExpression></appNodeLabelExpression>
+        <amNodeLabelExpression></amNodeLabelExpression>
       </app>
       <app>
         <appId>application_1430424020775_0003</appId>
@@ -1219,6 +1229,8 @@ Response Body:
         <elapsedTime>7257</elapsedTime>
         <unmanagedApplication>false</unmanagedApplication>
         <applicationPriority>0</applicationPriority>
+        <appNodeLabelExpression></appNodeLabelExpression>
+        <amNodeLabelExpression></amNodeLabelExpression>
       </app>
       <app>
         <appId>application_1430424020775_0002</appId>
@@ -1241,6 +1253,8 @@ Response Body:
         <elapsedTime>7199</elapsedTime>
         <unmanagedApplication>false</unmanagedApplication>
         <applicationPriority>0</applicationPriority>
+        <appNodeLabelExpression></appNodeLabelExpression>
+        <amNodeLabelExpression></amNodeLabelExpression>
       </app>
       <app>
         <appId>application_1430424020775_0001</appId>
@@ -1264,6 +1278,8 @@ Response Body:
         <applicationTags>mrapplication,ta-example</applicationTags>
         <unmanagedApplication>false</unmanagedApplication>
         <applicationPriority>0</applicationPriority>
+        <appNodeLabelExpression></appNodeLabelExpression>
+        <amNodeLabelExpression></amNodeLabelExpression>
       </app>
     </apps>
 
@@ -1301,7 +1317,7 @@ None
 | `queue` | string  | The queue to which the application submitted |
 | `appState` | string | The application state according to the ResourceManager - valid values are members of the YarnApplicationState enum: `FINISHED`, `FAILED`, `KILLED` |
 | `finalStatus` | string | The final status of the application if finished - reported by the application itself - valid values are: `UNDEFINED`, `SUCCEEDED`, `FAILED`, `KILLED` |
-| `progress` | float | The reported progress of the application as a percent. Long-lived YARN services may not provide a meaninful value here —or use it as a metric of actual vs desired container counts |
+| `progress` | float | The reported progress of the application as a percent. Long-lived YARN services may not provide a meaningful value here —or use it as a metric of actual vs desired container counts |
 | `trackingUrl` | string | The web URL of the application (via the RM Proxy) |
 | `originalTrackingUrl` | string | The actual web URL of the application |
 | `diagnosticsInfo` | string | Detailed diagnostics information on a completed application|
@@ -1316,7 +1332,8 @@ None
 | `applicationTags` | string | The application tags. |
 | `unmanagedApplication` | boolean | Is the application unmanaged. |
 | `applicationPriority` | int | Priority of the submitted application. |
-
+| `appNodeLabelExpression` | string |Node Label expression which is used to identify the nodes on which application's containers are expected to run by default.|
+| `amNodeLabelExpression` | string | Node Label expression which is used to identify the node on which application's  AM container is expected to run.|
 ### Response Examples:
 
 #### JSON response
@@ -1353,8 +1370,10 @@ Response Body:
       "finishedTime": 1430424072153,
       "elapsedTime": 18344,
       "applicationTags": mrapplication,tag-example,
-      "unmanagedApplication":"false"
-      "applicationPriority":0
+      "unmanagedApplication": "false",
+      "applicationPriority": 0,
+      "appNodeLabelExpression": "",
+      "amNodeLabelExpression": ""
     }
 
 #### XML response
@@ -1395,6 +1414,8 @@ Response Body:
        <applicationTags>mrapplication,ta-example</applicationTags>
        <unmanagedApplication>false</unmanagedApplication>
        <applicationPriority>0</applicationPriority>
+       <appNodeLabelExpression><appNodeLabelExpression>
+       <amNodeLabelExpression><amNodeLabelExpression>
      </app>
 
 ## <a name="REST_API_APPLICATION_ATTEMPT_LIST"></a>Application Attempt List
@@ -1422,8 +1443,8 @@ None
 ### Elements of the `appattempts` (Application Attempt List) Object
 
 When you make a request for the list of application attempts, the information
-will be returned as a collection of application attempt objects. See 
-[Application Attempt](#REST_API_APPLICATION_ATTEMPT) for the syntax of 
+will be returned as a collection of application attempt objects. See
+[Application Attempt](#REST_API_APPLICATION_ATTEMPT) for the syntax of
 the application attempt object.
 
 | Item         | Data Type   | Description                  |
@@ -1737,7 +1758,7 @@ Response Body:
         }
       ]
     }
-    
+
 
 #### XML response
 
@@ -1983,8 +2004,8 @@ Response Body:
       <containerState>COMPLETE</containerState>
       <nodeHttpAddress>http://localhost:8042</nodeHttpAddress>
     </container>
- 
- 
+
+
 ### Response Codes
 
 1. Queries where a domain, entity type, entity ID or similar cannot be resolved result in
@@ -1998,6 +2019,81 @@ querying some entities, such as Domains; here the API deliberately
 downgrades permission-denied outcomes as empty and not-founds responses.
 This hides details of other domains from an unauthorized caller.
 1. If the content of timeline entity PUT operations is invalid,
-this failure *will not* result in an HTTP error code being retured.
+this failure *will not* result in an HTTP error code being returned.
 A status code of 200 will be returned —however, there will be an error code
 in the list of failed entities for each entity which could not be added.
+
+<a name="TIMELINE_SERVER_PERFORMANCE_TEST_TOOL"></a> Timeline Server Performance Test Tool
+----------
+###<a name="HIGHLIGHTS"></a>Highlights
+
+The timeline server performance test tool helps measure timeline server's write performance. The test
+launches SimpleEntityWriter mappers or JobHistoryFileReplay mappers to write timeline
+entities to the timeline server. At the end, the transaction rate(ops/s) per mapper and the total transaction rate
+will be measured and printed out. Running the test with SimpleEntityWriter mappers
+will also measure and show the IO rate(KB/s) per mapper and the total IO rate.
+
+###<a name="USAGE"></a>Usage
+
+Mapper Types Description:
+
+     1. SimpleEntityWriter mapper
+        Each mapper writes a user-specified number of timeline entities
+        with a user-specified size to the timeline server. SimpleEntityWrite
+        is a default mapper of the performance test tool.
+
+     2. JobHistoryFileReplay mapper
+        Each mapper replays jobhistory files under a specified directory
+        (both the jhist file and its corresponding conf.xml are required to
+         be present in order to be replayed. The number of mappers should be no more
+         than the number of jobhistory files).
+        Each mapper will get assigned some jobhistory files to replay. For each
+        job history file, a mapper will parse it to get jobinfo and then create
+        timeline entities. Each mapper also has the choice to write all the
+        timeline entities created at once or one at a time.
+
+Options:
+
+    [-m <maps>] number of mappers (default: 1)
+    [-v] timeline service version
+    [-mtype <mapper type in integer>]
+          1. simple entity write mapper (default)
+          2. jobhistory files replay mapper
+    [-s <(KBs)test>] number of KB per put (mtype=1, default: 1 KB)
+    [-t] package sending iterations per mapper (mtype=1, default: 100)
+    [-d <path>] root path of job history files (mtype=2)
+    [-r <replay mode>] (mtype=2)
+          1. write all entities for a job in one put (default)
+          2. write one entity at a time
+
+###<a name="SAMPLE_RUNS"></a>Sample Runs
+
+Run SimpleEntityWriter test:
+
+    bin/hadoop jar performanceTest.jar timelineperformance -m 4 -mtype 1 -s 3 -t 200
+
+Example output of SimpleEntityWriter test :
+
+    TRANSACTION RATE (per mapper): 20000.0 ops/s
+    IO RATE (per mapper): 60000.0 KB/s
+    TRANSACTION RATE (total): 80000.0 ops/s
+    IO RATE (total): 240000.0 KB/s
+
+Run JobHistoryFileReplay mapper test
+
+    $ bin/hadoop jar performanceTest.jar timelineperformance -m 2 -mtype 2 -d /testInput -r 2
+
+Example input of JobHistoryFileReplay mapper test:
+
+    $ bin/hadoop fs -ls /testInput
+    /testInput/job_1.jhist
+    /testInput/job_1_conf.xml
+    /testInput/job_2.jhist
+    /testInput/job_2_conf.xml
+
+Example output of JobHistoryFileReplay test:
+
+    TRANSACTION RATE (per mapper): 4000.0 ops/s
+    IO RATE (per mapper): 0.0 KB/s
+    TRANSACTION RATE (total): 8000.0 ops/s
+    IO RATE (total): 0.0 KB/s

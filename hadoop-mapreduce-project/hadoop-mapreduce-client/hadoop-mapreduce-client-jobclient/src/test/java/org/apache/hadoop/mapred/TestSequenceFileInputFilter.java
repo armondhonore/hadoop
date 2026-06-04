@@ -18,18 +18,23 @@
 
 package org.apache.hadoop.mapred;
 
-import java.io.*;
-import java.util.*;
-import junit.framework.TestCase;
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.BytesWritable;
+import org.apache.hadoop.io.SequenceFile;
+import org.apache.hadoop.io.Text;
+import org.slf4j.Logger;
+import org.junit.jupiter.api.Test;
 
-import org.apache.commons.logging.*;
+import java.io.IOException;
+import java.util.Random;
 
-import org.apache.hadoop.fs.*;
-import org.apache.hadoop.io.*;
-import org.apache.hadoop.conf.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
-public class TestSequenceFileInputFilter extends TestCase {
-  private static final Log LOG = FileInputFormat.LOG;
+public class TestSequenceFileInputFilter {
+  private static final Logger LOG = FileInputFormat.LOG;
 
   private static final int MAX_LENGTH = 15000;
   private static final Configuration conf = new Configuration();
@@ -97,7 +102,8 @@ public class TestSequenceFileInputFilter extends TestCase {
     }
     return count;
   }
-  
+
+  @Test
   public void testRegexFilter() throws Exception {
     // set the filter class
     LOG.info("Testing Regex Filter with patter: \\A10*");
@@ -121,6 +127,7 @@ public class TestSequenceFileInputFilter extends TestCase {
     fs.delete(inDir, true);
   }
 
+  @Test
   public void testPercentFilter() throws Exception {
     LOG.info("Testing Percent Filter with frequency: 1000");
     // set the filter class
@@ -141,13 +148,14 @@ public class TestSequenceFileInputFilter extends TestCase {
       int expectedCount = length/1000;
       if (expectedCount*1000!=length)
         expectedCount++;
-      assertEquals(count, expectedCount);
+      assertThat(count).isEqualTo(expectedCount);
     }
       
     // clean up
     fs.delete(inDir, true);
   }
-  
+
+  @Test
   public void testMD5Filter() throws Exception {
     // set the filter class
     LOG.info("Testing MD5 Filter with frequency: 1000");
@@ -167,10 +175,5 @@ public class TestSequenceFileInputFilter extends TestCase {
     }
     // clean up
     fs.delete(inDir, true);
-  }
-
-  public static void main(String[] args) throws Exception {
-    TestSequenceFileInputFilter filter = new TestSequenceFileInputFilter();
-    filter.testRegexFilter();
   }
 }

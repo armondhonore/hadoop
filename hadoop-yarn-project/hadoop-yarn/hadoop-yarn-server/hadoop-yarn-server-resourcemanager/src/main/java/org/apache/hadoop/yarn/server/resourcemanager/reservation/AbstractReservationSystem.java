@@ -20,6 +20,7 @@ package org.apache.hadoop.yarn.server.resourcemanager.reservation;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Set;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledThreadPoolExecutor;
@@ -38,14 +39,21 @@ import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
+import org.apache.hadoop.yarn.proto.YarnProtos.ReservationAllocationStateProto;
 import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
 import org.apache.hadoop.yarn.server.resourcemanager.ResourceManager;
+import org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStore.RMState;
+import org.apache.hadoop.yarn.server.resourcemanager.reservation.exceptions.PlanningException;
 import org.apache.hadoop.yarn.server.resourcemanager.reservation.planning.Planner;
 import org.apache.hadoop.yarn.server.resourcemanager.reservation.planning.ReservationAgent;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.QueueMetrics;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.QueuePath;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FairScheduler;
+import org.apache.hadoop.yarn.server.resourcemanager.security.CapacityReservationsACLsManager;
+import org.apache.hadoop.yarn.server.resourcemanager.security.FairReservationsACLsManager;
+import org.apache.hadoop.yarn.server.resourcemanager.security.ReservationsACLsManager;
 import org.apache.hadoop.yarn.util.Clock;
 import org.apache.hadoop.yarn.util.UTCClock;
 import org.apache.hadoop.yarn.util.resource.ResourceCalculator;
@@ -61,8 +69,8 @@ import org.slf4j.LoggerFactory;
 public abstract class AbstractReservationSystem extends AbstractService
     implements ReservationSystem {
 
-  private static final Logger LOG = LoggerFactory
-      .getLogger(AbstractReservationSystem.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(AbstractReservationSystem.class);
 
   // private static final String DEFAULT_CAPACITY_SCHEDULER_PLAN
 
@@ -93,6 +101,12 @@ public abstract class AbstractReservationSystem extends AbstractService
   protected long planStepSize;
 
   private PlanFollower planFollower;
+
+  private ReservationsACLsManager reservationsACLsManager;
+
+  private boolean isRecoveryEnabled = false;
+
+  private long maxPeriodicity;
 
   /**
    * Construct the service.
@@ -134,20 +148,81 @@ public abstract class AbstractReservationSystem extends AbstractService
     this.conf = conf;
     scheduler = rmContext.getScheduler();
     // Get the plan step size
-    planStepSize =
-        conf.getTimeDuration(
-            YarnConfiguration.RM_RESERVATION_SYSTEM_PLAN_FOLLOWER_TIME_STEP,
-            YarnConfiguration.DEFAULT_RM_RESERVATION_SYSTEM_PLAN_FOLLOWER_TIME_STEP,
-            TimeUnit.MILLISECONDS);
+    planStepSize = conf.getTimeDuration(
+        YarnConfiguration.RM_RESERVATION_SYSTEM_PLAN_FOLLOWER_TIME_STEP,
+        YarnConfiguration.DEFAULT_RM_RESERVATION_SYSTEM_PLAN_FOLLOWER_TIME_STEP,
+        TimeUnit.MILLISECONDS);
     if (planStepSize < 0) {
       planStepSize =
           YarnConfiguration.DEFAULT_RM_RESERVATION_SYSTEM_PLAN_FOLLOWER_TIME_STEP;
+    }
+    maxPeriodicity =
+        conf.getLong(YarnConfiguration.RM_RESERVATION_SYSTEM_MAX_PERIODICITY,
+            YarnConfiguration.DEFAULT_RM_RESERVATION_SYSTEM_MAX_PERIODICITY);
+    if (maxPeriodicity <= 0) {
+      maxPeriodicity =
+          YarnConfiguration.DEFAULT_RM_RESERVATION_SYSTEM_MAX_PERIODICITY;
     }
     // Create a plan corresponding to every reservable queue
     Set<String> planQueueNames = scheduler.getPlanQueues();
     for (String planQueueName : planQueueNames) {
       Plan plan = initializePlan(planQueueName);
       plans.put(planQueueName, plan);
+    }
+    isRecoveryEnabled = conf.getBoolean(YarnConfiguration.RECOVERY_ENABLED,
+        YarnConfiguration.DEFAULT_RM_RECOVERY_ENABLED);
+
+    if (conf.getBoolean(YarnConfiguration.YARN_RESERVATION_ACL_ENABLE,
+        YarnConfiguration.DEFAULT_YARN_RESERVATION_ACL_ENABLE)
+        && conf.getBoolean(YarnConfiguration.YARN_ACL_ENABLE,
+            YarnConfiguration.DEFAULT_YARN_ACL_ENABLE)) {
+      if (scheduler instanceof CapacityScheduler) {
+        reservationsACLsManager = new CapacityReservationsACLsManager(scheduler,
+            conf);
+      } else if (scheduler instanceof FairScheduler) {
+        reservationsACLsManager = new FairReservationsACLsManager(scheduler,
+            conf);
+      }
+    }
+  }
+
+  private void loadPlan(String planName,
+      Map<ReservationId, ReservationAllocationStateProto> reservations)
+      throws PlanningException {
+    Plan plan = plans.get(planName);
+    Resource minAllocation = getMinAllocation();
+    ResourceCalculator rescCalculator = getResourceCalculator();
+    for (Entry<ReservationId, ReservationAllocationStateProto> currentReservation : reservations
+        .entrySet()) {
+      plan.addReservation(ReservationSystemUtil.toInMemoryAllocation(planName,
+          currentReservation.getKey(), currentReservation.getValue(),
+          minAllocation, rescCalculator), true);
+      resQMap.put(currentReservation.getKey(), planName);
+    }
+    LOG.info("Recovered reservations for Plan: {}", planName);
+  }
+
+  @Override
+  public void recover(RMState state) throws Exception {
+    LOG.info("Recovering Reservation system");
+    writeLock.lock();
+    try {
+      Map<String, Map<ReservationId, ReservationAllocationStateProto>> reservationSystemState =
+          state.getReservationState();
+      if (planFollower != null) {
+        for (String plan : plans.keySet()) {
+          // recover reservations if any from state store
+          if (reservationSystemState.containsKey(plan)) {
+            loadPlan(plan, reservationSystemState.get(plan));
+          }
+          synchronizePlan(plan, false);
+        }
+        startPlanFollower(conf.getLong(
+            YarnConfiguration.RM_WORK_PRESERVING_RECOVERY_SCHEDULING_WAIT_MS,
+            YarnConfiguration.DEFAULT_RM_WORK_PRESERVING_RECOVERY_SCHEDULING_WAIT_MS));
+      }
+    } finally {
+      writeLock.unlock();
     }
   }
 
@@ -162,7 +237,7 @@ public abstract class AbstractReservationSystem extends AbstractService
           Plan plan = initializePlan(planQueueName);
           plans.put(planQueueName, plan);
         } else {
-          LOG.warn("Plan based on reservation queue {0} already exists.",
+          LOG.warn("Plan based on reservation queue {} already exists.",
               planQueueName);
         }
       }
@@ -189,8 +264,8 @@ public abstract class AbstractReservationSystem extends AbstractService
       Class<?> planFollowerPolicyClazz =
           conf.getClassByName(planFollowerPolicyClassName);
       if (PlanFollower.class.isAssignableFrom(planFollowerPolicyClazz)) {
-        return (PlanFollower) ReflectionUtils.newInstance(
-            planFollowerPolicyClazz, conf);
+        return (PlanFollower) ReflectionUtils
+            .newInstance(planFollowerPolicyClazz, conf);
       } else {
         throw new YarnRuntimeException("Class: " + planFollowerPolicyClassName
             + " not instance of " + PlanFollower.class.getCanonicalName());
@@ -198,7 +273,8 @@ public abstract class AbstractReservationSystem extends AbstractService
     } catch (ClassNotFoundException e) {
       throw new YarnRuntimeException(
           "Could not instantiate PlanFollowerPolicy: "
-              + planFollowerPolicyClassName, e);
+              + planFollowerPolicyClassName,
+          e);
     }
   }
 
@@ -236,15 +312,23 @@ public abstract class AbstractReservationSystem extends AbstractService
   }
 
   @Override
-  public void synchronizePlan(String planName) {
+  public void synchronizePlan(String planName, boolean shouldReplan) {
     writeLock.lock();
     try {
       Plan plan = plans.get(planName);
       if (plan != null) {
-        planFollower.synchronizePlan(plan);
+        planFollower.synchronizePlan(plan, shouldReplan);
       }
     } finally {
       writeLock.unlock();
+    }
+  }
+
+  private void startPlanFollower(long initialDelay) {
+    if (planFollower != null) {
+      scheduledExecutorService = new ScheduledThreadPoolExecutor(1);
+      scheduledExecutorService.scheduleWithFixedDelay(planFollower,
+          initialDelay, planStepSize, TimeUnit.MILLISECONDS);
     }
   }
 
@@ -262,10 +346,8 @@ public abstract class AbstractReservationSystem extends AbstractService
 
   @Override
   public void serviceStart() throws Exception {
-    if (planFollower != null) {
-      scheduledExecutorService = new ScheduledThreadPoolExecutor(1);
-      scheduledExecutorService.scheduleWithFixedDelay(planFollower, 0L,
-          planStepSize, TimeUnit.MILLISECONDS);
+    if (!isRecoveryEnabled) {
+      startPlanFollower(planStepSize);
     }
     super.serviceStart();
   }
@@ -306,9 +388,8 @@ public abstract class AbstractReservationSystem extends AbstractService
   public ReservationId getNewReservationId() {
     writeLock.lock();
     try {
-      ReservationId resId =
-          ReservationId.newInstance(ResourceManager.getClusterTimeStamp(),
-              resCounter.incrementAndGet());
+      ReservationId resId = ReservationId.newInstance(
+          ResourceManager.getClusterTimeStamp(), resCounter.incrementAndGet());
       LOG.info("Allocated new reservationId: " + resId);
       return resId;
     } finally {
@@ -325,8 +406,11 @@ public abstract class AbstractReservationSystem extends AbstractService
    * Get the default reservation system corresponding to the scheduler
    * 
    * @param scheduler the scheduler for which the reservation system is required
+   *
+   * @return the {@link ReservationSystem} based on the configured scheduler
    */
-  public static String getDefaultReservationSystem(ResourceScheduler scheduler) {
+  public static String getDefaultReservationSystem(
+      ResourceScheduler scheduler) {
     if (scheduler instanceof CapacityScheduler) {
       return CapacityReservationSystem.class.getName();
     } else if (scheduler instanceof FairScheduler) {
@@ -344,13 +428,12 @@ public abstract class AbstractReservationSystem extends AbstractService
     Resource maxAllocation = getMaxAllocation();
     ResourceCalculator rescCalc = getResourceCalculator();
     Resource totCap = getPlanQueueCapacity(planQueueName);
-    Plan plan =
-        new InMemoryPlan(getRootQueueMetrics(), adPolicy,
-            getAgent(planQueuePath), totCap, planStepSize, rescCalc,
-            minAllocation, maxAllocation, planQueueName,
-            getReplanner(planQueuePath), getReservationSchedulerConfiguration()
-            .getMoveOnExpiry(planQueuePath));
-    LOG.info("Intialized plan {0} based on reservable queue {1}",
+    Plan plan = new InMemoryPlan(getRootQueueMetrics(), adPolicy,
+        getAgent(planQueuePath), totCap, planStepSize, rescCalc, minAllocation,
+        maxAllocation, planQueueName, getReplanner(planQueuePath),
+        getReservationSchedulerConfiguration().getMoveOnExpiry(new QueuePath(planQueuePath)),
+        maxPeriodicity, rmContext);
+    LOG.info("Initialized plan {} based on reservable queue {}",
         plan.toString(), planQueueName);
     return plan;
   }
@@ -358,7 +441,7 @@ public abstract class AbstractReservationSystem extends AbstractService
   protected Planner getReplanner(String planQueueName) {
     ReservationSchedulerConfiguration reservationConfig =
         getReservationSchedulerConfiguration();
-    String plannerClassName = reservationConfig.getReplanner(planQueueName);
+    String plannerClassName = reservationConfig.getReplanner(new QueuePath(planQueueName));
     LOG.info("Using Replanner: " + plannerClassName + " for queue: "
         + planQueueName);
     try {
@@ -381,17 +464,21 @@ public abstract class AbstractReservationSystem extends AbstractService
   protected ReservationAgent getAgent(String queueName) {
     ReservationSchedulerConfiguration reservationConfig =
         getReservationSchedulerConfiguration();
-    String agentClassName = reservationConfig.getReservationAgent(queueName);
+    String agentClassName = reservationConfig.getReservationAgent(new QueuePath(queueName));
     LOG.info("Using Agent: " + agentClassName + " for queue: " + queueName);
     try {
       Class<?> agentClazz = conf.getClassByName(agentClassName);
       if (ReservationAgent.class.isAssignableFrom(agentClazz)) {
-        return (ReservationAgent) ReflectionUtils.newInstance(agentClazz, conf);
+        ReservationAgent resevertionAgent =
+            (ReservationAgent) agentClazz.newInstance();
+        resevertionAgent.init(conf);
+        return resevertionAgent;
       } else {
         throw new YarnRuntimeException("Class: " + agentClassName
             + " not instance of " + ReservationAgent.class.getCanonicalName());
       }
-    } catch (ClassNotFoundException e) {
+    } catch (ClassNotFoundException | InstantiationException
+        | IllegalAccessException e) {
       throw new YarnRuntimeException("Could not instantiate Agent: "
           + agentClassName + " for queue: " + queueName, e);
     }
@@ -401,15 +488,15 @@ public abstract class AbstractReservationSystem extends AbstractService
     ReservationSchedulerConfiguration reservationConfig =
         getReservationSchedulerConfiguration();
     String admissionPolicyClassName =
-        reservationConfig.getReservationAdmissionPolicy(queueName);
+        reservationConfig.getReservationAdmissionPolicy(new QueuePath(queueName));
     LOG.info("Using AdmissionPolicy: " + admissionPolicyClassName
         + " for queue: " + queueName);
     try {
       Class<?> admissionPolicyClazz =
           conf.getClassByName(admissionPolicyClassName);
       if (SharingPolicy.class.isAssignableFrom(admissionPolicyClazz)) {
-        return (SharingPolicy) ReflectionUtils.newInstance(
-            admissionPolicyClazz, conf);
+        return (SharingPolicy) ReflectionUtils.newInstance(admissionPolicyClazz,
+            conf);
       } else {
         throw new YarnRuntimeException("Class: " + admissionPolicyClassName
             + " not instance of " + SharingPolicy.class.getCanonicalName());
@@ -420,8 +507,11 @@ public abstract class AbstractReservationSystem extends AbstractService
     }
   }
 
-  protected abstract ReservationSchedulerConfiguration
-      getReservationSchedulerConfiguration();
+  public ReservationsACLsManager getReservationsACLsManager() {
+    return this.reservationsACLsManager;
+  }
+
+  protected abstract ReservationSchedulerConfiguration getReservationSchedulerConfiguration();
 
   protected abstract String getPlanQueuePath(String planQueueName);
 

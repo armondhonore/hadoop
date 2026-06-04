@@ -18,19 +18,26 @@
 
 package org.apache.hadoop.mapred;
 
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.BytesWritable;
+import org.apache.hadoop.io.DataInputBuffer;
+import org.apache.hadoop.io.SequenceFile;
+import org.apache.hadoop.io.Text;
+import org.slf4j.Logger;
+import org.junit.jupiter.api.Test;
+
 import java.io.IOException;
 import java.util.Random;
 
-import org.apache.hadoop.fs.*;
-import org.apache.hadoop.io.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import junit.framework.TestCase;
-import org.apache.commons.logging.*;
-
-public class TestSequenceFileAsBinaryInputFormat extends TestCase {
-  private static final Log LOG = FileInputFormat.LOG;
+public class TestSequenceFileAsBinaryInputFormat {
+  private static final Logger LOG = FileInputFormat.LOG;
   private static final int RECORDS = 10000;
 
+  @Test
   public void testBinary() throws IOException {
     JobConf job = new JobConf();
     FileSystem fs = FileSystem.getLocal(job);
@@ -81,21 +88,17 @@ public class TestSequenceFileAsBinaryInputFormat extends TestCase {
           cmpkey.readFields(buf);
           buf.reset(bval.getBytes(), bval.getLength());
           cmpval.readFields(buf);
-          assertTrue(
-              "Keys don't match: " + "*" + cmpkey.toString() + ":" +
-                                           tkey.toString() + "*",
-              cmpkey.toString().equals(tkey.toString()));
-          assertTrue(
-              "Vals don't match: " + "*" + cmpval.toString() + ":" +
-                                           tval.toString() + "*",
-              cmpval.toString().equals(tval.toString()));
+          assertTrue(cmpkey.toString().equals(tkey.toString()),
+              "Keys don't match: " + "*" + cmpkey.toString() + ":" + tkey.toString() + "*");
+          assertTrue(cmpval.toString().equals(tval.toString()),
+              "Vals don't match: " + "*" + cmpval.toString() + ":" + tval.toString() + "*");
           ++count;
         }
       } finally {
         reader.close();
       }
     }
-    assertEquals("Some records not found", RECORDS, count);
+    assertEquals(RECORDS, count, "Some records not found");
   }
 
 }

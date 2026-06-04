@@ -19,24 +19,28 @@ package org.apache.hadoop.hdfs.server.namenode.ha;
 
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_EDITS_DIR_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_SHARED_EDITS_DIR_KEY;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.IOException;
 import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URL;
 import java.util.Collection;
+import java.util.List;
 
-import com.google.common.base.Joiner;
+import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSUtil;
+import org.apache.hadoop.hdfs.HAUtil;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.hdfs.server.namenode.SecondaryNameNode;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
 /**
@@ -93,7 +97,7 @@ public class TestHAConfiguration {
     // 0.0.0.0, it should substitute the address from the RPC configuration
     // above.
     StandbyCheckpointer checkpointer = new StandbyCheckpointer(conf, fsn);
-    assertAddressMatches("1.2.3.2", checkpointer.getActiveNNAddresses().get(0));
+    assertAddressMatches("1.2.3.2", checkpointer.getRemoteNNAddresses().get(0));
 
     //test when there are three NNs
     // Use non-local addresses to avoid host address matching
@@ -103,12 +107,12 @@ public class TestHAConfiguration {
     NameNode.initializeGenericKeys(conf, "ns1", "nn1");
 
     checkpointer = new StandbyCheckpointer(conf, fsn);
-    assertEquals("Got an unexpected number of possible active NNs", 2, checkpointer
-        .getActiveNNAddresses().size());
+    assertEquals(2, checkpointer.getRemoteNNAddresses().size(),
+        "Got an unexpected number of possible remote NNs");
     assertEquals(new URL("http", "1.2.3.2", DFSConfigKeys.DFS_NAMENODE_HTTP_PORT_DEFAULT, ""),
-        checkpointer.getActiveNNAddresses().get(0));
-    assertAddressMatches("1.2.3.2", checkpointer.getActiveNNAddresses().get(0));
-    assertAddressMatches("1.2.3.3", checkpointer.getActiveNNAddresses().get(1));
+        checkpointer.getRemoteNNAddresses().get(0));
+    assertAddressMatches("1.2.3.2", checkpointer.getRemoteNNAddresses().get(0));
+    assertAddressMatches("1.2.3.3", checkpointer.getRemoteNNAddresses().get(1));
   }
 
   private void assertAddressMatches(String address, URL url) throws MalformedURLException {
@@ -149,5 +153,24 @@ public class TestHAConfiguration {
       GenericTestUtils.assertExceptionContains(
           "Cannot use SecondaryNameNode in an HA cluster", ioe);
     }
+  }
+
+  @Test
+  public void testGetOtherNNGenericConf() throws IOException {
+    String nsId = "ns1";
+    String host1 = "1.2.3.1";
+    String host2 = "1.2.3.2";
+    Configuration conf = getHAConf(nsId, host1, host2);
+    conf.set(DFSUtil.addKeySuffixes(
+        DFSConfigKeys.DFS_NAMENODE_SERVICE_RPC_ADDRESS_KEY, nsId, "nn1"),
+        host1 + ":54321");
+    conf.set(DFSConfigKeys.DFS_NAMESERVICE_ID, "ns1");
+    NameNode.initializeGenericKeys(conf, "ns1", "nn1");
+    List<Configuration> others = HAUtil.getConfForOtherNodes(conf);
+    Configuration nn2Conf = others.get(0);
+    assertEquals(nn2Conf.get(DFSConfigKeys.DFS_HA_NAMENODE_ID_KEY), "nn2");
+    assertTrue(!conf.get(DFSConfigKeys.DFS_NAMENODE_RPC_ADDRESS_KEY)
+        .equals(nn2Conf.get(DFSConfigKeys.DFS_NAMENODE_RPC_ADDRESS_KEY)));
+    assertNull(nn2Conf.get(DFSConfigKeys.DFS_NAMENODE_SERVICE_RPC_ADDRESS_KEY));
   }
 }

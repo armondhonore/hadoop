@@ -41,7 +41,7 @@ import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.yarn.exceptions.NMNotYetReadyException;
 import org.apache.hadoop.yarn.ipc.YarnRPC;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.util.Preconditions;
 
 @Public
 @Unstable
@@ -63,7 +63,8 @@ public class ServerProxy {
     RetryPolicy retryPolicy = null;
     if (maxWaitTime == -1) {
       // wait forever.
-      retryPolicy = RetryPolicies.RETRY_FOREVER;
+      retryPolicy = RetryPolicies.retryForeverWithFixedSleep(retryIntervalMS,
+          TimeUnit.MILLISECONDS);
     } else {
       retryPolicy =
           RetryPolicies.retryUpToMaximumTimeWithFixedSleep(maxWaitTime,
@@ -76,8 +77,14 @@ public class ServerProxy {
     exceptionToPolicyMap.put(ConnectException.class, retryPolicy);
     exceptionToPolicyMap.put(NoRouteToHostException.class, retryPolicy);
     exceptionToPolicyMap.put(UnknownHostException.class, retryPolicy);
+    exceptionToPolicyMap.put(ConnectTimeoutException.class, retryPolicy);
     exceptionToPolicyMap.put(RetriableException.class, retryPolicy);
     exceptionToPolicyMap.put(SocketException.class, retryPolicy);
+    
+    /*
+     * Still keeping this to cover case like newer client talking
+     * to an older version of server
+     */
     exceptionToPolicyMap.put(NMNotYetReadyException.class, retryPolicy);
 
     return RetryPolicies.retryByException(RetryPolicies.TRY_ONCE_THEN_FAIL,

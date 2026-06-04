@@ -20,15 +20,15 @@ package org.apache.hadoop.hdfs.server.datanode;
 import static org.apache.hadoop.test.MetricsAsserts.assertCounter;
 import static org.apache.hadoop.test.MetricsAsserts.getLongCounter;
 import static org.apache.hadoop.test.MetricsAsserts.getMetrics;
-import static org.hamcrest.core.Is.is;
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.util.UUID;
-
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.event.Level;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.DFSClient;
@@ -43,12 +43,13 @@ import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsVolumeSpi;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.hdfs.server.protocol.*;
+import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage;
 import org.apache.hadoop.hdfs.server.protocol.ReceivedDeletedBlockInfo.BlockStatus;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.apache.log4j.Level;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 /**
  * This test verifies that incremental block reports from a single DataNode are
@@ -61,7 +62,8 @@ import org.junit.Test;
  *  in the future).
  */
 public class TestIncrementalBrVariations {
-  public static final Log LOG = LogFactory.getLog(TestIncrementalBrVariations.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(TestIncrementalBrVariations.class);
 
   private static final short NUM_DATANODES = 1;
   static final int BLOCK_SIZE = 1024;
@@ -79,16 +81,16 @@ public class TestIncrementalBrVariations {
   private DatanodeRegistration dn0Reg;  // DataNodeRegistration for dn0
 
   static {
-    GenericTestUtils.setLogLevel(NameNode.stateChangeLog, Level.ALL);
-    GenericTestUtils.setLogLevel(BlockManager.blockLog, Level.ALL);
-    GenericTestUtils.setLogLevel(NameNode.blockStateChangeLog, Level.ALL);
+    GenericTestUtils.setLogLevel(NameNode.stateChangeLog, Level.TRACE);
+    GenericTestUtils.setLogLevel(BlockManager.blockLog, Level.TRACE);
+    GenericTestUtils.setLogLevel(NameNode.blockStateChangeLog, Level.TRACE);
     GenericTestUtils
-        .setLogLevel(LogFactory.getLog(FSNamesystem.class), Level.ALL);
-    GenericTestUtils.setLogLevel(DataNode.LOG, Level.ALL);
-    GenericTestUtils.setLogLevel(TestIncrementalBrVariations.LOG, Level.ALL);
+        .setLogLevel(LoggerFactory.getLogger(FSNamesystem.class), Level.TRACE);
+    GenericTestUtils.setLogLevel(DataNode.LOG, Level.TRACE);
+    GenericTestUtils.setLogLevel(TestIncrementalBrVariations.LOG, Level.TRACE);
   }
 
-  @Before
+  @BeforeEach
   public void startUpCluster() throws IOException {
     conf = new Configuration();
     cluster = new MiniDFSCluster.Builder(conf).numDataNodes(NUM_DATANODES).build();
@@ -100,12 +102,15 @@ public class TestIncrementalBrVariations {
     dn0Reg = dn0.getDNRegistrationForBP(poolId);
   }
 
-  @After
+  @AfterEach
   public void shutDownCluster() throws IOException {
-    client.close();
-    fs.close();
-    cluster.shutdownDataNodes();
-    cluster.shutdown();
+    if (cluster != null) {
+      client.close();
+      fs.close();
+      cluster.shutdownDataNodes();
+      cluster.shutdown();
+      cluster = null;
+    }
   }
 
   /**
@@ -134,7 +139,7 @@ public class TestIncrementalBrVariations {
     // Get the block list for the file with the block locations.
     LocatedBlocks blocks = client.getLocatedBlocks(
         filePath.toString(), 0, BLOCK_SIZE * NUM_BLOCKS);
-    assertThat(cluster.getNamesystem().getUnderReplicatedBlocks(), is(0L));
+    assertThat(cluster.getNamesystem().getUnderReplicatedBlocks()).isEqualTo(0L);
     return blocks;
   }
 
@@ -170,7 +175,8 @@ public class TestIncrementalBrVariations {
 
         assertTrue(foundBlockOnStorage);
         reports[i] =
-            new StorageReceivedDeletedBlocks(volume.getStorageID(), rdbi);
+            new StorageReceivedDeletedBlocks(
+                new DatanodeStorage(volume.getStorageID()), rdbi);
 
         if (splitReports) {
           // If we are splitting reports then send the report for this storage now.
@@ -187,9 +193,10 @@ public class TestIncrementalBrVariations {
       }
 
       // Make sure that the deleted block from each storage was picked up
-      // by the NameNode.
-      assertThat(cluster.getNamesystem().getMissingBlocksCount(),
-          is((long) reports.length));
+      // by the NameNode.  IBRs are async, make sure the NN processes
+      // all of them.
+      cluster.getNamesystem().getBlockManager().flushBlockOps();
+      assertThat(cluster.getNamesystem().getMissingBlocksCount()).isEqualTo((long) reports.length);
     }
   }
 
@@ -199,11 +206,12 @@ public class TestIncrementalBrVariations {
    * @throws IOException
    * @throws InterruptedException
    */
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testDataNodeDoesNotSplitReports()
       throws IOException, InterruptedException {
     LocatedBlocks blocks = createFileGetBlocks(GenericTestUtils.getMethodName());
-    assertThat(cluster.getDataNodes().size(), is(1));
+    assertThat(cluster.getDataNodes().size()).isEqualTo(1);
 
     // Remove all blocks from the DataNode.
     for (LocatedBlock block : blocks.getLocatedBlocks()) {
@@ -227,15 +235,6 @@ public class TestIncrementalBrVariations {
     return new Block(10000000L, 100L, 1048576L);
   }
 
-  private static StorageReceivedDeletedBlocks[] makeReportForReceivedBlock(
-      Block block, DatanodeStorage storage) {
-    ReceivedDeletedBlockInfo[] receivedBlocks = new ReceivedDeletedBlockInfo[1];
-    receivedBlocks[0] = new ReceivedDeletedBlockInfo(block, BlockStatus.RECEIVED_BLOCK, null);
-    StorageReceivedDeletedBlocks[] reports = new StorageReceivedDeletedBlocks[1];
-    reports[0] = new StorageReceivedDeletedBlocks(storage, receivedBlocks);
-    return reports;
-  }
-
   /**
    * Verify that the NameNode can learn about new storages from incremental
    * block reports.
@@ -244,19 +243,22 @@ public class TestIncrementalBrVariations {
    * @throws IOException
    * @throws InterruptedException
    */
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testNnLearnsNewStorages()
       throws IOException, InterruptedException {
 
     // Generate a report for a fake block on a fake storage.
     final String newStorageUuid = UUID.randomUUID().toString();
     final DatanodeStorage newStorage = new DatanodeStorage(newStorageUuid);
-    StorageReceivedDeletedBlocks[] reports = makeReportForReceivedBlock(
-        getDummyBlock(), newStorage);
+    StorageReceivedDeletedBlocks[] reports = DFSTestUtil.
+        makeReportForReceivedBlock(getDummyBlock(), BlockStatus.RECEIVED_BLOCK,
+            newStorage);
 
     // Send the report to the NN.
     cluster.getNameNodeRpc().blockReceivedAndDeleted(dn0Reg, poolId, reports);
-
+    // IBRs are async, make sure the NN processes all of them.
+    cluster.getNamesystem().getBlockManager().flushBlockOps();
     // Make sure that the NN has learned of the new storage.
     DatanodeStorageInfo storageInfo = cluster.getNameNode()
                                              .getNamesystem()

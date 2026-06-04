@@ -16,7 +16,9 @@
 function hadoop_usage()
 {
   echo "Usage: slsrun.sh <OPTIONS> "
-  echo "                 --input-rumen=<FILE1,FILE2,...>  | --input-sls=<FILE1,FILE2,...>"
+  echo "                 --tracetype=<SYNTH | SLS | RUMEN>"
+  echo "                 --tracelocation=<FILE1,FILE2,...>"
+  echo "                 (deprecated --input-rumen=<FILE1,FILE2,...>  | --input-sls=<FILE1,FILE2,...>)"
   echo "                 --output-dir=<SLS_SIMULATION_OUTPUT_DIRECTORY>"
   echo "                 [--nodes=<SLS_NODES_FILE>]"
   echo "                 [--track-jobs=<JOBID1,JOBID2,...>]"
@@ -32,6 +34,12 @@ function parse_args()
       ;;
       --input-sls=*)
         inputsls=${i#*=}
+      ;;
+      --tracetype=*)
+        tracetype=${i#*=}
+      ;;
+      --tracelocation=*)
+        tracelocation=${i#*=}
       ;;
       --output-dir=*)
         outputdir=${i#*=}
@@ -52,14 +60,12 @@ function parse_args()
     esac
   done
 
-  if [[ -z "${inputrumen}" && -z "${inputsls}" ]] ; then
-    hadoop_error "ERROR: Either --input-rumen or --input-sls must be specified."
-    hadoop_exit_with_usage 1
+  if [[ -z "${inputrumen}" && -z "${inputsls}" && -z "${tracetype}" ]] ; then
+    hadoop_error "ERROR: Either --input-rumen, --input-sls, or --tracetype (with --tracelocation) must be specified."
   fi
 
-  if [[ -n "${inputrumen}" && -n "${inputsls}" ]] ; then
-    hadoop_error "ERROR: Only specify one of --input-rumen or --input-sls."
-    hadoop_exit_with_usage 1
+  if [[ -n "${inputrumen}" && -n "${inputsls}" && -n "${tracetype}" ]] ; then
+    hadoop_error "ERROR: Only specify one of --input-rumen, --input-sls, or --tracetype (with --tracelocation)"
   fi
 
   if [[ -z "${outputdir}" ]] ; then
@@ -68,19 +74,27 @@ function parse_args()
   fi
 }
 
-function calculate_classpath() {
-  hadoop_debug "Injecting TOOL_PATH into CLASSPATH"
-  hadoop_add_classpath "${TOOL_PATH}"
-  hadoop_debug "Injecting ${HADOOP_PREFIX}/share/hadoop/tools/sls/html into CLASSPATH"
-  hadoop_add_classpath "${HADOOP_PREFIX}/share/hadoop/tools/sls/html"
+function calculate_classpath
+{
+  hadoop_add_to_classpath_tools hadoop-sls
+
+  hadoop_add_classpath "${HADOOP_YARN_HOME}/${YARN_DIR}/timelineservice"'/*'
 }
 
 function run_simulation() {
-  if [[ "${inputsls}" == "" ]] ; then
-    hadoop_add_param args -inputrumen "-inputrumen ${inputrumen}"
-  else
-    hadoop_add_param args -inputsls "-inputsls ${inputsls}"
-  fi
+
+  local args
+
+   if [[ "${inputsls}" != "" ]] ; then
+        hadoop_add_param args -inputsls "-inputsls ${inputsls}"
+   fi
+   if [[ "${inputrumen}" != "" ]] ; then
+        hadoop_add_param args -inputrumen "-inputrumen ${inputrumen}"
+   fi
+   if [[ "${tracetype}" != "" ]] ; then
+        hadoop_add_param args -tracetype "-tracetype ${tracetype}"
+        hadoop_add_param args -tracelocation "-tracelocation ${tracelocation}"
+   fi
 
   hadoop_add_param args -output "-output ${outputdir}"
 
@@ -96,8 +110,7 @@ function run_simulation() {
     hadoop_add_param args -printsimulation "-printsimulation"
   fi
 
-  hadoop_debug "Appending HADOOP_CLIENT_OPTS onto HADOOP_OPTS"
-  HADOOP_OPTS="${HADOOP_OPTS} ${HADOOP_CLIENT_OPTS}"
+  hadoop_add_client_opts
 
   hadoop_finalize
   # shellcheck disable=SC2086
@@ -105,18 +118,19 @@ function run_simulation() {
 }
 
 # let's locate libexec...
-if [[ -n "${HADOOP_PREFIX}" ]]; then
-  DEFAULT_LIBEXEC_DIR="${HADOOP_PREFIX}/libexec"
+if [[ -n "${HADOOP_HOME}" ]]; then
+  HADOOP_DEFAULT_LIBEXEC_DIR="${HADOOP_HOME}/libexec"
 else
   this="${BASH_SOURCE-$0}"
   bin=$(cd -P -- "$(dirname -- "${this}")" >/dev/null && pwd -P)
-  DEFAULT_LIBEXEC_DIR="${bin}/../../../../../libexec"
+  HADOOP_DEFAULT_LIBEXEC_DIR="${bin}/../../../../../libexec"
 fi
 
-HADOOP_LIBEXEC_DIR="${HADOOP_LIBEXEC_DIR:-$DEFAULT_LIBEXEC_DIR}"
+HADOOP_LIBEXEC_DIR="${HADOOP_LIBEXEC_DIR:-$HADOOP_DEFAULT_LIBEXEC_DIR}"
 # shellcheck disable=SC2034
 HADOOP_NEW_CONFIG=true
 if [[ -f "${HADOOP_LIBEXEC_DIR}/hadoop-config.sh" ]]; then
+  # shellcheck disable=SC1090
   . "${HADOOP_LIBEXEC_DIR}/hadoop-config.sh"
 else
   echo "ERROR: Cannot execute ${HADOOP_LIBEXEC_DIR}/hadoop-config.sh." 2>&1

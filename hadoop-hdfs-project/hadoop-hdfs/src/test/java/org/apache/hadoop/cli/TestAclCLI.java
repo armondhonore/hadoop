@@ -22,9 +22,9 @@ import org.apache.hadoop.cli.util.CommandExecutor.Result;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 public class TestAclCLI extends CLITestHelperDFS {
   private MiniDFSCluster cluster = null;
@@ -32,26 +32,34 @@ public class TestAclCLI extends CLITestHelperDFS {
   private String namenode = null;
   private String username = null;
 
-  @Before
+  protected void initConf() {
+    conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_ACLS_ENABLED_KEY, true);
+    conf.setBoolean(
+        DFSConfigKeys.DFS_NAMENODE_POSIX_ACL_INHERITANCE_ENABLED_KEY, false);
+  }
+
+  @BeforeEach
   @Override
   public void setUp() throws Exception {
     super.setUp();
-    conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_ACLS_ENABLED_KEY, true);
+    initConf();
     cluster = new MiniDFSCluster.Builder(conf).numDataNodes(1).build();
     fs = cluster.getFileSystem();
     namenode = conf.get(DFSConfigKeys.FS_DEFAULT_NAME_KEY, "file:///");
     username = System.getProperty("user.name");
   }
 
-  @After
+  @AfterEach
   @Override
   public void tearDown() throws Exception {
     super.tearDown();
     if (fs != null) {
       fs.close();
+      fs = null;
     }
     if (cluster != null) {
       cluster.shutdown();
+      cluster = null;
     }
   }
 
@@ -73,7 +81,7 @@ public class TestAclCLI extends CLITestHelperDFS {
 
   @Override
   protected Result execute(CLICommand cmd) throws Exception {
-    return cmd.getExecutor(namenode).executeCommand(cmd.getCmd());
+    return cmd.getExecutor(namenode, conf).executeCommand(cmd.getCmd());
   }
 
   @Test

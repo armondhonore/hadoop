@@ -17,19 +17,18 @@
  */
 package org.apache.hadoop.hdfs;
 
-import com.google.common.primitives.Ints;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.thirdparty.com.google.common.primitives.Ints;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.hdfs.DFSInputStream.ReadStatistics;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.client.HdfsDataInputStream;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.io.IOUtils;
-import org.junit.Assert;
-import org.junit.Test;
+import org.apache.hadoop.net.NetUtils;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.nio.BufferOverflowException;
@@ -38,8 +37,14 @@ import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.UUID;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 public class TestExternalBlockReader {
-  private static final Log LOG = LogFactory.getLog(TestExternalBlockReader.class);
+  private static final Logger LOG =
+          LoggerFactory.getLogger(TestExternalBlockReader.class);
 
   private static long SEED = 1234;
 
@@ -62,7 +67,7 @@ public class TestExternalBlockReader {
       IOUtils.readFully(stream, buf, 0, TEST_LENGTH);
       byte expected[] = DFSTestUtil.
           calculateFileContentsFromSeed(SEED, TEST_LENGTH);
-      Assert.assertArrayEquals(expected, buf);
+      assertArrayEquals(expected, buf);
       stream.close();
     } finally {
       dfs.close();
@@ -81,6 +86,7 @@ public class TestExternalBlockReader {
     String fileName;
     long blockId;
     String blockPoolId;
+    long genstamp;
     boolean verifyChecksum;
     String clientName;
     boolean allowShortCircuit;
@@ -97,6 +103,12 @@ public class TestExternalBlockReader {
     public ReplicaAccessorBuilder setBlock(long blockId, String blockPoolId) {
       this.blockId = blockId;
       this.blockPoolId = blockPoolId;
+      return this;
+    }
+
+    @Override
+    public ReplicaAccessorBuilder setGenerationStamp(long genstamp) {
+      this.genstamp = genstamp;
       return this;
     }
 
@@ -154,12 +166,14 @@ public class TestExternalBlockReader {
     int numCloses = 0;
     String error = "";
     String prefix = "";
+    final long genstamp;
 
     SyntheticReplicaAccessor(SyntheticReplicaAccessorBuilder builder) {
       this.length = builder.visibleLength;
       this.contents = DFSTestUtil.
           calculateFileContentsFromSeed(SEED, Ints.checkedCast(length));
       this.builder = builder;
+      this.genstamp = builder.genstamp;
       String uuid = this.builder.conf.
           get(SYNTHETIC_BLOCK_READER_TEST_UUID_KEY);
       LinkedList<SyntheticReplicaAccessor> accessorsList =
@@ -181,14 +195,17 @@ public class TestExternalBlockReader {
             "than 0 at " + pos);
         return 0;
       }
-      int i = 0, nread = 0;
-      for (int ipos = (int)pos;
+      int i = off, nread = 0, ipos;
+      for (ipos = (int)pos;
            (ipos < contents.length) && (nread < len);
            ipos++) {
         buf[i++] = contents[ipos];
         nread++;
         totalRead++;
         LOG.info("ipos = " + ipos + ", contents.length = " + contents.length + ", nread = " + nread + ", len = " + len);
+      }
+      if ((nread == 0) && (ipos >= contents.length)) {
+        return -1;
       }
       return nread;
     }
@@ -202,8 +219,8 @@ public class TestExternalBlockReader {
             "than 0 at " + pos);
         return 0;
       }
-      int i = 0, nread = 0;
-      for (int ipos = (int)pos;
+      int i = 0, nread = 0, ipos;
+      for (ipos = (int)pos;
            ipos < contents.length; ipos++) {
         try {
           buf.put(contents[ipos]);
@@ -212,6 +229,9 @@ public class TestExternalBlockReader {
         }
         nread++;
         totalRead++;
+      }
+      if ((nread == 0) && (ipos >= contents.length)) {
+        return -1;
       }
       return nread;
     }
@@ -231,8 +251,17 @@ public class TestExternalBlockReader {
       return true;
     }
 
+    @Override
+    public int getNetworkDistance() {
+      return 0;
+    }
+
     synchronized String getError() {
       return error;
+    }
+
+    long getGenerationStamp() {
+      return genstamp;
     }
 
     synchronized void addError(String text) {
@@ -252,7 +281,7 @@ public class TestExternalBlockReader {
     String uuid = UUID.randomUUID().toString();
     conf.set(SYNTHETIC_BLOCK_READER_TEST_UUID_KEY, uuid);
     MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf)
-        .numDataNodes(1)
+        .hosts(new String[] {NetUtils.getLocalHostname()})
         .build();
     final int TEST_LENGTH = 2047;
     DistributedFileSystem dfs = cluster.getFileSystem();
@@ -261,34 +290,44 @@ public class TestExternalBlockReader {
       HdfsDataInputStream stream =
           (HdfsDataInputStream)dfs.open(new Path("/a"));
       byte buf[] = new byte[TEST_LENGTH];
-      IOUtils.readFully(stream, buf, 0, TEST_LENGTH);
+      stream.seek(1000);
+      IOUtils.readFully(stream, buf, 1000, TEST_LENGTH - 1000);
+      stream.seek(0);
+      IOUtils.readFully(stream, buf, 0, 1000);
       byte expected[] = DFSTestUtil.
           calculateFileContentsFromSeed(SEED, TEST_LENGTH);
       ReadStatistics stats = stream.getReadStatistics();
-      Assert.assertEquals(1024, stats.getTotalShortCircuitBytesRead());
-      Assert.assertEquals(2047, stats.getTotalLocalBytesRead());
-      Assert.assertEquals(2047, stats.getTotalBytesRead());
-      Assert.assertArrayEquals(expected, buf);
+      assertEquals(1024, stats.getTotalShortCircuitBytesRead());
+      assertEquals(2047, stats.getTotalLocalBytesRead());
+      assertEquals(2047, stats.getTotalBytesRead());
+      assertArrayEquals(expected, buf);
       stream.close();
       ExtendedBlock block = DFSTestUtil.getFirstBlock(dfs, new Path("/a"));
-      Assert.assertNotNull(block);
+      assertNotNull(block);
       LinkedList<SyntheticReplicaAccessor> accessorList = accessors.get(uuid);
-      Assert.assertNotNull(accessorList);
-      Assert.assertEquals(2, accessorList.size());
+      assertNotNull(accessorList);
+      assertEquals(3, accessorList.size());
       SyntheticReplicaAccessor accessor = accessorList.get(0);
-      Assert.assertTrue(accessor.builder.allowShortCircuit);
-      Assert.assertEquals(block.getBlockPoolId(),
+      assertTrue(accessor.builder.allowShortCircuit);
+      assertEquals(block.getBlockPoolId(),
           accessor.builder.blockPoolId);
-      Assert.assertEquals(block.getBlockId(),
+      assertEquals(block.getBlockId(),
           accessor.builder.blockId);
-      Assert.assertEquals(dfs.getClient().clientName,
+      assertEquals(dfs.getClient().clientName,
           accessor.builder.clientName);
-      Assert.assertEquals("/a", accessor.builder.fileName);
-      Assert.assertTrue(accessor.builder.verifyChecksum);
-      Assert.assertEquals(1024L, accessor.builder.visibleLength);
-      Assert.assertEquals(1024L, accessor.totalRead);
-      Assert.assertEquals("", accessor.getError());
-      Assert.assertEquals(1, accessor.numCloses);
+      assertEquals("/a", accessor.builder.fileName);
+      assertEquals(block.getGenerationStamp(),
+          accessor.getGenerationStamp());
+      assertTrue(accessor.builder.verifyChecksum);
+      assertEquals(1024L, accessor.builder.visibleLength);
+      assertEquals(24L, accessor.totalRead);
+      assertEquals("", accessor.getError());
+      assertEquals(1, accessor.numCloses);
+      byte[] tempBuf = new byte[5];
+      assertEquals(-1, accessor.read(TEST_LENGTH,
+            tempBuf, 0, 0));
+      assertEquals(-1, accessor.read(TEST_LENGTH,
+            tempBuf, 0, tempBuf.length));
       accessors.remove(uuid);
     } finally {
       dfs.close();

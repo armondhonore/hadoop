@@ -18,10 +18,10 @@
 
 package org.apache.hadoop.cli;
 
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.cli.util.CLICommand;
 import org.apache.hadoop.cli.util.CLICommandCacheAdmin;
 import org.apache.hadoop.cli.util.CLICommandTypes;
@@ -29,6 +29,7 @@ import org.apache.hadoop.cli.util.CLITestCmd;
 import org.apache.hadoop.cli.util.CacheAdminCmdExecutor;
 import org.apache.hadoop.cli.util.CommandExecutor;
 import org.apache.hadoop.cli.util.CommandExecutor.Result;
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
@@ -36,20 +37,21 @@ import org.apache.hadoop.hdfs.HDFSPolicyProvider;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.tools.CacheAdmin;
 import org.apache.hadoop.security.authorize.PolicyProvider;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.xml.sax.SAXException;
 
 public class TestCacheAdminCLI extends CLITestHelper {
 
-  public static final Log LOG = LogFactory.getLog(TestCacheAdminCLI.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(TestCacheAdminCLI.class);
 
   protected MiniDFSCluster dfsCluster = null;
   protected FileSystem fs = null;
   protected String namenode = null;
 
-  @Before
+  @BeforeEach
   @Override
   public void setUp() throws Exception {
     super.setUp();
@@ -66,18 +68,19 @@ public class TestCacheAdminCLI extends CLITestHelper {
     username = System.getProperty("user.name");
 
     fs = dfsCluster.getFileSystem();
-    assertTrue("Not a HDFS: "+fs.getUri(),
-               fs instanceof DistributedFileSystem);
+    assertTrue(fs instanceof DistributedFileSystem, "Not a HDFS: " + fs.getUri());
   }
 
-  @After
+  @AfterEach
   @Override
   public void tearDown() throws Exception {
     if (fs != null) {
       fs.close();
+      fs = null;
     }
     if (dfsCluster != null) {
       dfsCluster.shutdown();
+      dfsCluster = null;
     }
     Thread.sleep(2000);
     super.tearDown();
@@ -119,18 +122,18 @@ public class TestCacheAdminCLI extends CLITestHelper {
     }
 
     @Override
-    public CommandExecutor getExecutor(String tag)
+    public CommandExecutor getExecutor(String tag, Configuration conf)
         throws IllegalArgumentException {
       if (getType() instanceof CLICommandCacheAdmin) {
         return new CacheAdminCmdExecutor(tag, new CacheAdmin(conf));
       }
-      return super.getExecutor(tag);
+      return super.getExecutor(tag, conf);
     }
   }
 
   @Override
   protected Result execute(CLICommand cmd) throws Exception {
-    return cmd.getExecutor("").executeCommand(cmd.getCmd());
+    return cmd.getExecutor("", conf).executeCommand(cmd.getCmd());
   }
 
   @Test

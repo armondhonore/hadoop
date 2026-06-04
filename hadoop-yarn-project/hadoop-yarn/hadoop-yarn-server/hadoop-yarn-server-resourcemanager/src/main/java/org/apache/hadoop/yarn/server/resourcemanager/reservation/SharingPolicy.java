@@ -20,6 +20,7 @@ package org.apache.hadoop.yarn.server.resourcemanager.reservation;
 
 import org.apache.hadoop.classification.InterfaceAudience.LimitedPrivate;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
+import org.apache.hadoop.yarn.api.records.ReservationId;
 import org.apache.hadoop.yarn.server.resourcemanager.reservation.exceptions.PlanningException;
 
 /**
@@ -32,12 +33,12 @@ import org.apache.hadoop.yarn.server.resourcemanager.reservation.exceptions.Plan
 public interface SharingPolicy {
 
   /**
-   * Initialize this policy
+   * Initialize this policy.
    * 
    * @param planQueuePath the name of the queue for this plan
    * @param conf the system configuration
    */
-  public void init(String planQueuePath, ReservationSchedulerConfiguration conf);
+  void init(String planQueuePath, ReservationSchedulerConfiguration conf);
 
   /**
    * This method runs the policy validation logic, and return true/false on
@@ -50,8 +51,32 @@ public interface SharingPolicy {
    * @throws PlanningException if the policy is respected if we add this
    *           {@link ReservationAllocation} to the {@link Plan}
    */
-  public void validate(Plan plan, ReservationAllocation newAllocation)
+  void validate(Plan plan, ReservationAllocation newAllocation)
       throws PlanningException;
+
+  /**
+   * This method provide a (partial) instantaneous validation by applying
+   * business rules (such as max number of parallel containers allowed for a
+   * user). To provide the agent with more feedback the returned parameter is
+   * expressed in number of containers that can be fit in this time according to
+   * the business rules.
+   *
+   * @param available the amount of resources that would be offered if not
+   *          constrained by the policy
+   * @param plan reference the the current Plan
+   * @param user the username
+   * @param start the start time for the range we are querying
+   * @param end the end time for the range we are querying
+   * @param oldId (optional) the id of a reservation being updated
+   *
+   * @return the available resources expressed as a
+   *         {@link RLESparseResourceAllocation}
+   *
+   * @throws PlanningException throws if the request is not valid
+   */
+  RLESparseResourceAllocation availableResources(
+      RLESparseResourceAllocation available, Plan plan, String user,
+      ReservationId oldId, long start, long end) throws PlanningException;
 
   /**
    * Returns the time range before and after the current reservation considered
@@ -61,6 +86,6 @@ public interface SharingPolicy {
    * 
    * @return validWindow the window of validity considered by the policy.
    */
-  public long getValidWindow();
+  long getValidWindow();
 
 }

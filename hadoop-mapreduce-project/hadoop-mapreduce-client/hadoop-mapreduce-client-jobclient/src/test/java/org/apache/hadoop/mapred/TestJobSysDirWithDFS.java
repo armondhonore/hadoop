@@ -21,10 +21,6 @@ package org.apache.hadoop.mapred;
 import java.io.DataOutputStream;
 import java.io.IOException;
 
-import junit.framework.TestCase;
-
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -32,13 +28,19 @@ import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapreduce.MapReduceTestUtil;
 import org.apache.hadoop.mapreduce.server.jobtracker.JTConfig;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A JUnit test to test Job System Directory with Mini-DFS.
  */
-public class TestJobSysDirWithDFS extends TestCase {
-  private static final Log LOG =
-    LogFactory.getLog(TestJobSysDirWithDFS.class.getName());
+public class TestJobSysDirWithDFS {
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestJobSysDirWithDFS.class);
   
   static final int NUM_MAPS = 10;
   static final int NUM_SAMPLES = 100000;
@@ -115,7 +117,7 @@ public class TestJobSysDirWithDFS extends TestCase {
     //  between Job Client & Job Tracker
     assertTrue(result.job.isSuccessful());
   }
-
+  @Test
   public void testWithDFS() throws IOException {
     MiniDFSCluster dfs = null;
     MiniMRCluster mr = null;

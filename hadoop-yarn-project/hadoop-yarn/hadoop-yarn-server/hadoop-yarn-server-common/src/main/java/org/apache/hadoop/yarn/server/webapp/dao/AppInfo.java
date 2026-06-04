@@ -28,9 +28,13 @@ import org.apache.hadoop.classification.InterfaceAudience.Public;
 import org.apache.hadoop.classification.InterfaceStability.Evolving;
 
 import org.apache.hadoop.yarn.api.records.ApplicationReport;
+import org.apache.hadoop.yarn.api.records.ApplicationResourceUsageReport;
 import org.apache.hadoop.yarn.api.records.FinalApplicationStatus;
+import org.apache.hadoop.yarn.api.records.ResourceInformation;
 import org.apache.hadoop.yarn.api.records.YarnApplicationState;
 import org.apache.hadoop.yarn.util.Times;
+import org.apache.hadoop.yarn.util.resource.ResourceUtils;
+import org.apache.hadoop.yarn.util.StringHelper;
 
 @Public
 @Evolving
@@ -53,15 +57,24 @@ public class AppInfo {
   protected String originalTrackingUrl;
   protected String trackingUrl;
   protected FinalApplicationStatus finalAppStatus;
-  protected long submittedTime;
+  private long submittedTime;
   protected long startedTime;
+  private long launchTime;
   protected long finishedTime;
   protected long elapsedTime;
   protected String applicationTags;
   protected int priority;
-  private int allocatedCpuVcores;
-  private int allocatedMemoryMB;
+  private long allocatedCpuVcores;
+  private long allocatedMemoryMB;
+  private long allocatedGpus;
+  private long reservedCpuVcores;
+  private long reservedMemoryMB;
+  private long reservedGpus;
   protected boolean unmanagedApplication;
+  private String appNodeLabelExpression;
+  private String amNodeLabelExpression;
+  private String aggregateResourceAllocation;
+  private String aggregatePreemptedResourceAllocation;
 
   public AppInfo() {
     // JAXB needs this
@@ -82,8 +95,9 @@ public class AppInfo {
     diagnosticsInfo = app.getDiagnostics();
     trackingUrl = app.getTrackingUrl();
     originalTrackingUrl = app.getOriginalTrackingUrl();
-    submittedTime = app.getStartTime();
+    submittedTime = app.getSubmitTime();
     startedTime = app.getStartTime();
+    launchTime = app.getLaunchTime();
     finishedTime = app.getFinishTime();
     elapsedTime = Times.elapsed(startedTime, finishedTime);
     finalAppStatus = app.getFinalApplicationStatus();
@@ -91,21 +105,43 @@ public class AppInfo {
     if (app.getPriority() != null) {
       priority = app.getPriority().getPriority();
     }
-    if (app.getApplicationResourceUsageReport() != null) {
-      runningContainers = app.getApplicationResourceUsageReport()
+    ApplicationResourceUsageReport usageReport =
+        app.getApplicationResourceUsageReport();
+    if (usageReport != null) {
+      runningContainers = usageReport
           .getNumUsedContainers();
-      if (app.getApplicationResourceUsageReport().getUsedResources() != null) {
-        allocatedCpuVcores = app.getApplicationResourceUsageReport()
+      if (usageReport.getUsedResources() != null) {
+        allocatedCpuVcores = usageReport
             .getUsedResources().getVirtualCores();
-        allocatedMemoryMB = app.getApplicationResourceUsageReport()
-            .getUsedResources().getMemory();
+        allocatedMemoryMB = usageReport
+            .getUsedResources().getMemorySize();
+        reservedCpuVcores = usageReport
+            .getReservedResources().getVirtualCores();
+        reservedMemoryMB = usageReport
+            .getReservedResources().getMemorySize();
+        Integer gpuIndex = ResourceUtils.getResourceTypeIndex()
+            .get(ResourceInformation.GPU_URI);
+        allocatedGpus = -1;
+        reservedGpus = -1;
+        if (gpuIndex != null) {
+          allocatedGpus = usageReport.getUsedResources()
+              .getResourceValue(ResourceInformation.GPU_URI);
+          reservedGpus = usageReport.getReservedResources()
+              .getResourceValue(ResourceInformation.GPU_URI);
+        }
       }
+      aggregateResourceAllocation = StringHelper.getResourceSecondsString(
+          usageReport.getResourceSecondsMap());
+      aggregatePreemptedResourceAllocation = StringHelper
+        .getResourceSecondsString(usageReport.getPreemptedResourceSecondsMap());
     }
     progress = app.getProgress() * 100; // in percent
     if (app.getApplicationTags() != null && !app.getApplicationTags().isEmpty()) {
       this.applicationTags = CSV_JOINER.join(app.getApplicationTags());
     }
     unmanagedApplication = app.isUnmanagedApp();
+    appNodeLabelExpression = app.getAppNodeLabelExpression();
+    amNodeLabelExpression = app.getAmNodeLabelExpression();
   }
 
   public String getAppId() {
@@ -148,12 +184,28 @@ public class AppInfo {
     return runningContainers;
   }
 
-  public int getAllocatedCpuVcores() {
+  public long getAllocatedCpuVcores() {
     return allocatedCpuVcores;
   }
 
-  public int getAllocatedMemoryMB() {
+  public long getAllocatedMemoryMB() {
     return allocatedMemoryMB;
+  }
+
+  public long getAllocatedGpus() {
+    return allocatedGpus;
+  }
+
+  public long getReservedCpuVcores() {
+    return reservedCpuVcores;
+  }
+
+  public long getReservedMemoryMB() {
+    return reservedMemoryMB;
+  }
+
+  public long getReservedGpus() {
+    return reservedGpus;
   }
 
   public float getProgress() {
@@ -180,6 +232,10 @@ public class AppInfo {
     return submittedTime;
   }
 
+  public long getLaunchTime() {
+    return launchTime;
+  }
+
   public long getStartedTime() {
     return startedTime;
   }
@@ -202,5 +258,21 @@ public class AppInfo {
 
   public int getPriority() {
     return priority;
+  }
+
+  public String getAppNodeLabelExpression() {
+    return appNodeLabelExpression;
+  }
+
+  public String getAmNodeLabelExpression() {
+    return amNodeLabelExpression;
+  }
+
+  public String getAggregateResourceAllocation() {
+    return aggregateResourceAllocation;
+  }
+
+  public String getAggregatePreemptedResourceAllocation() {
+    return aggregatePreemptedResourceAllocation;
   }
 }

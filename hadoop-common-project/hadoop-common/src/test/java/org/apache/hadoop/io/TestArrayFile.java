@@ -20,27 +20,33 @@ package org.apache.hadoop.io;
 
 import java.io.*;
 
-import junit.framework.TestCase;
 
-import org.apache.commons.logging.*;
 import org.apache.hadoop.fs.*;
 import org.apache.hadoop.io.SequenceFile.CompressionType;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.Progressable;
 import org.apache.hadoop.conf.*;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /** Support for flat files of binary key/value pairs. */
-public class TestArrayFile extends TestCase {
-  private static final Log LOG = LogFactory.getLog(TestArrayFile.class);
+public class TestArrayFile {
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestArrayFile.class);
   
-  private static final Path TEST_DIR = new Path(
-      System.getProperty("test.build.data", "/tmp"),
-      TestMapFile.class.getSimpleName());
+  private static final Path TEST_DIR = new Path(GenericTestUtils.getTempPath(
+      TestMapFile.class.getSimpleName()));
   private static String TEST_FILE = new Path(TEST_DIR, "test.array").toString();
 
-  public TestArrayFile(String name) { 
-    super(name); 
-  }
-
+  @Test
   public void testArrayFile() throws Exception {
     Configuration conf = new Configuration();
     FileSystem fs = FileSystem.getLocal(conf);
@@ -49,6 +55,7 @@ public class TestArrayFile extends TestCase {
     readTest(fs, data, TEST_FILE, conf);
   }
 
+  @Test
   public void testEmptyFile() throws Exception {
     Configuration conf = new Configuration();
     FileSystem fs = FileSystem.getLocal(conf);
@@ -119,6 +126,7 @@ public class TestArrayFile extends TestCase {
    * {@code next(), seek()} in and out of range.
    * </pre>
    */
+  @Test
   public void testArrayFileIteration() {
     int SIZE = 10;
     Configuration conf = new Configuration();    
@@ -126,7 +134,7 @@ public class TestArrayFile extends TestCase {
       FileSystem fs = FileSystem.get(conf);
       ArrayFile.Writer writer = new ArrayFile.Writer(conf, fs, TEST_FILE, 
           LongWritable.class, CompressionType.RECORD, defaultProgressable);
-      assertNotNull("testArrayFileIteration error !!!", writer);
+      assertNotNull(writer, "testArrayFileIteration error !!!");
       
       for (int i = 0; i < SIZE; i++)
         writer.append(new LongWritable(i));
@@ -138,17 +146,18 @@ public class TestArrayFile extends TestCase {
       
       for (int i = 0; i < SIZE; i++) {
         nextWritable = (LongWritable)reader.next(nextWritable);
-        assertEquals(nextWritable.get(), i);
+        assertThat(nextWritable.get()).isEqualTo(i);
       }
         
-      assertTrue("testArrayFileIteration seek error !!!",
-          reader.seek(new LongWritable(6)));
+      assertTrue(reader.seek(new LongWritable(6)),
+          "testArrayFileIteration seek error !!!");
       nextWritable = (LongWritable) reader.next(nextWritable);
-      assertTrue("testArrayFileIteration error !!!", reader.key() == 7);
-      assertTrue("testArrayFileIteration error !!!",
-          nextWritable.equals(new LongWritable(7)));
-      assertFalse("testArrayFileIteration error !!!",
-          reader.seek(new LongWritable(SIZE + 5)));
+      assertThat(reader.key()).withFailMessage(
+          "testArrayFileIteration error !!!").isEqualTo(7);
+      assertThat(nextWritable).withFailMessage(
+          "testArrayFileIteration error !!!").isEqualTo(new LongWritable(7));
+      assertFalse(reader.seek(new LongWritable(SIZE + 5)),
+          "testArrayFileIteration error !!!");
       reader.close();
     } catch (Exception ex) {
       fail("testArrayFileWriterConstruction error !!!");

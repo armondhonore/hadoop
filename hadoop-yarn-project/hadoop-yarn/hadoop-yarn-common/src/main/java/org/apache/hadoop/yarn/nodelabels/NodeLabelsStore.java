@@ -30,29 +30,33 @@ import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.NodeLabel;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 
-public abstract class NodeLabelsStore implements Closeable {
-  protected final CommonNodeLabelsManager mgr;
+/**
+ * Interface class for Node label store.
+ */
+public interface NodeLabelsStore extends Closeable {
 
-  public NodeLabelsStore(CommonNodeLabelsManager mgr) {
-    this.mgr = mgr;
-  }
-  
   /**
-   * Store node {@literal ->} label
+   * Store node {@literal ->} label.
+   * @param nodeToLabels node to labels mapping.
+   * @throws IOException io error occur.
    */
-  public abstract void updateNodeToLabelsMappings(
+  void updateNodeToLabelsMappings(
       Map<NodeId, Set<String>> nodeToLabels) throws IOException;
 
   /**
-   * Store new labels
+   * Store new labels.
+   * @param labels labels.
+   * @throws IOException io error occur.
    */
-  public abstract void storeNewClusterNodeLabels(List<NodeLabel> label)
+  void storeNewClusterNodeLabels(List<NodeLabel> labels)
       throws IOException;
 
   /**
-   * Remove labels
+   * Remove labels.
+   * @param labels labels.
+   * @throws IOException io error occur.
    */
-  public abstract void removeClusterNodeLabels(Collection<String> labels)
+  void removeClusterNodeLabels(Collection<String> labels)
       throws IOException;
 
   /**
@@ -60,18 +64,14 @@ public abstract class NodeLabelsStore implements Closeable {
    * ignoreNodeToLabelsMappings is true then node to labels mappings should not
    * be recovered. In case of Distributed NodeLabels setup
    * ignoreNodeToLabelsMappings will be set to true and recover will be invoked
-   * as RM will collect the node labels from NM through registration/HB
+   * as RM will collect the node labels from NM through registration/HB.
    *
-   * @param ignoreNodeToLabelsMappings
-   * @throws IOException
-   * @throws YarnException
+   * @throws IOException io error occur.
+   * @throws YarnException exceptions from yarn servers.
    */
-  public abstract void recover(boolean ignoreNodeToLabelsMappings)
-      throws IOException, YarnException;
-  
-  public void init(Configuration conf) throws Exception {}
-  
-  public CommonNodeLabelsManager getNodeLabelsManager() {
-    return mgr;
-  }
+  void recover() throws IOException, YarnException;
+
+  void init(Configuration conf, CommonNodeLabelsManager mgr)
+      throws Exception;
+
 }

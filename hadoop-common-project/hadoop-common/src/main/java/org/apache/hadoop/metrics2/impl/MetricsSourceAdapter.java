@@ -29,11 +29,10 @@ import javax.management.MBeanInfo;
 import javax.management.ObjectName;
 import javax.management.ReflectionException;
 
-import static com.google.common.base.Preconditions.*;
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.collect.Maps;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import static org.apache.hadoop.util.Preconditions.*;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.util.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
 
 import org.apache.hadoop.metrics2.AbstractMetric;
 import org.apache.hadoop.metrics2.MetricsFilter;
@@ -42,6 +41,8 @@ import org.apache.hadoop.metrics2.MetricsTag;
 import static org.apache.hadoop.metrics2.impl.MetricsConfig.*;
 import org.apache.hadoop.metrics2.util.MBeans;
 import org.apache.hadoop.util.Time;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.apache.hadoop.metrics2.util.Contracts.*;
 
@@ -50,7 +51,8 @@ import static org.apache.hadoop.metrics2.util.Contracts.*;
  */
 class MetricsSourceAdapter implements DynamicMBean {
 
-  private static final Log LOG = LogFactory.getLog(MetricsSourceAdapter.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(MetricsSourceAdapter.class);
 
   private final String prefix, name;
   private final MetricsSource source;
@@ -59,9 +61,9 @@ class MetricsSourceAdapter implements DynamicMBean {
   private final MBeanInfoBuilder infoBuilder;
   private final Iterable<MetricsTag> injectedTags;
 
-  private Iterable<MetricsRecordImpl> lastRecs;
+  private boolean lastRecsCleared;
   private long jmxCacheTS = 0;
-  private int jmxCacheTTL;
+  private long jmxCacheTTL;
   private MBeanInfo infoCache;
   private ObjectName mbeanName;
   private final boolean startMBeans;
@@ -69,7 +71,7 @@ class MetricsSourceAdapter implements DynamicMBean {
   MetricsSourceAdapter(String prefix, String name, String description,
                        MetricsSource source, Iterable<MetricsTag> injectedTags,
                        MetricsFilter recordFilter, MetricsFilter metricFilter,
-                       int jmxCacheTTL, boolean startMBeans) {
+                       long jmxCacheTTL, boolean startMBeans) {
     this.prefix = checkNotNull(prefix, "prefix");
     this.name = checkNotNull(name, "name");
     this.source = checkNotNull(source, "source");
@@ -80,11 +82,14 @@ class MetricsSourceAdapter implements DynamicMBean {
     this.metricFilter = metricFilter;
     this.jmxCacheTTL = checkArg(jmxCacheTTL, jmxCacheTTL > 0, "jmxCacheTTL");
     this.startMBeans = startMBeans;
+    // Initialize to true so we always trigger update MBeanInfo cache the first
+    // time calling updateJmxCache
+    this.lastRecsCleared = true;
   }
 
   MetricsSourceAdapter(String prefix, String name, String description,
                        MetricsSource source, Iterable<MetricsTag> injectedTags,
-                       int period, MetricsConfig conf) {
+                       long period, MetricsConfig conf) {
     this(prefix, name, description, source, injectedTags,
          conf.getFilter(RECORD_FILTER_KEY),
          conf.getFilter(METRIC_FILTER_KEY),
@@ -154,39 +159,43 @@ class MetricsSourceAdapter implements DynamicMBean {
 
   private void updateJmxCache() {
     boolean getAllMetrics = false;
-    synchronized (this) {
+    synchronized(this) {
       if (Time.now() - jmxCacheTS >= jmxCacheTTL) {
         // temporarilly advance the expiry while updating the cache
         jmxCacheTS = Time.now() + jmxCacheTTL;
-        if (lastRecs == null) {
+        // lastRecs might have been set to an object already by another thread.
+        // Track the fact that lastRecs has been reset once to make sure refresh
+        // is correctly triggered.
+        if (lastRecsCleared) {
           getAllMetrics = true;
+          lastRecsCleared = false;
         }
-      } else {
+      }
+      else {
         return;
       }
+    }
 
-      if (getAllMetrics) {
-        MetricsCollectorImpl builder = new MetricsCollectorImpl();
-        getMetrics(builder, true);
-      }
+    // HADOOP-11361: Release lock here for avoid deadlock between
+    // MetricsSystemImpl's lock and MetricsSourceAdapter's lock.
+    Iterable<MetricsRecordImpl> lastRecs = null;
+    if (getAllMetrics) {
+      lastRecs = getMetrics(new MetricsCollectorImpl(), true);
+    }
 
-      updateAttrCache();
-      if (getAllMetrics) {
-        updateInfoCache();
+    synchronized (this) {
+      if (lastRecs != null) {
+        updateAttrCache(lastRecs);
+        updateInfoCache(lastRecs);
       }
       jmxCacheTS = Time.now();
-      lastRecs = null; // in case regular interval update is not running
+      lastRecsCleared = true;
     }
   }
 
   Iterable<MetricsRecordImpl> getMetrics(MetricsCollectorImpl builder,
                                          boolean all) {
     builder.setRecordFilter(recordFilter).setMetricFilter(metricFilter);
-    synchronized(this) {
-      if (lastRecs == null && jmxCacheTS == 0) {
-        all = true; // Get all the metrics to populate the sink caches
-      }
-    }
     try {
       source.getMetrics(builder, all);
     } catch (Exception e) {
@@ -197,10 +206,7 @@ class MetricsSourceAdapter implements DynamicMBean {
         rb.add(t);
       }
     }
-    synchronized(this) {
-      lastRecs = builder.getRecords();
-      return lastRecs;
-    }
+    return builder.getRecords();
   }
 
   synchronized void stop() {
@@ -229,14 +235,20 @@ class MetricsSourceAdapter implements DynamicMBean {
     return mbeanName;
   }
 
-  
-  private void updateInfoCache() {
+  @VisibleForTesting
+  long getJmxCacheTTL() {
+    return jmxCacheTTL;
+  }
+
+  private void updateInfoCache(Iterable<MetricsRecordImpl> lastRecs) {
+    Preconditions.checkNotNull(lastRecs, "LastRecs should not be null");
     LOG.debug("Updating info cache...");
     infoCache = infoBuilder.reset(lastRecs).get();
     LOG.debug("Done");
   }
 
-  private int updateAttrCache() {
+  private int updateAttrCache(Iterable<MetricsRecordImpl> lastRecs) {
+    Preconditions.checkNotNull(lastRecs, "LastRecs should not be null");
     LOG.debug("Updating attr cache...");
     int recNo = 0;
     int numMetrics = 0;

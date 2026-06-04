@@ -22,7 +22,7 @@ import java.net.HttpURLConnection;
 /** Http DELETE operation parameter. */
 public class DeleteOpParam extends HttpOpParam<DeleteOpParam.Op> {
   /** Delete operations. */
-  public static enum Op implements HttpOpParam.Op {
+  public enum Op implements HttpOpParam.Op {
     DELETE(HttpURLConnection.HTTP_OK),
     DELETESNAPSHOT(HttpURLConnection.HTTP_OK),
 
@@ -65,14 +65,23 @@ public class DeleteOpParam extends HttpOpParam<DeleteOpParam.Op> {
     }
   }
 
-  private static final Domain<Op> DOMAIN = new Domain<Op>(NAME, Op.class);
+  private static final Domain<Op> DOMAIN = new Domain<>(NAME, Op.class);
 
   /**
    * Constructor.
    * @param str a string representation of the parameter value.
    */
   public DeleteOpParam(final String str) {
-    super(DOMAIN, DOMAIN.parse(str));
+    super(DOMAIN, getOp(str));
+  }
+
+  private static Op getOp(String str) {
+    try {
+      return DOMAIN.parse(str);
+    } catch (IllegalArgumentException e) {
+      throw new IllegalArgumentException(str + " is not a valid " + Type.DELETE
+          + " operation.");
+    }
   }
 
   @Override

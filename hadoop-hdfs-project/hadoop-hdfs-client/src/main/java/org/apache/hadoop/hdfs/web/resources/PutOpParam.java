@@ -22,7 +22,7 @@ import java.net.HttpURLConnection;
 /** Http POST operation parameter. */
 public class PutOpParam extends HttpOpParam<PutOpParam.Op> {
   /** Put operations. */
-  public static enum Op implements HttpOpParam.Op {
+  public enum Op implements HttpOpParam.Op {
     CREATE(true, HttpURLConnection.HTTP_CREATED),
 
     MKDIRS(false, HttpURLConnection.HTTP_OK),
@@ -41,13 +41,24 @@ public class PutOpParam extends HttpOpParam<PutOpParam.Op> {
     REMOVEACLENTRIES(false, HttpURLConnection.HTTP_OK),
     REMOVEDEFAULTACL(false, HttpURLConnection.HTTP_OK),
     REMOVEACL(false, HttpURLConnection.HTTP_OK),
+    SATISFYSTORAGEPOLICY(false, HttpURLConnection.HTTP_OK),
     SETACL(false, HttpURLConnection.HTTP_OK),
 
     SETXATTR(false, HttpURLConnection.HTTP_OK),
     REMOVEXATTR(false, HttpURLConnection.HTTP_OK),
 
+    ENABLEECPOLICY(false, HttpURLConnection.HTTP_OK),
+    DISABLEECPOLICY(false, HttpURLConnection.HTTP_OK),
+    SETECPOLICY(false, HttpURLConnection.HTTP_OK),
+
+    ALLOWSNAPSHOT(false, HttpURLConnection.HTTP_OK),
+    DISALLOWSNAPSHOT(false, HttpURLConnection.HTTP_OK),
     CREATESNAPSHOT(false, HttpURLConnection.HTTP_OK),
     RENAMESNAPSHOT(false, HttpURLConnection.HTTP_OK),
+    SETSTORAGEPOLICY(false, HttpURLConnection.HTTP_OK),
+
+    SETQUOTA(false, HttpURLConnection.HTTP_OK),
+    SETQUOTABYSTORAGETYPE(false, HttpURLConnection.HTTP_OK),
 
     NULL(false, HttpURLConnection.HTTP_NOT_IMPLEMENTED);
 
@@ -60,7 +71,7 @@ public class PutOpParam extends HttpOpParam<PutOpParam.Op> {
     }
 
     Op(final boolean doOutputAndRedirect, final int expectedHttpResponseCode,
-       final boolean requireAuth) {
+        final boolean requireAuth) {
       this.doOutputAndRedirect = doOutputAndRedirect;
       this.expectedHttpResponseCode = expectedHttpResponseCode;
       this.requireAuth = requireAuth;
@@ -97,14 +108,23 @@ public class PutOpParam extends HttpOpParam<PutOpParam.Op> {
     }
   }
 
-  private static final Domain<Op> DOMAIN = new Domain<Op>(NAME, Op.class);
+  private static final Domain<Op> DOMAIN = new Domain<>(NAME, Op.class);
 
   /**
    * Constructor.
    * @param str a string representation of the parameter value.
    */
   public PutOpParam(final String str) {
-    super(DOMAIN, DOMAIN.parse(str));
+    super(DOMAIN, getOp(str));
+  }
+
+  private static Op getOp(String str) {
+    try {
+      return DOMAIN.parse(str);
+    } catch (IllegalArgumentException e) {
+      throw new IllegalArgumentException(str + " is not a valid " + Type.PUT
+          + " operation.");
+    }
   }
 
   @Override

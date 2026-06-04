@@ -28,22 +28,24 @@ public class DatanodeStorage {
   /** The state of the storage. */
   public enum State {
     NORMAL,
-    
+
     /**
-     * A storage that represents a read-only path to replicas stored on a shared storage device.
-     * Replicas on {@link #READ_ONLY_SHARED} storage are not counted towards live replicas.
-     * 
+     * A storage that represents a read-only path to replicas stored on a shared
+     * storage device. Replicas on {@link #READ_ONLY_SHARED} storage are not
+     * counted towards live replicas.
+     *
      * <p>
-     * In certain implementations, a {@link #READ_ONLY_SHARED} storage may be correlated to 
-     * its {@link #NORMAL} counterpart using the {@link DatanodeStorage#storageID}.  This
-     * property should be used for debugging purposes only.
-     * </p> 
+     * In certain implementations, a {@link #READ_ONLY_SHARED} storage may be
+     * correlated to its {@link #NORMAL} counterpart using the
+     * {@link DatanodeStorage#storageID}.  This property should be used for
+     * debugging purposes only.
+     * </p>
      */
     READ_ONLY_SHARED,
 
-    FAILED;
+    FAILED
   }
-  
+
   private final String storageID;
   private final State state;
   private final StorageType storageType;
@@ -94,7 +96,7 @@ public class DatanodeStorage {
         UUID.fromString(storageID.substring(STORAGE_ID_PREFIX.length()));
         return true;
       }
-    } catch (IllegalArgumentException iae) {
+    } catch (IllegalArgumentException ignored) {
     }
 
     return false;
@@ -104,7 +106,7 @@ public class DatanodeStorage {
   public String toString() {
     return "DatanodeStorage["+ storageID + "," + storageType + "," + state +"]";
   }
-  
+
   @Override
   public boolean equals(Object other){
     if (other == this) {

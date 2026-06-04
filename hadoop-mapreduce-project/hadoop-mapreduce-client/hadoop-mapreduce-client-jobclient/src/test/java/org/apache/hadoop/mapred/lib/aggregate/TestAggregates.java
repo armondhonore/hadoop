@@ -22,13 +22,15 @@ import org.apache.hadoop.io.*;
 import org.apache.hadoop.mapred.*;
 import org.apache.hadoop.mapred.lib.*;
 import org.apache.hadoop.mapreduce.MapReduceTestUtil;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
-import junit.framework.TestCase;
 import java.io.*;
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.text.NumberFormat;
 
-public class TestAggregates extends TestCase {
+public class TestAggregates {
 
   private static NumberFormat idFormat = NumberFormat.getInstance();
     static {
@@ -36,7 +38,7 @@ public class TestAggregates extends TestCase {
       idFormat.setGroupingUsed(false);
   }
 
-
+  @Test
   public void testAggregates() throws Exception {
     launch();
   }
@@ -46,15 +48,16 @@ public class TestAggregates extends TestCase {
     FileSystem fs = FileSystem.get(conf);
     int numOfInputLines = 20;
 
-    Path OUTPUT_DIR = new Path("build/test/output_for_aggregates_test");
-    Path INPUT_DIR = new Path("build/test/input_for_aggregates_test");
+    String baseDir = System.getProperty("test.build.data", "build/test/data");
+    Path OUTPUT_DIR = new Path(baseDir + "/output_for_aggregates_test");
+    Path INPUT_DIR = new Path(baseDir + "/input_for_aggregates_test");
     String inputFile = "input.txt";
     fs.delete(INPUT_DIR, true);
     fs.mkdirs(INPUT_DIR);
     fs.delete(OUTPUT_DIR, true);
 
-    StringBuffer inputData = new StringBuffer();
-    StringBuffer expectedOutput = new StringBuffer();
+    StringBuilder inputData = new StringBuilder();
+    StringBuilder expectedOutput = new StringBuilder();
     expectedOutput.append("max\t19\n");
     expectedOutput.append("min\t1\n"); 
 
@@ -74,7 +77,7 @@ public class TestAggregates extends TestCase {
     expectedOutput.append("uniq_count\t15\n");
 
 
-    fileOut.write(inputData.toString().getBytes("utf-8"));
+    fileOut.write(inputData.toString().getBytes(StandardCharsets.UTF_8));
     fileOut.close();
 
     System.out.println("inputData:");
@@ -115,7 +118,7 @@ public class TestAggregates extends TestCase {
     outdata = outdata.substring(0, expectedOutput.toString().length());
 
     assertEquals(expectedOutput.toString(),outdata);
-    //fs.delete(OUTPUT_DIR);
+    fs.delete(OUTPUT_DIR, true);
     fs.delete(INPUT_DIR, true);
   }
 

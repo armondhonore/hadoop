@@ -31,11 +31,11 @@ import java.nio.channels.FileChannel;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
-import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.util.DataChecksum;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
+import org.apache.hadoop.util.InvalidChecksumSizeException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -52,11 +52,11 @@ public class BlockMetadataHeader {
       BlockMetadataHeader.class);
 
   public static final short VERSION = 1;
-  
+
   /**
    * Header includes everything except the checksum(s) themselves.
    * Version is two bytes. Following it is the DataChecksum
-   * that occupies 5 bytes. 
+   * that occupies 5 bytes.
    */
   private final short version;
   private DataChecksum checksum = null;
@@ -66,7 +66,7 @@ public class BlockMetadataHeader {
     this.checksum = checksum;
     this.version = version;
   }
-  
+
   /** Get the version */
   public short getVersion() {
     return version;
@@ -79,18 +79,15 @@ public class BlockMetadataHeader {
 
   /**
    * Read the checksum header from the meta file.
+   * inputStream must be closed by the caller.
    * @return the data checksum obtained from the header.
    */
-  public static DataChecksum readDataChecksum(File metaFile, int bufSize)
+  public static DataChecksum readDataChecksum(
+      FileInputStream inputStream, int bufSize, File metaFile)
       throws IOException {
-    DataInputStream in = null;
-    try {
-      in = new DataInputStream(new BufferedInputStream(
-        new FileInputStream(metaFile), bufSize));
-      return readDataChecksum(in, metaFile);
-    } finally {
-      IOUtils.closeStream(in);
-    }
+    DataInputStream in = new DataInputStream(new BufferedInputStream(
+        inputStream, bufSize));
+    return readDataChecksum(in, metaFile);
   }
 
   /**
@@ -111,6 +108,7 @@ public class BlockMetadataHeader {
 
   /**
    * Read the header without changing the position of the FileChannel.
+   * This is used by the client for short-circuit reads.
    *
    * @param fc The FileChannel to read.
    * @return the Metadata Header.
@@ -122,13 +120,19 @@ public class BlockMetadataHeader {
     ByteBuffer buf = ByteBuffer.wrap(arr);
 
     while (buf.hasRemaining()) {
-      if (fc.read(buf, 0) <= 0) {
-        throw new EOFException("unexpected EOF while reading " +
-            "metadata file header");
+      if (fc.read(buf, buf.position()) <= 0) {
+        throw new CorruptMetaHeaderException("EOF while reading header from "+
+            "the metadata file. The meta file may be truncated or corrupt");
       }
     }
     short version = (short)((arr[0] << 8) | (arr[1] & 0xff));
-    DataChecksum dataChecksum = DataChecksum.newDataChecksum(arr, 2);
+    DataChecksum dataChecksum;
+    try {
+      dataChecksum = DataChecksum.newDataChecksum(arr, 2);
+    } catch (InvalidChecksumSizeException e) {
+      throw new CorruptMetaHeaderException("The block meta file header is "+
+          "corrupt", e);
+    }
     return new BlockMetadataHeader(version, dataChecksum);
   }
 
@@ -137,59 +141,72 @@ public class BlockMetadataHeader {
    * @return Metadata Header
    * @throws IOException
    */
-  public static BlockMetadataHeader readHeader(DataInputStream in) throws IOException {
-    return readHeader(in.readShort(), in);
+  public static BlockMetadataHeader readHeader(DataInputStream in)
+      throws IOException {
+    try {
+      return readHeader(in.readShort(), in);
+    } catch (EOFException eof) {
+      // The attempt to read the header threw EOF, indicating there are not
+      // enough bytes in the meta file for the header.
+      throw new CorruptMetaHeaderException("EOF while reading header from meta"+
+          ". The meta file may be truncated or corrupt", eof);
+    }
   }
-  
+
   /**
    * Reads header at the top of metadata file and returns the header.
-   * 
+   * Closes the input stream after reading the header.
+   *
    * @return metadata header for the block
    * @throws IOException
    */
-  public static BlockMetadataHeader readHeader(File file) throws IOException {
-    DataInputStream in = null;
-    try {
-      in = new DataInputStream(new BufferedInputStream(
-                               new FileInputStream(file)));
+  public static BlockMetadataHeader readHeader(
+      FileInputStream fis) throws IOException {
+    try (DataInputStream in = new DataInputStream(
+        new BufferedInputStream(fis))) {
       return readHeader(in);
-    } finally {
-      IOUtils.closeStream(in);
     }
   }
-  
+
   /**
    * Read the header at the beginning of the given block meta file.
    * The current file position will be altered by this method.
    * If an error occurs, the file is <em>not</em> closed.
    */
-  public static BlockMetadataHeader readHeader(RandomAccessFile raf) throws IOException {
+  public static BlockMetadataHeader readHeader(RandomAccessFile raf)
+      throws IOException {
     byte[] buf = new byte[getHeaderSize()];
     raf.seek(0);
     raf.readFully(buf, 0, buf.length);
     return readHeader(new DataInputStream(new ByteArrayInputStream(buf)));
   }
-  
+
   // Version is already read.
-  private static BlockMetadataHeader readHeader(short version, DataInputStream in) 
-                                   throws IOException {
-    DataChecksum checksum = DataChecksum.newDataChecksum(in);
+  private static BlockMetadataHeader readHeader(short version,
+      DataInputStream in) throws IOException {
+    DataChecksum checksum = null;
+    try {
+      checksum = DataChecksum.newDataChecksum(in);
+    } catch (InvalidChecksumSizeException e) {
+      throw new CorruptMetaHeaderException("The block meta file header is "+
+          "corrupt", e);
+    }
     return new BlockMetadataHeader(version, checksum);
   }
-  
+
   /**
    * This writes all the fields till the beginning of checksum.
    * @param out DataOutputStream
    * @throws IOException
    */
   @VisibleForTesting
-  public static void writeHeader(DataOutputStream out, 
-                                  BlockMetadataHeader header) 
+  public static void writeHeader(DataOutputStream out,
+                                  BlockMetadataHeader header)
                                   throws IOException {
     out.writeShort(header.getVersion());
     header.getChecksum().writeHeader(out);
   }
-  
+
   /**
    * Writes all the fields till the beginning of checksum.
    * @throws IOException on error

@@ -31,23 +31,28 @@ import java.util.List;
 import java.util.Properties;
 import java.util.StringTokenizer;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.junit.jupiter.api.BeforeAll;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.mapred.ClusterMapReduceTestCase;
 import org.apache.hadoop.mapred.Counters;
-import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.RunningJob;
 import org.apache.hadoop.mapred.SkipBadRecords;
 import org.apache.hadoop.mapred.Utils;
 import org.apache.hadoop.mapreduce.server.jobtracker.JTConfig;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestStreamingBadRecords extends ClusterMapReduceTestCase
 {
 
-  private static final Log LOG = 
-    LogFactory.getLog(TestStreamingBadRecords.class);
+  private static final Logger LOG =
+    LoggerFactory.getLogger(TestStreamingBadRecords.class);
   
   private static final List<String> MAPPER_BAD_RECORDS = 
     Arrays.asList("hey022","hey023","hey099");
@@ -60,7 +65,12 @@ public class TestStreamingBadRecords extends ClusterMapReduceTestCase
   private static final String badReducer = 
     UtilTest.makeJavaCommand(BadApp.class, new String[]{"true"});
   private static final int INPUTSIZE=100;
-  
+
+  @BeforeAll
+  public static void setupClass() throws Exception {
+    setupClassBase(TestStreamingBadRecords.class);
+  }
+
   public TestStreamingBadRecords() throws IOException
   {
     UtilTest utilTest = new UtilTest(getClass().getName());
@@ -68,7 +78,8 @@ public class TestStreamingBadRecords extends ClusterMapReduceTestCase
     utilTest.redirectIfAntJunit();
   }
 
-  protected void setUp() throws Exception {
+  @BeforeEach
+  public void setUp() throws Exception {
     Properties props = new Properties();
     props.setProperty(JTConfig.JT_RETIREJOBS, "false");
     props.setProperty(JTConfig.JT_PERSIST_JOBSTATUS, "false");
@@ -242,6 +253,7 @@ public class TestStreamingBadRecords extends ClusterMapReduceTestCase
   }
   */
 
+  @Test
   public void testNoOp() {
     // Added to avoid warnings when running this disabled test
   }

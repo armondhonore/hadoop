@@ -18,11 +18,14 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
-import static org.mockito.Matchers.any;
-import static org.mockito.Matchers.anyString;
+import static org.mockito.ArgumentMatchers.any;
 
+import java.io.File;
 import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.security.PrivilegedExceptionAction;
@@ -30,16 +33,33 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import org.junit.Assert;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FairScheduler;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FairSchedulerConfiguration;
+
+
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair
+    .allocationfile.AllocationFileQueue;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair
+    .allocationfile.AllocationFileQueuePlacementPolicy;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair
+    .allocationfile.AllocationFileQueuePlacementRule;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair
+    .allocationfile.AllocationFileWriter;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authorize.AccessControlList;
 import org.apache.hadoop.service.Service.STATE;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 import org.apache.hadoop.yarn.api.ApplicationClientProtocol;
 import org.apache.hadoop.yarn.api.protocolrecords.GetApplicationsRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.GetApplicationReportRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.GetApplicationReportResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.GetNewApplicationRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.KillApplicationRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.SubmitApplicationRequest;
@@ -56,19 +76,15 @@ import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.factories.RecordFactory;
 import org.apache.hadoop.yarn.factory.providers.RecordFactoryProvider;
 import org.apache.hadoop.yarn.ipc.YarnRPC;
-import org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStore;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.RMStateStoreFactory;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppState;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
 import org.apache.hadoop.yarn.server.resourcemanager.security.QueueACLsManager;
-import org.apache.hadoop.yarn.server.utils.BuilderUtils;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.apache.hadoop.yarn.util.resource.Resources;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
-public class TestApplicationACLs {
+public class TestApplicationACLs extends ParameterizedSchedulerTestBase {
 
   private static final String APP_OWNER = "owner";
   private static final String FRIEND = "friend";
@@ -79,29 +95,39 @@ public class TestApplicationACLs {
   private static final String SUPER_GROUP = "superGroup";
   private static final String UNAVAILABLE = "N/A";
 
-  private static final Log LOG = LogFactory.getLog(TestApplicationACLs.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestApplicationACLs.class);
 
-  static MockRM resourceManager;
-  static Configuration conf = new YarnConfiguration();
-  final static YarnRPC rpc = YarnRPC.create(conf);
-  final static InetSocketAddress rmAddress = conf.getSocketAddr(
-      YarnConfiguration.RM_ADDRESS,
-      YarnConfiguration.DEFAULT_RM_ADDRESS,
-      YarnConfiguration.DEFAULT_RM_PORT);
-  private static ApplicationClientProtocol rmClient;
+  private MockRM resourceManager;
+  private Configuration conf;
+  private YarnRPC rpc;
+  private InetSocketAddress rmAddress;
+  private ApplicationClientProtocol rmClient;
+  private RecordFactory recordFactory;
+  private boolean isQueueUser;
 
-  private static RecordFactory recordFactory = RecordFactoryProvider
-      .getRecordFactory(conf);
+  public void initTestApplicationACLs(SchedulerType type)
+      throws IOException, InterruptedException {
+    initParameterizedSchedulerTestBase(type);
+    setup();
+  }
 
-  private static boolean isQueueUser = false;
-
-  @BeforeClass
-  public static void setup() throws InterruptedException, IOException {
-    RMStateStore store = RMStateStoreFactory.getStore(conf);
+  public void setup() throws InterruptedException, IOException {
+    conf = getConf();
+    rpc = YarnRPC.create(conf);
+    rmAddress = conf.getSocketAddr(
+        YarnConfiguration.RM_ADDRESS,
+        YarnConfiguration.DEFAULT_RM_ADDRESS,
+        YarnConfiguration.DEFAULT_RM_PORT);
+    RMStateStoreFactory.getStore(conf);
     conf.setBoolean(YarnConfiguration.YARN_ACL_ENABLE, true);
     AccessControlList adminACL = new AccessControlList("");
     adminACL.addGroup(SUPER_GROUP);
     conf.set(YarnConfiguration.YARN_ADMIN_ACL, adminACL.getAclString());
+    recordFactory = RecordFactoryProvider
+        .getRecordFactory(conf);
+    isQueueUser = false;
+
     resourceManager = new MockRM(conf) {
 
       @Override
@@ -110,7 +136,8 @@ public class TestApplicationACLs {
           Configuration conf) {
         QueueACLsManager mockQueueACLsManager = mock(QueueACLsManager.class);
         when(mockQueueACLsManager.checkAccess(any(UserGroupInformation.class),
-            any(QueueACL.class), anyString())).thenAnswer(new Answer() {
+            any(QueueACL.class), any(RMApp.class), any(String.class),
+            any())).thenAnswer(new Answer() {
           public Object answer(InvocationOnMock invocation) {
             return isQueueUser;
           }
@@ -124,8 +151,8 @@ public class TestApplicationACLs {
             this.queueACLsManager, null);
       };
     };
-    new Thread() {
-      public void run() {
+    new SubjectInheritingThread() {
+      public void work() {
         UserGroupInformation.createUserForTesting(ENEMY, new String[] {});
         UserGroupInformation.createUserForTesting(FRIEND,
             new String[] { FRIENDLY_GROUP });
@@ -158,15 +185,40 @@ public class TestApplicationACLs {
     });
   }
 
-  @AfterClass
-  public static void tearDown() {
+  @AfterEach
+  public void tearDown() {
     if(resourceManager != null) {
       resourceManager.stop();
     }
   }
 
-  @Test
-  public void testApplicationACLs() throws Exception {
+  @Override
+  protected void configureFairScheduler(YarnConfiguration configuration) {
+    final String testDir = new File(System.getProperty("test.build.data",
+        "/tmp")).getAbsolutePath();
+    final String allocFile = new File(testDir, "test-queues.xml")
+        .getAbsolutePath();
+
+    AllocationFileWriter.create()
+        .addQueue(new AllocationFileQueue.Builder("root")
+            .subQueue(new AllocationFileQueue.Builder("default").build())
+            .build())
+        .queuePlacementPolicy(new AllocationFileQueuePlacementPolicy()
+            .addRule(new AllocationFileQueuePlacementRule(
+                AllocationFileQueuePlacementRule.RuleName.SPECIFIED)
+                .create(false))
+            .addRule(new AllocationFileQueuePlacementRule(
+                AllocationFileQueuePlacementRule.RuleName.REJECT)))
+        .writeToFile(allocFile);
+
+    configuration.set(FairSchedulerConfiguration.ALLOCATION_FILE, allocFile);
+  }
+
+  @ParameterizedTest(name = "{0}")
+  @MethodSource("getParameters")
+  public void testApplicationACLs(SchedulerType type) throws Exception {
+
+    initTestApplicationACLs(type);
 
     verifyOwnerAccess();
 
@@ -177,6 +229,8 @@ public class TestApplicationACLs {
     verifyEnemyAccess();
 
     verifyAdministerQueueUserAccess();
+
+    verifyInvalidQueueWithAcl();
   }
 
   @SuppressWarnings("deprecation")
@@ -199,9 +253,13 @@ public class TestApplicationACLs {
 
     ContainerLaunchContext amContainer = recordFactory
         .newRecordInstance(ContainerLaunchContext.class);
-    Resource resource = BuilderUtils.newResource(1024, 1);
+    Resource resource = Resources.createResource(1024);
     context.setResource(resource);
     amContainer.setApplicationACLs(acls);
+    if (conf.get(YarnConfiguration.RM_SCHEDULER)
+        .equals(FairScheduler.class.getName())) {
+      context.setQueue("root.default");
+    }
     context.setAMContainerSpec(amContainer);
     submitRequest.setApplicationSubmissionContext(context);
     rmClient.submitApplication(submitRequest);
@@ -243,10 +301,9 @@ public class TestApplicationACLs {
     rmClient.getApplicationReport(appReportRequest);
 
     // List apps as owner
-    Assert.assertEquals("App view by owner should list the apps!!", 1,
-        rmClient.getApplications(
-            recordFactory.newRecordInstance(GetApplicationsRequest.class))
-            .getApplicationList().size());
+    assertEquals(1, rmClient.getApplications(
+        recordFactory.newRecordInstance(GetApplicationsRequest.class))
+        .getApplicationList().size(), "App view by owner should list the apps!!");
 
     // Kill app as owner
     rmClient.forceKillApplication(finishAppRequest);
@@ -274,10 +331,10 @@ public class TestApplicationACLs {
     superUserClient.getApplicationReport(appReportRequest);
 
     // List apps as superUser
-    Assert.assertEquals("App view by super-user should list the apps!!", 2,
+    assertEquals(2,
         superUserClient.getApplications(
-            recordFactory.newRecordInstance(GetApplicationsRequest.class))
-            .getApplicationList().size());
+        recordFactory.newRecordInstance(GetApplicationsRequest.class))
+        .getApplicationList().size(), "App view by super-user should list the apps!!");
 
     // Kill app as the superUser
     superUserClient.forceKillApplication(finishAppRequest);
@@ -305,10 +362,9 @@ public class TestApplicationACLs {
     friendClient.getApplicationReport(appReportRequest);
 
     // List apps as friend
-    Assert.assertEquals("App view by a friend should list the apps!!", 3,
-        friendClient.getApplications(
-            recordFactory.newRecordInstance(GetApplicationsRequest.class))
-            .getApplicationList().size());
+    assertEquals(3, friendClient.getApplications(
+        recordFactory.newRecordInstance(GetApplicationsRequest.class))
+        .getApplicationList().size(), "App view by a friend should list the apps!!");
 
     // Kill app as the friend
     friendClient.forceKillApplication(finishAppRequest);
@@ -342,8 +398,8 @@ public class TestApplicationACLs {
         .getApplications(recordFactory
             .newRecordInstance(GetApplicationsRequest.class))
         .getApplicationList();
-    Assert.assertEquals("App view by enemy should list the apps!!", 4,
-        appReports.size());
+    assertEquals(4, appReports.size(),
+        "App view by enemy should list the apps!!");
     for (ApplicationReport report : appReports) {
       verifyEnemyAppReport(report);
     }
@@ -351,43 +407,78 @@ public class TestApplicationACLs {
     // Kill app as the enemy
     try {
       enemyRmClient.forceKillApplication(finishAppRequest);
-      Assert.fail("App killing by the enemy should fail!!");
+      fail("App killing by the enemy should fail!!");
     } catch (YarnException e) {
       LOG.info("Got exception while killing app as the enemy", e);
-      Assert
-          .assertTrue(e.getMessage().contains(
-              "User enemy cannot perform operation MODIFY_APP on "
-                  + applicationId));
+      assertTrue(e.getMessage().contains(
+          "User enemy cannot perform operation MODIFY_APP on " + applicationId));
     }
 
     rmClient.forceKillApplication(finishAppRequest);
   }
 
   private void verifyEnemyAppReport(ApplicationReport appReport) {
-    Assert.assertEquals("Enemy should not see app host!",
-        UNAVAILABLE, appReport.getHost());
-    Assert.assertEquals("Enemy should not see app rpc port!",
-        -1, appReport.getRpcPort());
-    Assert.assertEquals("Enemy should not see app client token!",
-        null, appReport.getClientToAMToken());
-    Assert.assertEquals("Enemy should not see app diagnostics!",
-        UNAVAILABLE, appReport.getDiagnostics());
-    Assert.assertEquals("Enemy should not see app tracking url!",
-        UNAVAILABLE, appReport.getTrackingUrl());
-    Assert.assertEquals("Enemy should not see app original tracking url!",
-        UNAVAILABLE, appReport.getOriginalTrackingUrl());
+    assertEquals(UNAVAILABLE, appReport.getHost(), "Enemy should not see app host!");
+    assertEquals(-1, appReport.getRpcPort(), "Enemy should not see app rpc port!");
+    assertEquals(null, appReport.getClientToAMToken(),
+        "Enemy should not see app client token!");
+    assertEquals(UNAVAILABLE, appReport.getDiagnostics(),
+        "Enemy should not see app diagnostics!");
+    assertEquals(UNAVAILABLE, appReport.getTrackingUrl(),
+        "Enemy should not see app tracking url!");
+    assertEquals(UNAVAILABLE, appReport.getOriginalTrackingUrl(),
+        "Enemy should not see app original tracking url!");
     ApplicationResourceUsageReport usageReport =
         appReport.getApplicationResourceUsageReport();
-    Assert.assertEquals("Enemy should not see app used containers",
-        -1, usageReport.getNumUsedContainers());
-    Assert.assertEquals("Enemy should not see app reserved containers",
-        -1, usageReport.getNumReservedContainers());
-    Assert.assertEquals("Enemy should not see app used resources",
-        -1, usageReport.getUsedResources().getMemory());
-    Assert.assertEquals("Enemy should not see app reserved resources",
-        -1, usageReport.getReservedResources().getMemory());
-    Assert.assertEquals("Enemy should not see app needed resources",
-        -1, usageReport.getNeededResources().getMemory());
+    assertEquals(-1, usageReport.getNumUsedContainers(),
+        "Enemy should not see app used containers");
+    assertEquals(-1, usageReport.getNumReservedContainers(),
+        "Enemy should not see app reserved containers");
+    assertEquals(-1, usageReport.getUsedResources().getMemorySize(),
+        "Enemy should not see app used resources");
+    assertEquals(-1, usageReport.getReservedResources().getMemorySize(),
+        "Enemy should not see app reserved resources");
+    assertEquals(-1, usageReport.getNeededResources().getMemorySize(),
+        "Enemy should not see app needed resources");
+  }
+
+  private void verifyInvalidQueueWithAcl() throws Exception {
+    isQueueUser = true;
+    SubmitApplicationRequest submitRequest =
+        recordFactory.newRecordInstance(SubmitApplicationRequest.class);
+    ApplicationSubmissionContext context =
+        recordFactory.newRecordInstance(ApplicationSubmissionContext.class);
+    ApplicationId applicationId = rmClient
+        .getNewApplication(
+            recordFactory.newRecordInstance(GetNewApplicationRequest.class))
+        .getApplicationId();
+    context.setApplicationId(applicationId);
+    Map<ApplicationAccessType, String> acls =
+        new HashMap<ApplicationAccessType, String>();
+    ContainerLaunchContext amContainer =
+        recordFactory.newRecordInstance(ContainerLaunchContext.class);
+    Resource resource = Resources.createResource(1024);
+    context.setResource(resource);
+    amContainer.setApplicationACLs(acls);
+    context.setQueue("InvalidQueue");
+    context.setAMContainerSpec(amContainer);
+    submitRequest.setApplicationSubmissionContext(context);
+    rmClient.submitApplication(submitRequest);
+    resourceManager.waitForState(applicationId, RMAppState.FAILED);
+    final GetApplicationReportRequest appReportRequest =
+        recordFactory.newRecordInstance(GetApplicationReportRequest.class);
+    appReportRequest.setApplicationId(applicationId);
+    GetApplicationReportResponse applicationReport =
+        rmClient.getApplicationReport(appReportRequest);
+    ApplicationReport appReport = applicationReport.getApplicationReport();
+    if (conf.get(YarnConfiguration.RM_SCHEDULER)
+        .equals(FairScheduler.class.getName())) {
+      assertTrue(appReport.getDiagnostics()
+          .contains("user owner application rejected by placement rules."));
+    } else {
+      assertTrue(appReport.getDiagnostics()
+          .contains("submitted by user owner to unknown queue: InvalidQueue"));
+    }
   }
 
   private void verifyAdministerQueueUserAccess() throws Exception {
@@ -412,10 +503,9 @@ public class TestApplicationACLs {
     administerQueueUserRmClient.getApplicationReport(appReportRequest);
 
     // List apps as administerQueueUserRmClient
-    Assert.assertEquals("App view by queue-admin-user should list the apps!!",
-        5, administerQueueUserRmClient.getApplications(
-               recordFactory.newRecordInstance(GetApplicationsRequest.class))
-               .getApplicationList().size());
+    assertEquals(5, administerQueueUserRmClient.getApplications(
+        recordFactory.newRecordInstance(GetApplicationsRequest.class))
+        .getApplicationList().size(), "App view by queue-admin-user should list the apps!!");
 
     // Kill app as the administerQueueUserRmClient
     administerQueueUserRmClient.forceKillApplication(finishAppRequest);

@@ -13,8 +13,7 @@
  */
 package org.apache.hadoop.util;
 
-import com.google.common.base.Preconditions;
-
+import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
@@ -30,6 +29,8 @@ import java.util.jar.JarOutputStream;
 import java.util.jar.Manifest;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
+
+import org.apache.hadoop.test.GenericTestUtils;
 
 /**
  * Finds the Jar for a class. If the class is in a directory in the
@@ -130,6 +131,10 @@ public class JarFinder {
    * @return path to the Jar containing the class.
    */
   public static String getJar(Class klass) {
+    return getJar(klass, null);
+  }
+
+  public static String getJar(Class klass, String testSubDir) {
     Preconditions.checkNotNull(klass, "klass");
     ClassLoader loader = klass.getClassLoader();
     if (loader != null) {
@@ -152,15 +157,18 @@ public class JarFinder {
             klassName = klassName.replace(".", "/") + ".class";
             path = path.substring(0, path.length() - klassName.length());
             File baseDir = new File(path);
-            File testDir = new File(System.getProperty("test.build.dir", "target/test-dir"));
+            File testDir =
+                testSubDir == null ? GenericTestUtils.getTestDir()
+                    : GenericTestUtils.getTestDir(testSubDir);
             testDir = testDir.getAbsoluteFile();
             if (!testDir.exists()) {
               testDir.mkdirs();
             }
-            File tempJar = File.createTempFile("hadoop-", "", testDir);
-            tempJar = new File(tempJar.getAbsolutePath() + ".jar");
+            File tempFile = File.createTempFile("hadoop-", "", testDir);
+            File tempJar = new File(tempFile.getAbsolutePath() + ".jar");
             createJar(baseDir, tempJar);
             tempJar.deleteOnExit();
+            tempFile.deleteOnExit();
             return tempJar.getAbsolutePath();
           }
         }
@@ -170,5 +178,29 @@ public class JarFinder {
       }
     }
     return null;
+  }
+
+  public static File makeClassLoaderTestJar(Class<?> target, File rootDir,
+      String jarName, int buffSize, String... clsNames) throws IOException {
+    File jarFile = new File(rootDir, jarName);
+    JarOutputStream jstream =
+        new JarOutputStream(new FileOutputStream(jarFile));
+    for (String clsName: clsNames) {
+      String name = clsName.replace('.', '/') + ".class";
+      InputStream entryInputStream = target.getResourceAsStream(
+          "/" + name);
+      ZipEntry entry = new ZipEntry(name);
+      jstream.putNextEntry(entry);
+      BufferedInputStream bufInputStream = new BufferedInputStream(
+          entryInputStream, buffSize);
+      int count;
+      byte[] data = new byte[buffSize];
+      while ((count = bufInputStream.read(data, 0, buffSize)) != -1) {
+        jstream.write(data, 0, count);
+      }
+      jstream.closeEntry();
+    }
+    jstream.close();
+    return jarFile;
   }
 }

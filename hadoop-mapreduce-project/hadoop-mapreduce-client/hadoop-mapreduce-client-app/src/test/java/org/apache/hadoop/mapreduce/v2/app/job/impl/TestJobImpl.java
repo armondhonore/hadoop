@@ -18,11 +18,20 @@
 
 package org.apache.hadoop.mapreduce.v2.app.job.impl;
 
-import static org.mockito.Matchers.any;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+
+import static org.mockito.Mockito.any;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.timeout;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.io.File;
@@ -39,6 +48,7 @@ import java.util.concurrent.CyclicBarrier;
 
 import org.apache.commons.io.FileUtils;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.JobACL;
 import org.apache.hadoop.mapreduce.JobContext;
 import org.apache.hadoop.mapreduce.JobID;
@@ -72,6 +82,7 @@ import org.apache.hadoop.mapreduce.v2.app.job.event.JobDiagnosticsUpdateEvent;
 import org.apache.hadoop.mapreduce.v2.app.job.event.JobEvent;
 import org.apache.hadoop.mapreduce.v2.app.job.event.JobEventType;
 import org.apache.hadoop.mapreduce.v2.app.job.event.JobFinishEvent;
+import org.apache.hadoop.mapreduce.v2.app.job.event.JobSetupCompletedEvent;
 import org.apache.hadoop.mapreduce.v2.app.job.event.JobStartEvent;
 import org.apache.hadoop.mapreduce.v2.app.job.event.JobTaskAttemptCompletedEvent;
 import org.apache.hadoop.mapreduce.v2.app.job.event.JobTaskEvent;
@@ -80,7 +91,7 @@ import org.apache.hadoop.mapreduce.v2.app.job.event.TaskAttemptEvent;
 import org.apache.hadoop.mapreduce.v2.app.job.event.TaskAttemptEventType;
 import org.apache.hadoop.mapreduce.v2.app.job.event.TaskEvent;
 import org.apache.hadoop.mapreduce.v2.app.job.event.TaskEventType;
-import org.apache.hadoop.mapreduce.v2.app.job.event.TaskTAttemptEvent;
+import org.apache.hadoop.mapreduce.v2.app.job.event.TaskTAttemptFailedEvent;
 import org.apache.hadoop.mapreduce.v2.app.job.impl.JobImpl.InitTransition;
 import org.apache.hadoop.mapreduce.v2.app.metrics.MRAppMetrics;
 import org.apache.hadoop.mapreduce.v2.app.rm.RMHeartbeatHandler;
@@ -92,6 +103,7 @@ import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.NodeReport;
 import org.apache.hadoop.yarn.api.records.NodeState;
+import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.event.AsyncDispatcher;
 import org.apache.hadoop.yarn.event.Dispatcher;
 import org.apache.hadoop.yarn.event.DrainDispatcher;
@@ -100,14 +112,12 @@ import org.apache.hadoop.yarn.event.InlineDispatcher;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 import org.apache.hadoop.yarn.state.StateMachine;
 import org.apache.hadoop.yarn.state.StateMachineFactory;
-import org.apache.hadoop.yarn.util.ConverterUtils;
 import org.apache.hadoop.yarn.util.Records;
 import org.apache.hadoop.yarn.util.SystemClock;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Test;
-import org.mockito.Mockito;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 
 /**
@@ -118,13 +128,13 @@ public class TestJobImpl {
   
   static String stagingDir = "target/test-staging/";
 
-  @BeforeClass
+  @BeforeAll
   public static void setup() {    
     File dir = new File(stagingDir);
     stagingDir = dir.getAbsolutePath();
   }
 
-  @Before
+  @BeforeEach
   public void cleanup() throws IOException {
     File dir = new File(stagingDir);
     if(dir.exists()) {
@@ -167,13 +177,14 @@ public class TestJobImpl {
     dispatcher.stop();
     commitHandler.stop();
     try {
-      Assert.assertTrue(jseHandler.getAssertValue());
+      assertTrue(jseHandler.getAssertValue());
     } catch (InterruptedException e) {
-      Assert.fail("Workflow related attributes are not tested properly");
+      fail("Workflow related attributes are not tested properly");
     }
   }
 
-  @Test(timeout=20000)
+  @Test
+  @Timeout(value = 20)
   public void testCommitJobFailsJob() throws Exception {
     Configuration conf = new Configuration();
     conf.set(MRJobConfig.MR_AM_STAGING_DIR, stagingDir);
@@ -198,11 +209,12 @@ public class TestJobImpl {
     commitHandler.stop();
   }
 
-  @Test(timeout=20000)
+  @Test
+  @Timeout(value = 20)
   public void testCheckJobCompleteSuccess() throws Exception {
     Configuration conf = new Configuration();
     conf.set(MRJobConfig.MR_AM_STAGING_DIR, stagingDir);
-    AsyncDispatcher dispatcher = new AsyncDispatcher();
+    DrainDispatcher dispatcher = new DrainDispatcher();
     dispatcher.init(conf);
     dispatcher.start();
     CyclicBarrier syncBarrier = new CyclicBarrier(2);
@@ -216,6 +228,19 @@ public class TestJobImpl {
     completeJobTasks(job);
     assertJobState(job, JobStateInternal.COMMITTING);
 
+    job.handle(new JobEvent(job.getID(),
+        JobEventType.JOB_TASK_ATTEMPT_COMPLETED));
+    assertJobState(job, JobStateInternal.COMMITTING);
+
+    job.handle(new JobEvent(job.getID(),
+        JobEventType.JOB_MAP_TASK_RESCHEDULED));
+    assertJobState(job, JobStateInternal.COMMITTING);
+
+    job.handle(new JobEvent(job.getID(),
+        JobEventType.JOB_TASK_COMPLETED));
+    dispatcher.await();
+    assertJobState(job, JobStateInternal.COMMITTING);
+
     // let the committer complete and verify the job succeeds
     syncBarrier.await();
     assertJobState(job, JobStateInternal.SUCCEEDED);
@@ -227,12 +252,18 @@ public class TestJobImpl {
     job.handle(new JobEvent(job.getID(), 
         JobEventType.JOB_MAP_TASK_RESCHEDULED));
     assertJobState(job, JobStateInternal.SUCCEEDED);
+
+    job.handle(new JobEvent(job.getID(),
+        JobEventType.JOB_TASK_COMPLETED));
+    dispatcher.await();
+    assertJobState(job, JobStateInternal.SUCCEEDED);
     
     dispatcher.stop();
     commitHandler.stop();
   }
 
-  @Test(timeout=20000)
+  @Test
+  @Timeout(value = 20)
   public void testRebootedDuringSetup() throws Exception{
     Configuration conf = new Configuration();
     conf.set(MRJobConfig.MR_AM_STAGING_DIR, stagingDir);
@@ -269,13 +300,14 @@ public class TestJobImpl {
     assertJobState(job, JobStateInternal.REBOOT);
     // return the external state as RUNNING since otherwise JobClient will
     // exit when it polls the AM for job state
-    Assert.assertEquals(JobState.RUNNING, job.getState());
+    assertEquals(JobState.RUNNING, job.getState());
 
     dispatcher.stop();
     commitHandler.stop();
   }
 
-  @Test(timeout=20000)
+  @Test
+  @Timeout(value = 20)
   public void testRebootedDuringCommit() throws Exception {
     Configuration conf = new Configuration();
     conf.set(MRJobConfig.MR_AM_STAGING_DIR, stagingDir);
@@ -301,15 +333,16 @@ public class TestJobImpl {
     job.handle(new JobEvent(job.getID(), JobEventType.JOB_AM_REBOOT));
     assertJobState(job, JobStateInternal.REBOOT);
     // return the external state as ERROR since this is last retry.
-    Assert.assertEquals(JobState.RUNNING, job.getState());
+    assertEquals(JobState.RUNNING, job.getState());
     when(mockContext.hasSuccessfullyUnregistered()).thenReturn(true);
-    Assert.assertEquals(JobState.ERROR, job.getState());
+    assertEquals(JobState.ERROR, job.getState());
 
     dispatcher.stop();
     commitHandler.stop();
   }
 
-  @Test(timeout=20000)
+  @Test
+  @Timeout(value = 20)
   public void testKilledDuringSetup() throws Exception {
     Configuration conf = new Configuration();
     conf.set(MRJobConfig.MR_AM_STAGING_DIR, stagingDir);
@@ -346,7 +379,8 @@ public class TestJobImpl {
     commitHandler.stop();
   }
 
-  @Test(timeout=20000)
+  @Test
+  @Timeout(value = 20)
   public void testKilledDuringCommit() throws Exception {
     Configuration conf = new Configuration();
     conf.set(MRJobConfig.MR_AM_STAGING_DIR, stagingDir);
@@ -379,7 +413,7 @@ public class TestJobImpl {
     InlineDispatcher dispatcher = new InlineDispatcher();
     dispatcher.init(conf);
     dispatcher.start();
-    OutputCommitter committer = Mockito.mock(OutputCommitter.class);
+    OutputCommitter committer = mock(OutputCommitter.class);
     CommitterEventHandler commitHandler =
         createCommitterEventHandler(dispatcher, committer);
     commitHandler.init(conf);
@@ -391,19 +425,20 @@ public class TestJobImpl {
       MRBuilderUtils.newTaskId(job.getID(), 1, TaskType.MAP),
       TaskState.FAILED));
     //Verify abort job hasn't been called
-    Mockito.verify(committer, Mockito.never())
-      .abortJob((JobContext) Mockito.any(), (State) Mockito.any());
+    verify(committer, never())
+        .abortJob((JobContext) any(), (State) any());
     assertJobState(job, JobStateInternal.FAIL_WAIT);
 
     //Verify abortJob is called once and the job failed
-    Mockito.verify(committer, Mockito.timeout(2000).times(1))
-      .abortJob((JobContext) Mockito.any(), (State) Mockito.any());
+    verify(committer, timeout(2000).times(1))
+        .abortJob((JobContext) any(), (State) any());
     assertJobState(job, JobStateInternal.FAILED);
 
     dispatcher.stop();
   }
 
-  @Test (timeout=10000)
+  @Test
+  @Timeout(value = 10)
   public void testFailAbortDoesntHang() throws IOException {
     Configuration conf = new Configuration();
     conf.set(MRJobConfig.MR_AM_STAGING_DIR, stagingDir);
@@ -412,7 +447,7 @@ public class TestJobImpl {
     DrainDispatcher dispatcher = new DrainDispatcher();
     dispatcher.init(conf);
     dispatcher.start();
-    OutputCommitter committer = Mockito.mock(OutputCommitter.class);
+    OutputCommitter committer = mock(OutputCommitter.class);
     CommitterEventHandler commitHandler =
         createCommitterEventHandler(dispatcher, committer);
     commitHandler.init(conf);
@@ -428,21 +463,21 @@ public class TestJobImpl {
       TaskImpl task = (TaskImpl) t;
       task.handle(new TaskEvent(task.getID(), TaskEventType.T_SCHEDULE));
       for(TaskAttempt ta: task.getAttempts().values()) {
-        task.handle(new TaskTAttemptEvent(ta.getID(),
-          TaskEventType.T_ATTEMPT_FAILED));
+        task.handle(new TaskTAttemptFailedEvent(ta.getID()));
       }
     }
 
     dispatcher.await();
     //Verify abortJob is called once and the job failed
-    Mockito.verify(committer, Mockito.timeout(2000).times(1))
-      .abortJob((JobContext) Mockito.any(), (State) Mockito.any());
+    verify(committer, timeout(2000).times(1))
+        .abortJob((JobContext) any(), (State) any());
     assertJobState(job, JobStateInternal.FAILED);
 
     dispatcher.stop();
   }
 
-  @Test(timeout=20000)
+  @Test
+  @Timeout(value = 20)
   public void testKilledDuringFailAbort() throws Exception {
     Configuration conf = new Configuration();
     conf.set(MRJobConfig.MR_AM_STAGING_DIR, stagingDir);
@@ -484,13 +519,17 @@ public class TestJobImpl {
     commitHandler.stop();
   }
 
-  @Test(timeout=20000)
+  @Test
+  @Timeout(value = 20)
   public void testKilledDuringKillAbort() throws Exception {
     Configuration conf = new Configuration();
     conf.set(MRJobConfig.MR_AM_STAGING_DIR, stagingDir);
+    // not initializing dispatcher to avoid potential race condition between
+    // the dispatcher thread & test thread - see MAPREDUCE-6831
     AsyncDispatcher dispatcher = new AsyncDispatcher();
     dispatcher.init(conf);
-    dispatcher.start();
+
+
     OutputCommitter committer = new StubbedOutputCommitter() {
       @Override
       public synchronized void abortJob(JobContext jobContext, State state)
@@ -524,12 +563,13 @@ public class TestJobImpl {
     commitHandler.stop();
   }
 
-  @Test(timeout=20000)
+  @Test
+  @Timeout(value = 20)
   public void testUnusableNodeTransition() throws Exception {
     Configuration conf = new Configuration();
     conf.set(MRJobConfig.MR_AM_STAGING_DIR, stagingDir);
     conf.setInt(MRJobConfig.NUM_REDUCES, 1);
-    AsyncDispatcher dispatcher = new AsyncDispatcher();
+    DrainDispatcher dispatcher = new DrainDispatcher();
     dispatcher.init(conf);
     dispatcher.start();
     CyclicBarrier syncBarrier = new CyclicBarrier(2);
@@ -554,33 +594,13 @@ public class TestJobImpl {
     dispatcher.register(TaskAttemptEventType.class, taskAttemptEventHandler);
 
     // replace the tasks with spied versions to return the right attempts
-    Map<TaskId,Task> spiedTasks = new HashMap<TaskId,Task>();
-    List<NodeReport> nodeReports = new ArrayList<NodeReport>();
-    Map<NodeReport,TaskId> nodeReportsToTaskIds =
-        new HashMap<NodeReport,TaskId>();
-    for (Map.Entry<TaskId,Task> e: job.tasks.entrySet()) {
-      TaskId taskId = e.getKey();
-      Task task = e.getValue();
-      if (taskId.getTaskType() == TaskType.MAP) {
-        // add an attempt to the task to simulate nodes
-        NodeId nodeId = mock(NodeId.class);
-        TaskAttempt attempt = mock(TaskAttempt.class);
-        when(attempt.getNodeId()).thenReturn(nodeId);
-        TaskAttemptId attemptId = MRBuilderUtils.newTaskAttemptId(taskId, 0);
-        when(attempt.getID()).thenReturn(attemptId);
-        // create a spied task
-        Task spied = spy(task);
-        doReturn(attempt).when(spied).getAttempt(any(TaskAttemptId.class));
-        spiedTasks.put(taskId, spied);
+    Map<TaskId, Task> spiedTasks = new HashMap<>();
+    List<NodeReport> nodeReports = new ArrayList<>();
+    Map<NodeReport, TaskId> nodeReportsToTaskIds = new HashMap<>();
 
-        // create a NodeReport based on the node id
-        NodeReport report = mock(NodeReport.class);
-        when(report.getNodeState()).thenReturn(NodeState.UNHEALTHY);
-        when(report.getNodeId()).thenReturn(nodeId);
-        nodeReports.add(report);
-        nodeReportsToTaskIds.put(report, taskId);
-      }
-    }
+    createSpiedMapTasks(nodeReportsToTaskIds, spiedTasks, job,
+        NodeState.UNHEALTHY, nodeReports);
+
     // replace the tasks with the spied tasks
     job.tasks.putAll(spiedTasks);
 
@@ -597,7 +617,7 @@ public class TestJobImpl {
         job.handle(new JobTaskAttemptCompletedEvent(tce));
         // complete the task itself
         job.handle(new JobTaskEvent(taskId, TaskState.SUCCEEDED));
-        Assert.assertEquals(JobState.RUNNING, job.getState());
+        assertEquals(JobState.RUNNING, job.getState());
       }
     }
 
@@ -606,6 +626,7 @@ public class TestJobImpl {
     NodeReport secondMapperNodeReport = nodeReports.get(1);
     job.handle(new JobUpdatedNodesEvent(job.getID(),
         Collections.singletonList(firstMapperNodeReport)));
+    dispatcher.await();
     // complete the reducer
     for (TaskId taskId: job.tasks.keySet()) {
       if (taskId.getTaskType() == TaskType.REDUCE) {
@@ -628,6 +649,82 @@ public class TestJobImpl {
 
     dispatcher.stop();
     commitHandler.stop();
+  }
+
+  @Test
+  public void testJobNCompletedWhenAllReducersAreFinished()
+      throws Exception {
+    testJobCompletionWhenReducersAreFinished(true);
+  }
+
+  @Test
+  public void testJobNotCompletedWhenAllReducersAreFinished()
+      throws Exception {
+    testJobCompletionWhenReducersAreFinished(false);
+  }
+
+  private void testJobCompletionWhenReducersAreFinished(boolean killMappers)
+      throws InterruptedException, BrokenBarrierException {
+    Configuration conf = new Configuration();
+    conf.setBoolean(MRJobConfig.FINISH_JOB_WHEN_REDUCERS_DONE, killMappers);
+    conf.set(MRJobConfig.MR_AM_STAGING_DIR, stagingDir);
+    conf.setInt(MRJobConfig.NUM_REDUCES, 1);
+    DrainDispatcher dispatcher = new DrainDispatcher();
+    dispatcher.init(conf);
+    final List<TaskEvent> killedEvents =
+        Collections.synchronizedList(new ArrayList<TaskEvent>());
+    dispatcher.register(TaskEventType.class, new EventHandler<TaskEvent>() {
+      @Override
+      public void handle(TaskEvent event) {
+        if (event.getType() == TaskEventType.T_KILL) {
+          killedEvents.add(event);
+        }
+      }
+    });
+    dispatcher.start();
+    CyclicBarrier syncBarrier = new CyclicBarrier(2);
+    OutputCommitter committer = new TestingOutputCommitter(syncBarrier, true);
+    CommitterEventHandler commitHandler =
+        createCommitterEventHandler(dispatcher, committer);
+    commitHandler.init(conf);
+    commitHandler.start();
+
+    final JobImpl job = createRunningStubbedJob(conf, dispatcher, 2, null);
+
+    // replace the tasks with spied versions to return the right attempts
+    Map<TaskId, Task> spiedTasks = new HashMap<>();
+    List<NodeReport> nodeReports = new ArrayList<>();
+    Map<NodeReport, TaskId> nodeReportsToTaskIds = new HashMap<>();
+
+    createSpiedMapTasks(nodeReportsToTaskIds, spiedTasks, job,
+        NodeState.RUNNING, nodeReports);
+
+    // replace the tasks with the spied tasks
+    job.tasks.putAll(spiedTasks);
+
+    // finish reducer
+    for (TaskId taskId: job.tasks.keySet()) {
+      if (taskId.getTaskType() == TaskType.REDUCE) {
+        job.handle(new JobTaskEvent(taskId, TaskState.SUCCEEDED));
+      }
+    }
+
+    dispatcher.await();
+
+    /*
+     * StubbedJob cannot finish in this test - we'd have to generate the
+     * necessary events in this test manually, but that wouldn't add too
+     * much value. Instead, we validate the T_KILL events.
+     */
+    if (killMappers) {
+      assertEquals(2, killedEvents.size(), "Number of killed events");
+      assertEquals("task_1234567890000_0001_m_000000",
+          killedEvents.get(0).getTaskID().toString(), "AttemptID");
+      assertEquals("task_1234567890000_0001_m_000001",
+          killedEvents.get(1).getTaskID().toString(), "AttemptID");
+    } else {
+      assertEquals(0, killedEvents.size(), "Number of killed events");
+    }
   }
 
   public static void main(String[] args) throws Exception {
@@ -659,8 +756,8 @@ public class TestJobImpl {
     // Verify access
     JobImpl job1 = new JobImpl(jobId, null, conf1, null, null, null, null, null,
         null, null, null, true, user1, 0, null, null, null, null);
-    Assert.assertTrue(job1.checkAccess(ugi1, JobACL.VIEW_JOB));
-    Assert.assertFalse(job1.checkAccess(ugi2, JobACL.VIEW_JOB));
+    assertTrue(job1.checkAccess(ugi1, JobACL.VIEW_JOB));
+    assertFalse(job1.checkAccess(ugi2, JobACL.VIEW_JOB));
 
     // Setup configuration access to the user1 (owner) and user2
     Configuration conf2 = new Configuration();
@@ -670,8 +767,8 @@ public class TestJobImpl {
     // Verify access
     JobImpl job2 = new JobImpl(jobId, null, conf2, null, null, null, null, null,
         null, null, null, true, user1, 0, null, null, null, null);
-    Assert.assertTrue(job2.checkAccess(ugi1, JobACL.VIEW_JOB));
-    Assert.assertTrue(job2.checkAccess(ugi2, JobACL.VIEW_JOB));
+    assertTrue(job2.checkAccess(ugi1, JobACL.VIEW_JOB));
+    assertTrue(job2.checkAccess(ugi2, JobACL.VIEW_JOB));
 
     // Setup configuration access with security enabled and access to all
     Configuration conf3 = new Configuration();
@@ -681,8 +778,8 @@ public class TestJobImpl {
     // Verify access
     JobImpl job3 = new JobImpl(jobId, null, conf3, null, null, null, null, null,
         null, null, null, true, user1, 0, null, null, null, null);
-    Assert.assertTrue(job3.checkAccess(ugi1, JobACL.VIEW_JOB));
-    Assert.assertTrue(job3.checkAccess(ugi2, JobACL.VIEW_JOB));
+    assertTrue(job3.checkAccess(ugi1, JobACL.VIEW_JOB));
+    assertTrue(job3.checkAccess(ugi2, JobACL.VIEW_JOB));
 
     // Setup configuration access without security enabled
     Configuration conf4 = new Configuration();
@@ -692,8 +789,8 @@ public class TestJobImpl {
     // Verify access
     JobImpl job4 = new JobImpl(jobId, null, conf4, null, null, null, null, null,
         null, null, null, true, user1, 0, null, null, null, null);
-    Assert.assertTrue(job4.checkAccess(ugi1, JobACL.VIEW_JOB));
-    Assert.assertTrue(job4.checkAccess(ugi2, JobACL.VIEW_JOB));
+    assertTrue(job4.checkAccess(ugi1, JobACL.VIEW_JOB));
+    assertTrue(job4.checkAccess(ugi2, JobACL.VIEW_JOB));
 
     // Setup configuration access without security enabled
     Configuration conf5 = new Configuration();
@@ -703,8 +800,8 @@ public class TestJobImpl {
     // Verify access
     JobImpl job5 = new JobImpl(jobId, null, conf5, null, null, null, null, null,
         null, null, null, true, user1, 0, null, null, null, null);
-    Assert.assertTrue(job5.checkAccess(ugi1, null));
-    Assert.assertTrue(job5.checkAccess(ugi2, null));
+    assertTrue(job5.checkAccess(ugi1, null));
+    assertTrue(job5.checkAccess(ugi2, null));
   }
 
   @Test
@@ -721,24 +818,24 @@ public class TestJobImpl {
         .newRecord(ApplicationAttemptId.class), new Configuration(),
         mock(EventHandler.class),
         null, mock(JobTokenSecretManager.class), null,
-        new SystemClock(), null,
+        SystemClock.getInstance(), null,
         mrAppMetrics, null, true, null, 0, null, mockContext, null, null);
     job.handle(diagUpdateEvent);
     String diagnostics = job.getReport().getDiagnostics();
-    Assert.assertNotNull(diagnostics);
-    Assert.assertTrue(diagnostics.contains(diagMsg));
+    assertNotNull(diagnostics);
+    assertTrue(diagnostics.contains(diagMsg));
 
     job = new JobImpl(jobId, Records
         .newRecord(ApplicationAttemptId.class), new Configuration(),
         mock(EventHandler.class),
         null, mock(JobTokenSecretManager.class), null,
-        new SystemClock(), null,
+        SystemClock.getInstance(), null,
         mrAppMetrics, null, true, null, 0, null, mockContext, null, null);
     job.handle(new JobEvent(jobId, JobEventType.JOB_KILL));
     job.handle(diagUpdateEvent);
     diagnostics = job.getReport().getDiagnostics();
-    Assert.assertNotNull(diagnostics);
-    Assert.assertTrue(diagnostics.contains(diagMsg));
+    assertNotNull(diagnostics);
+    assertTrue(diagnostics.contains(diagMsg));
   }
 
   @Test
@@ -747,13 +844,13 @@ public class TestJobImpl {
     // with default values, no of maps is 2
     Configuration conf = new Configuration();
     boolean isUber = testUberDecision(conf);
-    Assert.assertFalse(isUber);
+    assertFalse(isUber);
 
     // enable uber mode, no of maps is 2
     conf = new Configuration();
     conf.setBoolean(MRJobConfig.JOB_UBERTASK_ENABLE, true);
     isUber = testUberDecision(conf);
-    Assert.assertTrue(isUber);
+    assertTrue(isUber);
 
     // enable uber mode, no of maps is 2, no of reduces is 1 and uber task max
     // reduces is 0
@@ -762,7 +859,7 @@ public class TestJobImpl {
     conf.setInt(MRJobConfig.JOB_UBERTASK_MAXREDUCES, 0);
     conf.setInt(MRJobConfig.NUM_REDUCES, 1);
     isUber = testUberDecision(conf);
-    Assert.assertFalse(isUber);
+    assertFalse(isUber);
 
     // enable uber mode, no of maps is 2, no of reduces is 1 and uber task max
     // reduces is 1
@@ -771,14 +868,14 @@ public class TestJobImpl {
     conf.setInt(MRJobConfig.JOB_UBERTASK_MAXREDUCES, 1);
     conf.setInt(MRJobConfig.NUM_REDUCES, 1);
     isUber = testUberDecision(conf);
-    Assert.assertTrue(isUber);
+    assertTrue(isUber);
 
     // enable uber mode, no of maps is 2 and uber task max maps is 0
     conf = new Configuration();
     conf.setBoolean(MRJobConfig.JOB_UBERTASK_ENABLE, true);
     conf.setInt(MRJobConfig.JOB_UBERTASK_MAXMAPS, 1);
     isUber = testUberDecision(conf);
-    Assert.assertFalse(isUber);
+    assertFalse(isUber);
     
  // enable uber mode of 0 reducer no matter how much memory assigned to reducer
     conf = new Configuration();
@@ -787,7 +884,7 @@ public class TestJobImpl {
     conf.setInt(MRJobConfig.REDUCE_MEMORY_MB, 2048);
     conf.setInt(MRJobConfig.REDUCE_CPU_VCORES, 10);
     isUber = testUberDecision(conf);
-    Assert.assertTrue(isUber);
+    assertTrue(isUber);
   }
 
   private boolean testUberDecision(Configuration conf) {
@@ -852,9 +949,9 @@ public class TestJobImpl {
     assertJobState(job, JobStateInternal.FAILED);
     job.handle(new JobEvent(jobId, JobEventType.JOB_TASK_ATTEMPT_FETCH_FAILURE));
     assertJobState(job, JobStateInternal.FAILED);
-    Assert.assertEquals(JobState.RUNNING, job.getState());
+    assertEquals(JobState.RUNNING, job.getState());
     when(mockContext.hasSuccessfullyUnregistered()).thenReturn(true);
-    Assert.assertEquals(JobState.FAILED, job.getState());
+    assertEquals(JobState.FAILED, job.getState());
 
     dispatcher.stop();
     commitHandler.stop();
@@ -881,17 +978,73 @@ public class TestJobImpl {
     JobEvent mockJobEvent = mock(JobEvent.class);
 
     JobStateInternal jobSI = initTransition.transition(job, mockJobEvent);
-    Assert.assertTrue("When init fails, return value from InitTransition.transition should equal NEW.",
-                      jobSI.equals(JobStateInternal.NEW));
-    Assert.assertTrue("Job diagnostics should contain YarnRuntimeException",
-                      job.getDiagnostics().toString().contains("YarnRuntimeException"));
-    Assert.assertTrue("Job diagnostics should contain " + EXCEPTIONMSG,
-                      job.getDiagnostics().toString().contains(EXCEPTIONMSG));
+    assertEquals(jobSI, JobStateInternal.NEW,
+        "When init fails, return value from InitTransition.transition should equal NEW.");
+    assertTrue(job.getDiagnostics().toString().contains("YarnRuntimeException"),
+        "Job diagnostics should contain YarnRuntimeException");
+    assertTrue(job.getDiagnostics().toString().contains(EXCEPTIONMSG),
+        "Job diagnostics should contain " + EXCEPTIONMSG);
+  }
+
+  @Test
+  public void testJobPriorityUpdate() throws Exception {
+    Configuration conf = new Configuration();
+    AsyncDispatcher dispatcher = new AsyncDispatcher();
+    dispatcher.init(conf);
+    Priority submittedPriority = Priority.newInstance(5);
+
+    AppContext mockContext = mock(AppContext.class);
+    when(mockContext.hasSuccessfullyUnregistered()).thenReturn(false);
+    JobImpl job = createStubbedJob(conf, dispatcher, 2, mockContext);
+
+    JobId jobId = job.getID();
+    job.handle(new JobEvent(jobId, JobEventType.JOB_INIT));
+    assertJobState(job, JobStateInternal.INITED);
+    job.handle(new JobStartEvent(jobId));
+    assertJobState(job, JobStateInternal.SETUP);
+    // Update priority of job to 5, and it will be updated
+    job.setJobPriority(submittedPriority);
+    assertEquals(submittedPriority, job.getReport().getJobPriority());
+
+    job.handle(new JobSetupCompletedEvent(jobId));
+    assertJobState(job, JobStateInternal.RUNNING);
+
+    // Update priority of job to 8, and see whether its updated
+    Priority updatedPriority = Priority.newInstance(8);
+    job.setJobPriority(updatedPriority);
+    assertJobState(job, JobStateInternal.RUNNING);
+    Priority jobPriority = job.getReport().getJobPriority();
+    assertNotNull(jobPriority);
+
+    // Verify whether changed priority is same as what is set in Job.
+    assertEquals(updatedPriority, jobPriority);
+  }
+
+  @Test
+  public void testCleanupSharedCacheUploadPolicies() {
+    Configuration config = new Configuration();
+    Map<String, Boolean> archivePolicies = new HashMap<>();
+    archivePolicies.put("archive1", true);
+    archivePolicies.put("archive2", true);
+    Job.setArchiveSharedCacheUploadPolicies(config, archivePolicies);
+    Map<String, Boolean> filePolicies = new HashMap<>();
+    filePolicies.put("file1", true);
+    filePolicies.put("jar1", true);
+    Job.setFileSharedCacheUploadPolicies(config, filePolicies);
+    assertEquals(
+        2, Job.getArchiveSharedCacheUploadPolicies(config).size());
+    assertEquals(
+        2, Job.getFileSharedCacheUploadPolicies(config).size());
+    JobImpl.cleanupSharedCacheUploadPolicies(config);
+    assertEquals(
+        0, Job.getArchiveSharedCacheUploadPolicies(config).size());
+    assertEquals(
+        0, Job.getFileSharedCacheUploadPolicies(config).size());
   }
 
   private static CommitterEventHandler createCommitterEventHandler(
       Dispatcher dispatcher, OutputCommitter committer) {
-    final SystemClock clock = new SystemClock();
+    final SystemClock clock = SystemClock.getInstance();
     AppContext appContext = mock(AppContext.class);
     when(appContext.getEventHandler()).thenReturn(
         dispatcher.getEventHandler());
@@ -906,8 +1059,8 @@ public class TestJobImpl {
         callback.run();
       }
     };
-    ApplicationAttemptId id = 
-      ConverterUtils.toApplicationAttemptId("appattempt_1234567890000_0001_0");
+    ApplicationAttemptId id = ApplicationAttemptId.fromString(
+        "appattempt_1234567890000_0001_0");
     when(appContext.getApplicationID()).thenReturn(id.getApplicationId());
     when(appContext.getApplicationAttemptId()).thenReturn(id);
     CommitterEventHandler handler =
@@ -953,14 +1106,14 @@ public class TestJobImpl {
       job.handle(new JobTaskEvent(
           MRBuilderUtils.newTaskId(job.getID(), 1, TaskType.MAP),
           TaskState.SUCCEEDED));
-      Assert.assertEquals(JobState.RUNNING, job.getState());
+      assertEquals(JobState.RUNNING, job.getState());
     }
     int numReduces = job.getTotalReduces();
     for (int i = 0; i < numReduces; ++i) {
       job.handle(new JobTaskEvent(
           MRBuilderUtils.newTaskId(job.getID(), 1, TaskType.MAP),
           TaskState.SUCCEEDED));
-      Assert.assertEquals(JobState.RUNNING, job.getState());
+      assertEquals(JobState.RUNNING, job.getState());
     }
   }
 
@@ -974,7 +1127,38 @@ public class TestJobImpl {
         break;
       }
     }
-    Assert.assertEquals(state, job.getInternalState());
+    assertEquals(state, job.getInternalState());
+  }
+
+  private void createSpiedMapTasks(Map<NodeReport, TaskId>
+      nodeReportsToTaskIds, Map<TaskId, Task> spiedTasks, JobImpl job,
+      NodeState nodeState, List<NodeReport> nodeReports) {
+    for (Map.Entry<TaskId, Task> e: job.tasks.entrySet()) {
+      TaskId taskId = e.getKey();
+      Task task = e.getValue();
+      if (taskId.getTaskType() == TaskType.MAP) {
+        // add an attempt to the task to simulate nodes
+        NodeId nodeId = mock(NodeId.class);
+        TaskAttempt attempt = mock(TaskAttempt.class);
+        when(attempt.getNodeId()).thenReturn(nodeId);
+        TaskAttemptId attemptId = MRBuilderUtils.newTaskAttemptId(taskId, 0);
+        when(attempt.getID()).thenReturn(attemptId);
+        // create a spied task
+        Task spied = spy(task);
+        Map<TaskAttemptId, TaskAttempt> attemptMap = new HashMap<>();
+        attemptMap.put(attemptId, attempt);
+        when(spied.getAttempts()).thenReturn(attemptMap);
+        doReturn(attempt).when(spied).getAttempt(any(TaskAttemptId.class));
+        spiedTasks.put(taskId, spied);
+
+        // create a NodeReport based on the node id
+        NodeReport report = mock(NodeReport.class);
+        when(report.getNodeState()).thenReturn(nodeState);
+        when(report.getNodeId()).thenReturn(nodeId);
+        nodeReports.add(report);
+        nodeReportsToTaskIds.put(report, taskId);
+      }
+    }
   }
 
   private static class JobSubmittedEventHandler implements
@@ -1070,7 +1254,7 @@ public class TestJobImpl {
         String user, int numSplits, AppContext appContext) {
       super(jobId, applicationAttemptId, conf, eventHandler,
           null, new JobTokenSecretManager(), new Credentials(),
-          new SystemClock(), Collections.<TaskId, TaskInfo> emptyMap(),
+          SystemClock.getInstance(), Collections.<TaskId, TaskInfo> emptyMap(),
           MRAppMetrics.create(), null, newApiCommitter, user,
           System.currentTimeMillis(), null, appContext, null, null);
 

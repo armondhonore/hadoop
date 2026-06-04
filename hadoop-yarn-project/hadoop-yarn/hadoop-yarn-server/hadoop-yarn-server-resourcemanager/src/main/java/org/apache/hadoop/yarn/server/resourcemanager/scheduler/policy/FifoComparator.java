@@ -20,9 +20,6 @@ package org.apache.hadoop.yarn.server.resourcemanager.scheduler.policy;
 
 import java.util.*;
 
-import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainer;
-import org.apache.hadoop.yarn.server.resourcemanager.scheduler.*;
-
 /**
  * A Comparator which orders SchedulableEntities by input order
  */
@@ -31,11 +28,12 @@ public class FifoComparator
       
     @Override
   public int compare(SchedulableEntity r1, SchedulableEntity r2) {
-    if (r1.getPriority() != null
-        && !r1.getPriority().equals(r2.getPriority())) {
-      return r1.getPriority().compareTo(r2.getPriority());
-    }
     int res = r1.compareInputOrderTo(r2);
+
+    if (res == 0) {
+      res = (int) Math.signum(r1.getStartTime() - r2.getStartTime());
+    }
+
     return res;
   }
 }

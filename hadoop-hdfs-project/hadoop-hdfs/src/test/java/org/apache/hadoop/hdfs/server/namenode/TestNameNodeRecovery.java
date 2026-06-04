@@ -18,21 +18,22 @@
 
 package org.apache.hadoop.hdfs.server.namenode;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.spy;
 
 import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
 import java.util.HashSet;
 import java.util.Set;
 
 import org.apache.commons.io.FileUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -47,17 +48,45 @@ import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp.DeleteOp;
 import org.apache.hadoop.hdfs.server.namenode.FSEditLogOp.OpInstanceCache;
 import org.apache.hadoop.hdfs.server.namenode.NNStorage.NameNodeDirType;
 import org.apache.hadoop.io.IOUtils;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.test.PathUtils;
 import org.apache.hadoop.util.StringUtils;
-import org.junit.Test;
-
-import com.google.common.collect.Sets;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.params.ParameterizedClass;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * This tests data recovery mode for the NameNode.
  */
+
+@MethodSource("data")
+@ParameterizedClass
 public class TestNameNodeRecovery {
-  private static final Log LOG = LogFactory.getLog(TestNameNodeRecovery.class);
+
+  public static Collection<Object[]> data() {
+    Collection<Object[]> params = new ArrayList<Object[]>();
+    params.add(new Object[]{ Boolean.FALSE });
+    params.add(new Object[]{ Boolean.TRUE });
+    return params;
+  }
+
+  private static boolean useAsyncEditLog;
+  public TestNameNodeRecovery(Boolean async) {
+    useAsyncEditLog = async;
+  }
+
+  private static Configuration getConf() {
+    Configuration conf = new HdfsConfiguration();
+    conf.setBoolean(DFSConfigKeys.DFS_NAMENODE_EDITS_ASYNC_LOGGING,
+        useAsyncEditLog);
+    return conf;
+  }
+
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestNameNodeRecovery.class);
   private static final StartupOption recoverStartOpt = StartupOption.RECOVER;
   private static final File TEST_DIR = PathUtils.getTestDir(TestNameNodeRecovery.class);
 
@@ -73,7 +102,7 @@ public class TestNameNodeRecovery {
     EditLogFileOutputStream elfos = null;
     EditLogFileInputStream elfis = null;
     try {
-      elfos = new EditLogFileOutputStream(new Configuration(), TEST_LOG_NAME, 0);
+      elfos = new EditLogFileOutputStream(getConf(), TEST_LOG_NAME, 0);
       elfos.create(NameNodeLayoutVersion.CURRENT_LAYOUT_VERSION);
 
       elts.addTransactionsToLog(elfos, cache);
@@ -136,7 +165,7 @@ public class TestNameNodeRecovery {
       // We should have read every valid transaction.
       assertTrue(validTxIds.isEmpty());
     } finally {
-      IOUtils.cleanup(LOG, elfos, elfis);
+      IOUtils.cleanupWithLogger(LOG, elfos, elfis);
     }
   }
 
@@ -230,20 +259,23 @@ public class TestNameNodeRecovery {
   }
   
   /** Test an empty edit log */
-  @Test(timeout=180000)
+  @Test
+  @Timeout(value = 180)
   public void testEmptyLog() throws IOException {
     runEditLogTest(new EltsTestEmptyLog(0));
   }
 
   /** Test an empty edit log with padding */
-  @Test(timeout=180000)
+  @Test
+  @Timeout(value = 180)
   public void testEmptyPaddedLog() throws IOException {
     runEditLogTest(new EltsTestEmptyLog(
         EditLogFileOutputStream.MIN_PREALLOCATION_LENGTH));
   }
   
   /** Test an empty edit log with extra-long padding */
-  @Test(timeout=180000)
+  @Test
+  @Timeout(value = 180)
   public void testEmptyExtraPaddedLog() throws IOException {
     runEditLogTest(new EltsTestEmptyLog(
         3 * EditLogFileOutputStream.MIN_PREALLOCATION_LENGTH));
@@ -271,7 +303,7 @@ public class TestNameNodeRecovery {
 
     @Override
     public Set<Long> getValidTxIds() {
-      return Sets.newHashSet(0L);
+      return new HashSet<>(Arrays.asList(0L));
     } 
     
     public int getMaxOpSize() {
@@ -280,7 +312,8 @@ public class TestNameNodeRecovery {
   }
 
   /** Test an empty edit log with extra-long padding */
-  @Test(timeout=180000)
+  @Test
+  @Timeout(value = 180)
   public void testNonDefaultMaxOpSize() throws IOException {
     runEditLogTest(new EltsTestNonDefaultMaxOpSize());
   }
@@ -313,17 +346,19 @@ public class TestNameNodeRecovery {
 
     @Override
     public Set<Long> getValidTxIds() {
-      return Sets.newHashSet(0L);
+      return new HashSet<>(Arrays.asList(0L));
     } 
   }
 
-  @Test(timeout=180000)
+  @Test
+  @Timeout(value = 180)
   public void testOpcodesAfterPadding() throws IOException {
     runEditLogTest(new EltsTestOpcodesAfterPadding(
         EditLogFileOutputStream.MIN_PREALLOCATION_LENGTH));
   }
 
-  @Test(timeout=180000)
+  @Test
+  @Timeout(value = 180)
   public void testOpcodesAfterExtraPadding() throws IOException {
     runEditLogTest(new EltsTestOpcodesAfterPadding(
         3 * EditLogFileOutputStream.MIN_PREALLOCATION_LENGTH));
@@ -359,13 +394,14 @@ public class TestNameNodeRecovery {
 
     @Override
     public Set<Long> getValidTxIds() {
-      return Sets.newHashSet(1L , 2L, 3L, 5L, 6L, 7L, 8L, 9L, 10L);
+      return new HashSet<>(Arrays.asList(1L, 2L, 3L, 5L, 6L, 7L, 8L, 9L, 10L));
     }
   }
   
   /** Test that we can successfully recover from a situation where there is
    * garbage in the middle of the edit log file output stream. */
-  @Test(timeout=180000)
+  @Test
+  @Timeout(value = 180)
   public void testSkipEdit() throws IOException {
     runEditLogTest(new EltsTestGarbageInEditLog());
   }
@@ -494,8 +530,8 @@ public class TestNameNodeRecovery {
     conf.set(DFSConfigKeys.DFS_HA_NAMENODE_ID_KEY, "nn1");
     conf.set(DFSUtil.addKeySuffixes(DFSConfigKeys.DFS_HA_NAMENODES_KEY_PREFIX,
       "ns1"), "nn1,nn2");
-    String baseDir = System.getProperty(
-        MiniDFSCluster.PROP_TEST_BUILD_DATA, "build/test/data") + "/dfs/";
+    String baseDir = GenericTestUtils.getTestDir("setupRecoveryTestConf")
+        .getAbsolutePath();
     File nameDir = new File(baseDir, "nameR");
     File secondaryDir = new File(baseDir, "namesecondaryR");
     conf.set(DFSUtil.addKeySuffixes(DFSConfigKeys.
@@ -525,7 +561,7 @@ public class TestNameNodeRecovery {
     final boolean needRecovery = corruptor.needRecovery(finalize);
 
     // start a cluster
-    Configuration conf = new HdfsConfiguration();
+    Configuration conf = getConf();
     setupRecoveryTestConf(conf);
     MiniDFSCluster cluster = null;
     FileSystem fileSys = null;
@@ -556,7 +592,7 @@ public class TestNameNodeRecovery {
     }
 
     File editFile = FSImageTestUtil.findLatestEditsLog(sd).getFile();
-    assertTrue("Should exist: " + editFile, editFile.exists());
+    assertTrue(editFile.exists(), "Should exist: " + editFile);
 
     // Corrupt the edit log
     LOG.info("corrupting edit log file '" + editFile + "'");
@@ -626,7 +662,8 @@ public class TestNameNodeRecovery {
 
   /** Test that we can successfully recover from a situation where the last
    * entry in the edit log has been truncated. */
-  @Test(timeout=180000)
+  @Test
+  @Timeout(value = 180)
   public void testRecoverTruncatedEditLog() throws IOException {
     testNameNodeRecoveryImpl(new TruncatingCorruptor(), true);
     testNameNodeRecoveryImpl(new TruncatingCorruptor(), false);
@@ -634,7 +671,8 @@ public class TestNameNodeRecovery {
 
   /** Test that we can successfully recover from a situation where the last
    * entry in the edit log has been padded with garbage. */
-  @Test(timeout=180000)
+  @Test
+  @Timeout(value = 180)
   public void testRecoverPaddedEditLog() throws IOException {
     testNameNodeRecoveryImpl(new PaddingCorruptor(), true);
     testNameNodeRecoveryImpl(new PaddingCorruptor(), false);
@@ -642,7 +680,8 @@ public class TestNameNodeRecovery {
 
   /** Test that don't need to recover from a situation where the last
    * entry in the edit log has been padded with 0. */
-  @Test(timeout=180000)
+  @Test
+  @Timeout(value = 180)
   public void testRecoverZeroPaddedEditLog() throws IOException {
     testNameNodeRecoveryImpl(new SafePaddingCorruptor((byte)0), true);
     testNameNodeRecoveryImpl(new SafePaddingCorruptor((byte)0), false);
@@ -650,7 +689,8 @@ public class TestNameNodeRecovery {
 
   /** Test that don't need to recover from a situation where the last
    * entry in the edit log has been padded with 0xff bytes. */
-  @Test(timeout=180000)
+  @Test
+  @Timeout(value = 180)
   public void testRecoverNegativeOnePaddedEditLog() throws IOException {
     testNameNodeRecoveryImpl(new SafePaddingCorruptor((byte)-1), true);
     testNameNodeRecoveryImpl(new SafePaddingCorruptor((byte)-1), false);

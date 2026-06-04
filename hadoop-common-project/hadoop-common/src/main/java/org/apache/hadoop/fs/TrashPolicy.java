@@ -38,59 +38,126 @@ public abstract class TrashPolicy extends Configured {
 
   /**
    * Used to setup the trash policy. Must be implemented by all TrashPolicy
-   * implementations
+   * implementations.
    * @param conf the configuration to be used
    * @param fs the filesystem to be used
    * @param home the home directory
+   * @deprecated Use {@link #initialize(Configuration, FileSystem)} instead.
    */
+  @Deprecated
   public abstract void initialize(Configuration conf, FileSystem fs, Path home);
 
   /**
-   * Returns whether the Trash Policy is enabled for this filesystem
+   * Used to setup the trash policy. Must be implemented by all TrashPolicy
+   * implementations. Different from initialize(conf, fs, home), this one does
+   * not assume trash always under /user/$USER due to HDFS encryption zone.
+   * @param conf the configuration to be used
+   * @param fs the filesystem to be used
+   */
+  public void initialize(Configuration conf, FileSystem fs) {
+    throw new UnsupportedOperationException();
+  }
+
+  /**
+   * Returns whether the Trash Policy is enabled for this filesystem.
+   *
+   * @return if isEnabled true,not false.
    */
   public abstract boolean isEnabled();
 
   /** 
    * Move a file or directory to the current trash directory.
+   * @param path the path.
    * @return false if the item is already in the trash or trash is disabled
+   * @throws IOException raised on errors performing I/O.
    */ 
   public abstract boolean moveToTrash(Path path) throws IOException;
 
   /** 
-   * Create a trash checkpoint. 
+   * Create a trash checkpoint.
+   * @throws IOException raised on errors performing I/O.
    */
   public abstract void createCheckpoint() throws IOException;
 
   /** 
    * Delete old trash checkpoint(s).
+   * @throws IOException raised on errors performing I/O.
    */
   public abstract void deleteCheckpoint() throws IOException;
 
   /**
+   * Delete all checkpoints immediately, ie empty trash.
+   * @throws IOException raised on errors performing I/O.
+   */
+  public abstract void deleteCheckpointsImmediately() throws IOException;
+
+  /**
    * Get the current working directory of the Trash Policy
+   * This API does not work with files deleted from encryption zone when HDFS
+   * data encryption at rest feature is enabled as rename file between
+   * encryption zones or encryption zone and non-encryption zone is not allowed.
+   *
+   * The caller is recommend to use the new API
+   * TrashPolicy#getCurrentTrashDir(Path path).
+   * It returns the trash location correctly for the path specified no matter
+   * the path is in encryption zone or not.
+   *
+   * @return the path.
    */
   public abstract Path getCurrentTrashDir();
+
+  /**
+   * Get the current trash directory for path specified based on the Trash
+   * Policy
+   * @param path path to be deleted
+   * @return current trash directory for the path to be deleted
+   * @throws IOException raised on errors performing I/O.
+   */
+  public Path getCurrentTrashDir(Path path) throws IOException {
+    throw new UnsupportedOperationException();
+  }
 
   /** 
    * Return a {@link Runnable} that periodically empties the trash of all
    * users, intended to be run by the superuser.
+   *
+   * @throws IOException raised on errors performing I/O.
+   * @return Runnable.
    */
   public abstract Runnable getEmptier() throws IOException;
 
   /**
-   * Get an instance of the configured TrashPolicy based on the value 
+   * Get an instance of the configured TrashPolicy based on the value
    * of the configuration parameter fs.trash.classname.
    *
    * @param conf the configuration to be used
    * @param fs the file system to be used
    * @param home the home directory
    * @return an instance of TrashPolicy
+   * @deprecated Use {@link #getInstance(Configuration, FileSystem)} instead.
    */
+  @Deprecated
   public static TrashPolicy getInstance(Configuration conf, FileSystem fs, Path home) {
     Class<? extends TrashPolicy> trashClass = conf.getClass(
         "fs.trash.classname", TrashPolicyDefault.class, TrashPolicy.class);
     TrashPolicy trash = ReflectionUtils.newInstance(trashClass, conf);
     trash.initialize(conf, fs, home); // initialize TrashPolicy
+    return trash;
+  }
+
+  /**
+   * Get an instance of the configured TrashPolicy based on the value
+   * of the configuration parameter fs.trash.classname.
+   *
+   * @param conf the configuration to be used
+   * @param fs the file system to be used
+   * @return an instance of TrashPolicy
+   */
+  public static TrashPolicy getInstance(Configuration conf, FileSystem fs) {
+    Class<? extends TrashPolicy> trashClass = conf.getClass(
+        "fs.trash.classname", TrashPolicyDefault.class, TrashPolicy.class);
+    TrashPolicy trash = ReflectionUtils.newInstance(trashClass, conf);
+    trash.initialize(conf, fs); // initialize TrashPolicy
     return trash;
   }
 }

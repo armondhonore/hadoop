@@ -18,11 +18,12 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.allocator;
 
-import org.apache.hadoop.yarn.api.records.Container;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainer;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.NodeType;
 import org.apache.hadoop.yarn.util.resource.Resources;
+
+import java.util.List;
 
 public class ContainerAllocation {
   /**
@@ -52,10 +53,16 @@ public class ContainerAllocation {
 
   RMContainer containerToBeUnreserved;
   private Resource resourceToBeAllocated = Resources.none();
-  AllocationState state;
+  private AllocationState state;
   NodeType containerNodeType = NodeType.NODE_LOCAL;
-  NodeType requestNodeType = NodeType.NODE_LOCAL;
-  Container updatedContainer;
+  NodeType requestLocalityType = null;
+
+  /**
+   * When some (new) container allocated/reserved or some increase container
+   * request allocated/reserved, updatedContainer will be set.
+   */
+  RMContainer updatedContainer;
+  private List<RMContainer> toKillContainers;
 
   public ContainerAllocation(RMContainer containerToBeUnreserved,
       Resource resourceToBeAllocated, AllocationState state) {
@@ -83,7 +90,15 @@ public class ContainerAllocation {
     return containerNodeType;
   }
 
-  public Container getUpdatedContainer() {
+  public RMContainer getUpdatedContainer() {
     return updatedContainer;
+  }
+
+  public void setToKillContainers(List<RMContainer> toKillContainers) {
+    this.toKillContainers = toKillContainers;
+  }
+
+  public List<RMContainer> getToKillContainers() {
+    return toKillContainers;
   }
 }

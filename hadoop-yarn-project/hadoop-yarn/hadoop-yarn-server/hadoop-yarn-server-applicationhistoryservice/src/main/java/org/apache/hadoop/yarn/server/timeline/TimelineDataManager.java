@@ -26,8 +26,6 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.SortedSet;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.service.AbstractService;
@@ -42,8 +40,11 @@ import org.apache.hadoop.yarn.api.records.timeline.TimelinePutResponse;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.server.timeline.TimelineReader.Field;
 import org.apache.hadoop.yarn.server.timeline.security.TimelineACLsManager;
+import org.apache.hadoop.yarn.webapp.BadRequestException;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * The class wrap over the timeline store and the ACLs manager. It does some non
@@ -53,7 +54,8 @@ import com.google.common.annotations.VisibleForTesting;
  */
 public class TimelineDataManager extends AbstractService {
 
-  private static final Log LOG = LogFactory.getLog(TimelineDataManager.class);
+  private static final Logger LOG =
+          LoggerFactory.getLogger(TimelineDataManager.class);
   @VisibleForTesting
   public static final String DEFAULT_DOMAIN_ID = "DEFAULT";
 
@@ -66,7 +68,6 @@ public class TimelineDataManager extends AbstractService {
     super(TimelineDataManager.class.getName());
     this.store = store;
     this.timelineACLsManager = timelineACLsManager;
-    timelineACLsManager.setTimelineStore(store);
   }
 
   @Override
@@ -218,7 +219,12 @@ public class TimelineDataManager extends AbstractService {
       // check ACLs
       if (!timelineACLsManager.checkAccess(
           callerUGI, ApplicationAccessType.VIEW_APP, entity)) {
-        entity = null;
+        final String user = callerUGI != null ? callerUGI.getShortUserName():
+            null;
+        throw new YarnException(
+            user + " is not allowed to get the timeline entity "
+            + "{ id: " + entity.getEntityId() + ", type: "
+            + entity.getEntityType() + " }.");
       }
     }
     return entity;
@@ -338,7 +344,10 @@ public class TimelineDataManager extends AbstractService {
           entity.getDomainId().length() == 0) {
         entity.setDomainId(DEFAULT_DOMAIN_ID);
       }
-
+      if (entity.getEntityId() == null || entity.getEntityType() == null) {
+        throw new BadRequestException("Incomplete entity without entity"
+            + " id/type");
+      }
       // check if there is existing entity
       TimelineEntity existingEntity = null;
       try {

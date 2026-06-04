@@ -16,6 +16,7 @@
  * limitations under the License.
  */
 
+syntax = "proto2";
 option java_package = "org.apache.hadoop.yarn.proto";
 option java_outer_classname = "YarnServerCommonProtos";
 option java_generic_services = true;
@@ -38,6 +39,18 @@ message NodeStatusProto {
   repeated ApplicationIdProto keep_alive_applications = 5;
   optional ResourceUtilizationProto containers_utilization = 6;
   optional ResourceUtilizationProto node_utilization = 7;
+  repeated ContainerProto increased_containers = 8;
+  optional OpportunisticContainersStatusProto opportunistic_containers_status = 9;
+}
+
+message OpportunisticContainersStatusProto {
+  optional int32 running_opport_containers = 1;
+  optional int64 opport_memory_used = 2;
+  optional int32 opport_cores_used = 3;
+  optional int32 queued_opport_containers = 4;
+  optional int32 wait_queue_length = 5;
+  optional int32 estimated_queue_wait_time = 6;
+  optional int32 opport_queue_capacity = 7;
 }
 
 message MasterKeyProto {
@@ -56,8 +69,3 @@ message VersionProto {
   optional int32 minor_version = 2;
 }
 
-message ResourceUtilizationProto {
-  optional int32 pmem = 1;
-  optional int32 vmem = 2;
-  optional float cpu = 3;
-}

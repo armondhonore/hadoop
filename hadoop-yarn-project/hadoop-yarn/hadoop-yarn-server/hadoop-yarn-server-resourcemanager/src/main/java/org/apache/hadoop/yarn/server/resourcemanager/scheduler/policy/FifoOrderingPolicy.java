@@ -19,8 +19,10 @@
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.policy;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentSkipListSet;
+
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacitySchedulerConfiguration;
 import org.apache.hadoop.yarn.server.resourcemanager.rmcontainer.RMContainer;
-import org.apache.hadoop.yarn.server.resourcemanager.scheduler.*;
 
 /**
  * An OrderingPolicy which orders SchedulableEntities by input order
@@ -28,8 +30,13 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.*;
 public class FifoOrderingPolicy<S extends SchedulableEntity> extends AbstractComparatorOrderingPolicy<S> {
   
   public FifoOrderingPolicy() {
-    this.comparator = new FifoComparator();
-    this.schedulableEntities = new TreeSet<S>(comparator);
+    List<Comparator<SchedulableEntity>> comparators =
+        new ArrayList<Comparator<SchedulableEntity>>();
+    comparators.add(new PriorityComparator());
+    comparators.add(new FifoComparator());
+    this.comparator = new CompoundComparator(comparators);
+    this.schedulableEntities = new ConcurrentSkipListSet<S>(comparator);
+
   }
   
   @Override
@@ -54,6 +61,11 @@ public class FifoOrderingPolicy<S extends SchedulableEntity> extends AbstractCom
   @Override
   public String getInfo() {
     return "FifoOrderingPolicy";
+  }
+
+  @Override
+  public String getConfigName() {
+    return CapacitySchedulerConfiguration.FIFO_APP_ORDERING_POLICY;
   }
   
 }

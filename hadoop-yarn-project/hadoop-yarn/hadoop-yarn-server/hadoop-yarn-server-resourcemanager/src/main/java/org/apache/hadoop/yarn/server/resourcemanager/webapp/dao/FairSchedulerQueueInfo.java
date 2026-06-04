@@ -28,6 +28,7 @@ import javax.xml.bind.annotation.XmlRootElement;
 import javax.xml.bind.annotation.XmlSeeAlso;
 import javax.xml.bind.annotation.XmlTransient;
 
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.QueuePath;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.AllocationConfiguration;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FSLeafQueue;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.fair.FSQueue;
@@ -47,16 +48,19 @@ public class FairSchedulerQueueInfo {
   @XmlTransient
   private float fractionMemFairShare;
   @XmlTransient
-  private float fractionMemMinShare;
-  @XmlTransient
   private float fractionMemMaxShare;
   
   private ResourceInfo minResources;
   private ResourceInfo maxResources;
   private ResourceInfo usedResources;
+  private ResourceInfo amUsedResources;
+  private ResourceInfo amMaxResources;
+  private ResourceInfo demandResources;
   private ResourceInfo steadyFairResources;
   private ResourceInfo fairResources;
   private ResourceInfo clusterResources;
+  private ResourceInfo reservedResources;
+  private ResourceInfo maxContainerAllocation;
 
   private long pendingContainers;
   private long allocatedContainers;
@@ -64,6 +68,8 @@ public class FairSchedulerQueueInfo {
 
   private String queueName;
   private String schedulingPolicy;
+
+  private boolean preemptable;
 
   private FairSchedulerQueueInfoList childQueues;
 
@@ -78,46 +84,50 @@ public class FairSchedulerQueueInfo {
     
     clusterResources = new ResourceInfo(scheduler.getClusterResource());
     
+    amUsedResources = new ResourceInfo(queue.getMetrics().getAMResourceUsage());
+    amMaxResources = new ResourceInfo(queue.getMetrics().getMaxAMShare());
     usedResources = new ResourceInfo(queue.getResourceUsage());
-    fractionMemUsed = (float)usedResources.getMemory() /
-        clusterResources.getMemory();
+    demandResources = new ResourceInfo(queue.getDemand());
+    fractionMemUsed = (float)usedResources.getMemorySize() /
+        clusterResources.getMemorySize();
 
     steadyFairResources = new ResourceInfo(queue.getSteadyFairShare());
     fairResources = new ResourceInfo(queue.getFairShare());
     minResources = new ResourceInfo(queue.getMinShare());
-    maxResources = new ResourceInfo(queue.getMaxShare());
     maxResources = new ResourceInfo(
         Resources.componentwiseMin(queue.getMaxShare(),
             scheduler.getClusterResource()));
+    maxContainerAllocation =
+        new ResourceInfo(scheduler.getMaximumResourceCapability(queueName));
+    reservedResources = new ResourceInfo(queue.getReservedResource());
 
     fractionMemSteadyFairShare =
-        (float)steadyFairResources.getMemory() / clusterResources.getMemory();
-    fractionMemFairShare = (float) fairResources.getMemory()
-        / clusterResources.getMemory();
-    fractionMemMinShare = (float)minResources.getMemory() / clusterResources.getMemory();
-    fractionMemMaxShare = (float)maxResources.getMemory() / clusterResources.getMemory();
+        (float)steadyFairResources.getMemorySize() / clusterResources.getMemorySize();
+    fractionMemFairShare = (float) fairResources.getMemorySize()
+        / clusterResources.getMemorySize();
+    fractionMemMaxShare = (float)maxResources.getMemorySize() / clusterResources.getMemorySize();
     
-    maxApps = allocConf.getQueueMaxApps(queueName);
+    maxApps = queue.getMaxRunningApps();
 
-    pendingContainers = queue.getMetrics().getPendingContainers();
     allocatedContainers = queue.getMetrics().getAllocatedContainers();
     reservedContainers = queue.getMetrics().getReservedContainers();
+    pendingContainers = queue.getMetrics().getPendingContainers();
 
-    if (allocConf.isReservable(queueName) &&
-        !allocConf.getShowReservationAsQueues(queueName)) {
+    QueuePath queuePath = new QueuePath(queueName);
+    if (allocConf.isReservable(queuePath) &&
+        !allocConf.getShowReservationAsQueues(queuePath)) {
       return;
     }
 
+    preemptable = queue.isPreemptable();
     childQueues = getChildQueues(queue, scheduler);
-  }
-
-  public long getPendingContainers() {
-    return pendingContainers;
   }
 
   public long getAllocatedContainers() {
     return allocatedContainers;
   }
+
+  public long getPendingContainers() { return pendingContainers; }
 
   public long getReservedContainers() {
     return reservedContainers;
@@ -147,6 +157,7 @@ public class FairSchedulerQueueInfo {
   
   /**
    * Returns the steady fair share as a fraction of the entire cluster capacity.
+   * @return steady fairshare memoryfraction.
    */
   public float getSteadyFairShareMemoryFraction() {
     return fractionMemSteadyFairShare;
@@ -154,6 +165,7 @@ public class FairSchedulerQueueInfo {
 
   /**
    * Returns the fair share as a fraction of the entire cluster capacity.
+   * @return fair share memory fraction.
    */
   public float getFairShareMemoryFraction() {
     return fractionMemFairShare;
@@ -161,13 +173,15 @@ public class FairSchedulerQueueInfo {
 
   /**
    * Returns the steady fair share of this queue in megabytes.
+   * @return steady fair share.
    */
   public ResourceInfo getSteadyFairShare() {
     return steadyFairResources;
   }
 
   /**
-   * Returns the fair share of this queue in megabytes
+   * Returns the fair share of this queue in megabytes.
+   * @return fair share.
    */
   public ResourceInfo getFairShare() {
     return fairResources;
@@ -180,7 +194,15 @@ public class FairSchedulerQueueInfo {
   public ResourceInfo getMaxResources() {
     return maxResources;
   }
-  
+
+  public ResourceInfo getMaxContainerAllocation() {
+    return maxContainerAllocation;
+  }
+
+  public ResourceInfo getReservedResources() {
+    return reservedResources;
+  }
+
   public int getMaxApplications() {
     return maxApps;
   }
@@ -194,16 +216,30 @@ public class FairSchedulerQueueInfo {
   }
 
   /**
-   * Returns the queue's min share in as a fraction of the entire
-   * cluster capacity.
+   * @return the am used resource of this queue.
    */
-  public float getMinShareMemoryFraction() {
-    return fractionMemMinShare;
+  public ResourceInfo getAMUsedResources() {
+    return amUsedResources;
   }
-  
+
+  /**
+   * @return the am max resource of this queue.
+   */
+  public ResourceInfo getAMMaxResources() {
+    return amMaxResources;
+  }
+
+  /**
+   * @return the demand resource of this queue.
+     */
+  public ResourceInfo getDemandResources() {
+    return demandResources;
+  }
+
   /**
    * Returns the memory used by this queue as a fraction of the entire 
    * cluster capacity.
+   * @return used memory fraction.
    */
   public float getUsedMemoryFraction() {
     return fractionMemUsed;
@@ -212,6 +248,7 @@ public class FairSchedulerQueueInfo {
   /**
    * Returns the capacity of this queue as a fraction of the entire cluster 
    * capacity.
+   * @return max resources fraction.
    */
   public float getMaxResourcesFraction() {
     return fractionMemMaxShare;
@@ -219,6 +256,7 @@ public class FairSchedulerQueueInfo {
   
   /**
    * Returns the name of the scheduling policy used by this queue.
+   * @return SchedulingPolicy.
    */
   public String getSchedulingPolicy() {
     return schedulingPolicy;
@@ -227,5 +265,9 @@ public class FairSchedulerQueueInfo {
   public Collection<FairSchedulerQueueInfo> getChildQueues() {
     return childQueues != null ? childQueues.getQueueInfoList() :
         new ArrayList<FairSchedulerQueueInfo>();
+  }
+
+  public boolean isPreemptable() {
+    return preemptable;
   }
 }

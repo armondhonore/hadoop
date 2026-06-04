@@ -18,7 +18,7 @@
 
 package org.apache.hadoop.yarn.webapp;
 
-import static com.google.common.base.Preconditions.checkNotNull;
+import static org.apache.hadoop.util.Preconditions.checkNotNull;
 
 import java.io.IOException;
 import java.net.ConnectException;
@@ -32,15 +32,21 @@ import java.util.Map;
 
 import javax.servlet.http.HttpServlet;
 
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.conf.Configuration.IntegerRanges;
 import org.apache.hadoop.http.HttpConfig.Policy;
 import org.apache.hadoop.http.HttpServer2;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authorize.AccessControlList;
+import org.apache.hadoop.security.http.RestCsrfPreventionFilter;
+import org.apache.hadoop.yarn.api.ApplicationClientProtocol;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
+import org.eclipse.jetty.webapp.WebAppContext;
+import org.glassfish.jersey.server.ResourceConfig;
+import org.glassfish.jersey.servlet.ServletProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -73,10 +79,13 @@ import com.google.inject.servlet.GuiceFilter;
 public class WebApps {
   static final Logger LOG = LoggerFactory.getLogger(WebApps.class);
   public static class Builder<T> {
+
     static class ServletStruct {
       public Class<? extends HttpServlet> clazz;
       public String name;
       public String spec;
+      public Map<String, String> params;
+      public boolean loadExistingFilters = true;
     }
     
     final String name;
@@ -88,12 +97,17 @@ public class WebApps {
     boolean findPort = false;
     Configuration conf;
     Policy httpPolicy = null;
+    boolean needsClientAuth = false;
+    String portRangeConfigKey = null;
     boolean devMode = false;
     private String spnegoPrincipalKey;
     private String spnegoKeytabKey;
-    private final HashSet<ServletStruct> servlets = new HashSet<ServletStruct>();
-    private final HashMap<String, Object> attributes = new HashMap<String, Object>();
-
+    private String csrfConfigPrefix;
+    private String xfsConfigPrefix;
+    private final HashSet<ServletStruct> servlets = new HashSet<>();
+    private final HashMap<String, Object> attributes = new HashMap<>();
+    private ApplicationClientProtocol appClientProtocol;
+    private ResourceConfig config;
     Builder(String name, Class<T> api, T application, String wsName) {
       this.name = name;
       this.api = api;
@@ -139,7 +153,25 @@ public class WebApps {
       servlets.add(struct);
       return this;
     }
-    
+
+    public Builder<T> withServlet(String name, String pathSpec,
+        Class<? extends HttpServlet> servlet,
+        Map<String, String> params,boolean loadExistingFilters) {
+      ServletStruct struct = new ServletStruct();
+      struct.clazz = servlet;
+      struct.name = name;
+      struct.spec = pathSpec;
+      struct.params = params;
+      struct.loadExistingFilters = loadExistingFilters;
+      servlets.add(struct);
+      return this;
+    }
+
+    public Builder<T> withResourceConfig(ResourceConfig resourceConfig) {
+      this.config = resourceConfig;
+      return this;
+    }
+
     public Builder<T> with(Configuration conf) {
       this.conf = conf;
       return this;
@@ -148,6 +180,24 @@ public class WebApps {
     public Builder<T> withHttpPolicy(Configuration conf, Policy httpPolicy) {
       this.conf = conf;
       this.httpPolicy = httpPolicy;
+      return this;
+    }
+
+    public Builder<T> needsClientAuth(boolean needsClientAuth) {
+      this.needsClientAuth = needsClientAuth;
+      return this;
+    }
+
+    /**
+     * Set port range config key and associated configuration object.
+     * @param configuration configuration.
+     * @param portRangeConfKey port range config key.
+     * @return builder object.
+     */
+    public Builder<T> withPortRange(Configuration configuration,
+        String portRangeConfKey) {
+      this.conf = configuration;
+      this.portRangeConfigKey = portRangeConfKey;
       return this;
     }
 
@@ -161,12 +211,42 @@ public class WebApps {
       return this;
     }
 
+    /**
+     * Enable the CSRF filter.
+     * @param prefix The config prefix that identifies the
+     *                         CSRF parameters applicable for this filter
+     *                         instance.
+     * @return the Builder instance
+     */
+    public Builder<T> withCSRFProtection(String prefix) {
+      this.csrfConfigPrefix = prefix;
+      return this;
+    }
+
+    /**
+     * Enable the XFS filter.
+     * @param prefix The config prefix that identifies the
+     *                         XFS parameters applicable for this filter
+     *                         instance.
+     * @return the Builder instance
+     */
+    public Builder<T> withXFSProtection(String prefix) {
+      this.xfsConfigPrefix = prefix;
+      return this;
+    }
+
     public Builder<T> inDevMode() {
       devMode = true;
       return this;
     }
 
-    public WebApp start(WebApp webapp) {
+    public Builder<T> withAppClientProtocol(
+        ApplicationClientProtocol appClientProto) {
+      this.appClientProtocol = appClientProto;
+      return this;
+    }
+
+    public WebApp build(WebApp webapp) {
       if (webapp == null) {
         webapp = new WebApp() {
           @Override
@@ -179,7 +259,7 @@ public class WebApps {
       webapp.setWebServices(wsName);
       String basePath = "/" + name;
       webapp.setRedirectPath(basePath);
-      List<String> pathList = new ArrayList<String>();
+      List<String> pathList = new ArrayList<>();
       if (basePath.equals("/")) { 
         webapp.addServePathSpec("/*");
         pathList.add("/*");
@@ -196,6 +276,17 @@ public class WebApps {
           webapp.addServePathSpec("/" + wsName);
           webapp.addServePathSpec("/" + wsName + "/*");
           pathList.add("/" + wsName + "/*");
+        }
+      }
+
+      for (ServletStruct s : servlets) {
+        if (!pathList.contains(s.spec)) {
+          // The servlet told us to not load-existing filters, but we still want
+          // to add the default authentication filter always, so add it to the
+          // pathList
+          if (!s.loadExistingFilters) {
+            pathList.add(s.spec);
+          }
         }
       }
       if (conf == null) {
@@ -235,15 +326,37 @@ public class WebApps {
                   : WebAppUtils.HTTP_PREFIX;
         }
         HttpServer2.Builder builder = new HttpServer2.Builder()
-            .setName(name)
-            .addEndpoint(
-                URI.create(httpScheme + bindAddress
-                    + ":" + port)).setConf(conf).setFindPort(findPort)
+            .setName(name).setConf(conf).setFindPort(findPort)
             .setACL(new AccessControlList(conf.get(
-              YarnConfiguration.YARN_ADMIN_ACL, 
-              YarnConfiguration.DEFAULT_YARN_ADMIN_ACL)))
+                YarnConfiguration.YARN_ADMIN_ACL,
+                YarnConfiguration.DEFAULT_YARN_ADMIN_ACL)))
             .setPathSpec(pathList.toArray(new String[0]));
 
+        // Set the X-FRAME-OPTIONS header, use the HttpServer2 default if
+        // the header value is not specified
+        Map<String, String> xfsParameters =
+            getConfigParameters(xfsConfigPrefix);
+
+        if (xfsParameters != null) {
+          String xFrameOptions = xfsParameters.get("xframe-options");
+          if (xFrameOptions != null) {
+            builder.configureXFrame(hasXFSEnabled())
+                .setXFrameOption(xFrameOptions);
+          }
+        }
+        // Get port ranges from config.
+        IntegerRanges ranges = null;
+        if (portRangeConfigKey != null) {
+          ranges = conf.getRange(portRangeConfigKey, "");
+        }
+        int startPort = port;
+        if (ranges != null && !ranges.isEmpty()) {
+          // Set port ranges if it's configured.
+          startPort = ranges.getRangeStart();
+          builder.setPortRanges(ranges);
+        }
+        builder.addEndpoint(URI.create(httpScheme + bindAddress +
+            ":" + startPort));
         boolean hasSpnegoConf = spnegoPrincipalKey != null
             && conf.get(spnegoPrincipalKey) != null && spnegoKeytabKey != null
             && conf.get(spnegoKeytabKey) != null;
@@ -255,24 +368,71 @@ public class WebApps {
         }
 
         if (httpScheme.equals(WebAppUtils.HTTPS_PREFIX)) {
-          WebAppUtils.loadSslConfiguration(builder);
+          String amKeystoreLoc = System.getenv("KEYSTORE_FILE_LOCATION");
+          if (StringUtils.isBlank(amKeystoreLoc)) {
+            amKeystoreLoc = System.getProperty("KEYSTORE_FILE_LOCATION");
+          }
+          if (amKeystoreLoc != null) {
+            LOG.info("Setting keystore location to " + amKeystoreLoc);
+            String password = System.getenv("KEYSTORE_PASSWORD");
+            if (StringUtils.isBlank(password)) {
+              password = System.getProperty("KEYSTORE_PASSWORD");
+            }
+            builder.keyStore(amKeystoreLoc, password, "jks");
+          } else {
+            LOG.info("Loading standard ssl config");
+            WebAppUtils.loadSslConfiguration(builder, conf);
+          }
+          builder.needsClientAuth(needsClientAuth);
+          if (needsClientAuth) {
+            String amTruststoreLoc = System.getenv("TRUSTSTORE_FILE_LOCATION");
+            if (StringUtils.isBlank(amTruststoreLoc)) {
+              amTruststoreLoc = System.getProperty("TRUSTSTORE_FILE_LOCATION");
+            }
+            if (amTruststoreLoc != null) {
+              LOG.info("Setting truststore location to " + amTruststoreLoc);
+              String password = System.getenv("TRUSTSTORE_PASSWORD");
+              if (StringUtils.isBlank(password)) {
+                password = System.getProperty("TRUSTSTORE_PASSWORD");
+              }
+              builder.trustStore(amTruststoreLoc, password, "jks");
+            }
+          }
         }
 
         HttpServer2 server = builder.build();
 
         for(ServletStruct struct: servlets) {
-          server.addServlet(struct.name, struct.spec, struct.clazz);
+          if (!struct.loadExistingFilters) {
+            server.addInternalServlet(struct.name, struct.spec,
+                struct.clazz, struct.params);
+          } else {
+            server.addServlet(struct.name, struct.spec, struct.clazz);
+          }
         }
         for(Map.Entry<String, Object> entry : attributes.entrySet()) {
           server.setAttribute(entry.getKey(), entry.getValue());
         }
-        HttpServer2.defineFilter(server.getWebAppContext(), "guice",
-          GuiceFilter.class.getName(), null, new String[] { "/*" });
+        Map<String, String> params = getConfigParameters(csrfConfigPrefix);
 
+        if (hasCSRFEnabled(params)) {
+          LOG.info("CSRF Protection has been enabled for the {} application. "
+                   + "Please ensure that there is an authentication mechanism "
+                   + "enabled (kerberos, custom, etc).",
+                   name);
+          String restCsrfClassName = RestCsrfPreventionFilter.class.getName();
+          HttpServer2.defineFilter(server.getWebAppContext(), restCsrfClassName,
+                                   restCsrfClassName, params,
+                                   new String[] {"/*"});
+        }
+
+        final Map<String, String> guiceFilterParams = new HashMap<>();
+        guiceFilterParams.put(ServletProperties.FILTER_FORWARD_ON_404, "true");
+        HttpServer2.defineFilter(server.getWebAppContext(), "guice",
+            GuiceFilter.class.getName(), guiceFilterParams, new String[]{"/*"});
+        server.addJerseyResourceConfig(config, "/*", null);
         webapp.setConf(conf);
         webapp.setHttpServer(server);
-        server.start();
-        LOG.info("Web app /"+ name +" started at "+ server.getConnectorAddress(0).getPort());
       } catch (ClassNotFoundException e) {
         throw new WebAppException("Error starting http server", e);
       } catch (IOException e) {
@@ -283,6 +443,9 @@ public class WebApps {
         protected void configure() {
           if (api != null) {
             bind(api).toInstance(application);
+          }
+          if (appClientProtocol != null) {
+            bind(ApplicationClientProtocol.class).toInstance(appClientProtocol);
           }
         }
       });
@@ -296,8 +459,64 @@ public class WebApps {
       return webapp;
     }
 
+    private boolean hasCSRFEnabled(Map<String, String> params) {
+      return params != null && Boolean.valueOf(params.get("enabled"));
+    }
+
+    /**
+     * XFS filter is enabled by default.  If the enabled flag is not explicitly
+     * specified and set to "false", this method returns true.
+     * @return true if XFS is enabled, false otherwise.
+     */
+    private boolean hasXFSEnabled() {
+      return conf.getBoolean(YarnConfiguration.YARN_XFS_ENABLED, true);
+    }
+
+    private Map<String, String> getConfigParameters(String configPrefix) {
+      return configPrefix != null ? conf.getPropsWithPrefix(configPrefix) : null;
+    }
+
     public WebApp start() {
       return start(null);
+    }
+
+    public WebApp start(WebApp webapp) {
+      return start(webapp, (WebAppContext[]) null);
+    }
+
+    public WebApp start(WebApp webapp, WebAppContext... additionalContexts) {
+      WebApp webApp = build(webapp);
+      HttpServer2 httpServer = webApp.httpServer();
+
+      if (additionalContexts != null) {
+        for (WebAppContext context : additionalContexts) {
+          if (context != null) {
+            addFiltersForNewContext(context);
+            httpServer.addHandlerAtFront(context);
+          }
+        }
+      }
+
+      try {
+        httpServer.start();
+        LOG.info("Web app {} started at {}.", name, httpServer.getConnectorAddress(0).getPort());
+      } catch (IOException e) {
+        throw new WebAppException("Error starting http server", e, webApp);
+      }
+      return webApp;
+    }
+
+    private void addFiltersForNewContext(WebAppContext uiContext) {
+      Map<String, String> params = getConfigParameters(csrfConfigPrefix);
+
+      if (hasCSRFEnabled(params)) {
+        LOG.info("CSRF Protection has been enabled for the {} application. "
+            + "Please ensure that there is an authentication mechanism "
+            + "enabled (kerberos, custom, etc).", name);
+        String restCsrfClassName = RestCsrfPreventionFilter.class.getName();
+        HttpServer2.defineFilter(uiContext, restCsrfClassName,
+            restCsrfClassName, params, new String[]{"/*"});
+      }
     }
 
     private String inferHostClass() {
@@ -323,7 +542,7 @@ public class WebApps {
    * @return a webapp builder
    */
   public static <T> Builder<T> $for(String prefix, Class<T> api, T app, String wsPrefix) {
-    return new Builder<T>(prefix, api, app, wsPrefix);
+    return new Builder<>(prefix, api, app, wsPrefix);
   }
 
   /**
@@ -336,7 +555,7 @@ public class WebApps {
    * @return a webapp builder
    */
   public static <T> Builder<T> $for(String prefix, Class<T> api, T app) {
-    return new Builder<T>(prefix, api, app);
+    return new Builder<>(prefix, api, app);
   }
 
   // Short cut mostly for tests/demos

@@ -17,7 +17,15 @@
  */
 package org.apache.hadoop.net;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.io.EOFException;
 import java.io.IOException;
@@ -32,27 +40,31 @@ import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.net.URI;
 import java.net.UnknownHostException;
+import java.nio.charset.CharacterCodingException;
 import java.util.Arrays;
 import java.util.Enumeration;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.zip.ZipException;
 
-import junit.framework.AssertionFailedError;
-
-import org.apache.commons.lang.StringUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.IOUtils;
+import org.apache.hadoop.security.KerberosAuthException;
 import org.apache.hadoop.security.NetUtilsTestResolver;
-import org.junit.Assume;
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.hadoop.test.LambdaTestUtils;
+import org.apache.hadoop.util.Shell;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class TestNetUtils {
 
-  private static final Log LOG = LogFactory.getLog(TestNetUtils.class);
+  private static final Logger LOG = LoggerFactory.getLogger(TestNetUtils.class);
   private static final int DEST_PORT = 4040;
   private static final String DEST_PORT_NAME = Integer.toString(DEST_PORT);
   private static final int LOCAL_PORT = 8080;
@@ -72,7 +84,7 @@ public class TestNetUtils {
    * This is a regression test for HADOOP-6722.
    */
   @Test
-  public void testAvoidLoopbackTcpSockets() throws Exception {
+  public void testAvoidLoopbackTcpSockets() throws Throwable {
     Configuration conf = new Configuration();
 
     Socket socket = NetUtils.getDefaultSocketFactory(conf)
@@ -88,14 +100,38 @@ public class TestNetUtils {
       fail("Should not have connected");
     } catch (ConnectException ce) {
       System.err.println("Got exception: " + ce);
-      assertTrue(ce.getMessage().contains("resulted in a loopback"));
+      assertInException(ce, "resulted in a loopback");
     } catch (SocketException se) {
       // Some TCP stacks will actually throw their own Invalid argument exception
       // here. This is also OK.
-      assertTrue(se.getMessage().contains("Invalid argument"));
+      assertInException(se, "Invalid argument");
     }
   }
-  
+
+  @Test
+  public void testInvalidAddress() throws Throwable {
+    Configuration conf = new Configuration();
+
+    Socket socket = NetUtils.getDefaultSocketFactory(conf)
+        .createSocket();
+    socket.bind(new InetSocketAddress("127.0.0.1", 0));
+    try {
+      NetUtils.connect(socket,
+          new InetSocketAddress("invalid-test-host",
+              0), 20000);
+      socket.close();
+      fail("Should not have connected");
+    } catch (UnknownHostException uhe) {
+      LOG.info("Got exception: ", uhe);
+      if (Shell.isJavaVersionAtLeast(17)) {
+        GenericTestUtils
+            .assertExceptionContains("invalid-test-host/<unresolved>:0", uhe);
+      } else {
+        GenericTestUtils.assertExceptionContains("invalid-test-host:0", uhe);
+      }
+    }
+  }
+
   @Test
   public void testSocketReadTimeoutWithChannel() throws Exception {
     doSocketReadTimeoutTest(true);
@@ -117,7 +153,7 @@ public class TestNetUtils {
     if (withChannel) {
       s = NetUtils.getDefaultSocketFactory(new Configuration())
           .createSocket();
-      Assume.assumeNotNull(s.getChannel());
+      assumeTrue(s.getChannel() != null);
     } else {
       s = new Socket();
       assertNull(s.getChannel());
@@ -165,8 +201,8 @@ public class TestNetUtils {
     long durationNano = System.nanoTime() - startNanos;
     long millis = TimeUnit.MILLISECONDS.convert(
         durationNano, TimeUnit.NANOSECONDS);
-    assertTrue("Expected " + expectedMillis + "ms, but took " + millis,
-        Math.abs(millis - expectedMillis) < TIME_FUDGE_MILLIS);
+    assertTrue(Math.abs(millis - expectedMillis) < TIME_FUDGE_MILLIS,
+        "Expected " + expectedMillis + "ms, but took " + millis);
   }
   
   /**
@@ -181,22 +217,20 @@ public class TestNetUtils {
     assertNull(NetUtils.getLocalInetAddress(null));
   }
 
-  @Test(expected=UnknownHostException.class)
+  @Test
   public void testVerifyHostnamesException() throws UnknownHostException {
-    String[] names = {"valid.host.com", "1.com", "invalid host here"};
-    NetUtils.verifyHostnames(names);
+    assertThrows(UnknownHostException.class, ()->{
+      String[] names = {"valid.host.com", "1.com", "invalid host here"};
+      NetUtils.verifyHostnames(names);
+    });
   }  
 
   @Test
-  public void testVerifyHostnamesNoException() {
+  public void testVerifyHostnamesNoException() throws UnknownHostException {
     String[] names = {"valid.host.com", "1.com"};
-    try {
-      NetUtils.verifyHostnames(names);
-    } catch (UnknownHostException e) {
-      fail("NetUtils.verifyHostnames threw unexpected UnknownHostException");
-    }
+    NetUtils.verifyHostnames(names);
   }
-  
+
   /** 
    * Test for {@link NetUtils#isLocalAddress(java.net.InetAddress)}
    */
@@ -267,7 +301,51 @@ public class TestNetUtils {
     assertRemoteDetailsIncluded(wrapped);
     assertInException(wrapped, "/EOFException");
   }
-  
+
+  @Test
+  public void testWrapKerbAuthException() throws Throwable {
+    IOException e = new KerberosAuthException("socket timeout on connection");
+    IOException wrapped = verifyExceptionClass(e, KerberosAuthException.class);
+    assertInException(wrapped, "socket timeout on connection");
+    assertInException(wrapped, "localhost");
+    assertInException(wrapped, "DestHost:destPort ");
+    assertInException(wrapped, "LocalHost:localPort");
+    assertRemoteDetailsIncluded(wrapped);
+    assertInException(wrapped, "KerberosAuthException");
+  }
+
+  @Test
+  public void testWrapIOEWithNoStringConstructor() throws Throwable {
+    IOException e = new CharacterCodingException();
+    IOException wrapped =
+        verifyExceptionClass(e, CharacterCodingException.class);
+    assertEquals(null, wrapped.getMessage());
+  }
+
+  @Test
+  public void testWrapIOEWithPrivateStringConstructor() throws Throwable {
+    class TestIOException extends CharacterCodingException{
+      private  TestIOException(String cause){
+      }
+      TestIOException(){
+      }
+    }
+    IOException e = new TestIOException();
+    IOException wrapped = verifyExceptionClass(e, TestIOException.class);
+    assertEquals(null, wrapped.getMessage());
+  }
+
+  @Test
+  public void testWrapSocketException() throws Throwable {
+    IOException wrapped = verifyExceptionClass(new SocketException("failed"),
+        SocketException.class);
+    assertInException(wrapped, "failed");
+    assertWikified(wrapped);
+    assertInException(wrapped, "localhost");
+    assertRemoteDetailsIncluded(wrapped);
+    assertInException(wrapped, "/SocketException");
+  }
+
   @Test
   public void testGetConnectAddress() throws IOException {
     NetUtils.addStaticResolution("host", "127.0.0.1");
@@ -294,8 +372,51 @@ public class TestNetUtils {
     assertEquals(1000, addr.getPort());
 
     try {
-      addr = NetUtils.createSocketAddr(
+      NetUtils.createSocketAddr(
           "127.0.0.1:blahblah", 1000, "myconfig");
+      fail("Should have failed to parse bad port");
+    } catch (IllegalArgumentException iae) {
+      assertInException(iae, "myconfig");
+    }
+  }
+
+  @Test
+  public void testCreateSocketAddressWithURICache() throws Throwable {
+    InetSocketAddress addr = NetUtils.createSocketAddr(
+        "127.0.0.1:12345", 1000, "myconfig", true);
+    assertEquals("127.0.0.1", addr.getAddress().getHostAddress());
+    assertEquals(12345, addr.getPort());
+
+    addr = NetUtils.createSocketAddr(
+        "127.0.0.1:12345", 1000, "myconfig", true);
+    assertEquals("127.0.0.1", addr.getAddress().getHostAddress());
+    assertEquals(12345, addr.getPort());
+
+    // ----------------------------------------------------
+
+    addr = NetUtils.createSocketAddr(
+        "127.0.0.1", 1000, "myconfig", true);
+    assertEquals("127.0.0.1", addr.getAddress().getHostAddress());
+    assertEquals(1000, addr.getPort());
+
+    addr = NetUtils.createSocketAddr(
+        "127.0.0.1", 1000, "myconfig", true);
+    assertEquals("127.0.0.1", addr.getAddress().getHostAddress());
+    assertEquals(1000, addr.getPort());
+
+    // ----------------------------------------------------
+
+    try {
+      NetUtils.createSocketAddr(
+          "127.0.0.1:blahblah", 1000, "myconfig", true);
+      fail("Should have failed to parse bad port");
+    } catch (IllegalArgumentException iae) {
+      assertInException(iae, "myconfig");
+    }
+
+    try {
+      NetUtils.createSocketAddr(
+          "127.0.0.1:blahblah", 1000, "myconfig", true);
       fail("Should have failed to parse bad port");
     } catch (IllegalArgumentException iae) {
       assertInException(iae, "myconfig");
@@ -321,18 +442,18 @@ public class TestNetUtils {
   private void assertInException(Exception e, String text) throws Throwable {
     String message = extractExceptionMessage(e);
     if (!(message.contains(text))) {
-      throw new AssertionFailedError("Wrong text in message "
-                                         + "\"" + message + "\""
-                                         + " expected \"" + text + "\"")
+      throw new AssertionError("Wrong text in message "
+        + "\"" + message + "\""
+        + " expected \"" + text + "\"")
           .initCause(e);
     }
   }
 
   private String extractExceptionMessage(Exception e) throws Throwable {
-    assertNotNull("Null Exception", e);
+    assertNotNull(e, "Null Exception");
     String message = e.getMessage();
     if (message == null) {
-      throw new AssertionFailedError("Empty text in exception " + e)
+      throw new AssertionError("Empty text in exception " + e)
           .initCause(e);
     }
     return message;
@@ -342,9 +463,9 @@ public class TestNetUtils {
       throws Throwable{
     String message = extractExceptionMessage(e);
     if (message.contains(text)) {
-      throw new AssertionFailedError("Wrong text in message "
-                                         + "\"" + message + "\""
-                                         + " did not expect \"" + text + "\"")
+      throw new AssertionError("Wrong text in message "
+           + "\"" + message + "\""
+           + " did not expect \"" + text + "\"")
           .initCause(e);
     }
   }
@@ -352,16 +473,14 @@ public class TestNetUtils {
   private IOException verifyExceptionClass(IOException e,
                                            Class expectedClass)
       throws Throwable {
-    assertNotNull("Null Exception", e);
-    IOException wrapped =
-        NetUtils.wrapException("desthost", DEST_PORT,
-                               "localhost", LOCAL_PORT,
-                               e);
+    assertNotNull(e, "Null Exception");
+    IOException wrapped = NetUtils.wrapException("desthost", DEST_PORT,
+         "localhost", LOCAL_PORT, e);
     LOG.info(wrapped.toString(), wrapped);
     if(!(wrapped.getClass().equals(expectedClass))) {
-      throw new AssertionFailedError("Wrong exception class; expected "
-                                         + expectedClass
-                                         + " got " + wrapped.getClass() + ": " + wrapped).initCause(wrapped);
+      throw new AssertionError("Wrong exception class; expected "
+         + expectedClass
+         + " got " + wrapped.getClass() + ": " + wrapped).initCause(wrapped);
     }
     return wrapped;
   }
@@ -369,12 +488,12 @@ public class TestNetUtils {
   static NetUtilsTestResolver resolver;
   static Configuration config;
   
-  @BeforeClass
+  @BeforeAll
   public static void setupResolver() {
     resolver = NetUtilsTestResolver.install();
   }
   
-  @Before
+  @BeforeEach
   public void resetResolver() {
     resolver.reset();
     config = new Configuration();
@@ -615,20 +734,30 @@ public class TestNetUtils {
    * Test for {@link NetUtils#normalizeHostNames}
    */
   @Test
-  public void testNormalizeHostName() {	
-    List<String> hosts = Arrays.asList(new String[] {"127.0.0.1",
-        "localhost", "1.kanyezone.appspot.com", "UnknownHost123"});
+  public void testNormalizeHostName() {
+    String oneHost = "1.kanyezone.appspot.com";
+    try {
+      InetAddress.getByName(oneHost);
+    } catch (UnknownHostException e) {
+      assumeTrue(false, "Network not resolving " + oneHost);
+    }
+    List<String> hosts = Arrays.asList("127.0.0.1",
+        "localhost", oneHost, "UnknownHost123");
     List<String> normalizedHosts = NetUtils.normalizeHostNames(hosts);
+    String summary = "original [" + StringUtils.join(hosts, ", ") + "]"
+        + " normalized [" + StringUtils.join(normalizedHosts, ", ") + "]";
     // when ipaddress is normalized, same address is expected in return
-    assertEquals(normalizedHosts.get(0), hosts.get(0));
+    assertEquals(hosts.get(0), normalizedHosts.get(0), summary);
     // for normalizing a resolvable hostname, resolved ipaddress is expected in return
-    assertFalse(normalizedHosts.get(1).equals(hosts.get(1)));
-    assertEquals(normalizedHosts.get(1), hosts.get(0));
+    assertFalse(normalizedHosts.get(1).equals(hosts.get(1)),
+        "Element 1 equal "+ summary);
+    assertEquals(hosts.get(0), normalizedHosts.get(1), summary);
     // this address HADOOP-8372: when normalizing a valid resolvable hostname start with numeric, 
     // its ipaddress is expected to return
-    assertFalse(normalizedHosts.get(2).equals(hosts.get(2)));
+    assertFalse(normalizedHosts.get(2).equals(hosts.get(2)),
+        "Element 2 equal " + summary);
     // return the same hostname after normalizing a irresolvable hostname.
-    assertEquals(normalizedHosts.get(3), hosts.get(3));
+    assertEquals(hosts.get(3), normalizedHosts.get(3), summary);
   }
   
   @Test
@@ -654,9 +783,77 @@ public class TestNetUtils {
     assertEquals(defaultAddr.trim(), NetUtils.getHostPortString(addr));
   }
 
+  @Test
+  public void testGetPortFromHostPortString() throws Exception {
+
+    assertEquals(1002, NetUtils.getPortFromHostPortString("testHost:1002"));
+
+    LambdaTestUtils.intercept(IllegalArgumentException.class,
+        () ->  NetUtils.getPortFromHostPortString("testHost"));
+
+    LambdaTestUtils.intercept(IllegalArgumentException.class,
+        () ->  NetUtils.getPortFromHostPortString("testHost:randomString"));
+  }
+
+  @Test
+  public void testBindToLocalAddress() throws Exception {
+    assertNotNull(NetUtils
+        .bindToLocalAddress(NetUtils.getLocalInetAddress("127.0.0.1"), false));
+    assertNull(NetUtils
+        .bindToLocalAddress(NetUtils.getLocalInetAddress("127.0.0.1"), true));
+  }
+
+  public static class WrappedIOException extends IOException {
+    public WrappedIOException(String msg, Throwable cause) {
+      super(msg, cause);
+    }
+  }
+
+  private static class PrivateIOException extends IOException {
+    PrivateIOException(String msg, Throwable cause) {
+      super(msg, cause);
+    }
+  }
+
+  @Test
+  public void testAddNodeNameToIOException() {
+    IOException e0 = new IOException("test123");
+    assertNullCause(e0);
+    IOException new0 = NetUtils.addNodeNameToIOException(e0, "node123");
+    assertNullCause(new0);
+    assertEquals("node123: test123", new0.getMessage());
+
+    IOException e1 = new IOException("test456", new IllegalStateException("deliberate"));
+    IOException new1 = NetUtils.addNodeNameToIOException(e1, "node456");
+    assertSame(e1.getCause(), new1.getCause());
+    assertEquals("node456: test456", new1.getMessage());
+
+    ZipException e2 = new ZipException("test789");
+    assertNullCause(e2);
+    IOException new2 = NetUtils.addNodeNameToIOException(e2, "node789");
+    assertNullCause(new2);
+    assertEquals("node789: test789", new2.getMessage());
+
+    WrappedIOException e3 = new WrappedIOException("test987",
+        new IllegalStateException("deliberate"));
+    IOException new3 = NetUtils.addNodeNameToIOException(e3, "node987");
+    assertSame(e3.getCause(), new3.getCause());
+    assertEquals("node987: test987", new3.getMessage());
+
+    // addNodeNameToIOException will return the original exception if the class is not accessible
+    PrivateIOException e4 = new PrivateIOException("test654",
+        new IllegalStateException("deliberate"));
+    IOException new4 = NetUtils.addNodeNameToIOException(e4, "node654");
+    assertSame(e4, new4);
+  }
+
   private <T> void assertBetterArrayEquals(T[] expect, T[]got) {
     String expectStr = StringUtils.join(expect, ", ");
     String gotStr = StringUtils.join(got, ", ");
     assertEquals(expectStr, gotStr);
+  }
+
+  private void assertNullCause(Exception e) {
+    assertNull(e.getCause(), "Expected exception to have null cause");
   }
 }

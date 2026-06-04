@@ -17,22 +17,31 @@
  */
 package org.apache.hadoop.fs.shell.find;
 
-import static org.junit.Assert.*;
-import static org.mockito.Mockito.*;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.mockito.Mockito.when;
 
 import java.io.IOException;
 import java.util.Deque;
 
 import org.apache.hadoop.fs.shell.PathData;
 
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
+@Timeout(10)
 public class TestFilterExpression {
   private Expression expr;
   private FilterExpression test;
 
-  @Before
+  @BeforeEach
   public void setup() {
     expr = mock(Expression.class);
     test = new FilterExpression(expr) {
@@ -40,13 +49,13 @@ public class TestFilterExpression {
   }
 
   // test that the child expression is correctly set
-  @Test(timeout = 1000)
+  @Test
   public void expression() throws IOException {
     assertEquals(expr, test.expression);
   }
 
   // test that setOptions method is called
-  @Test(timeout = 1000)
+  @Test
   public void setOptions() throws IOException {
     FindOptions options = mock(FindOptions.class);
     test.setOptions(options);
@@ -55,7 +64,7 @@ public class TestFilterExpression {
   }
 
   // test the apply method is called and the result returned
-  @Test(timeout = 1000)
+  @Test
   public void apply() throws IOException {
     PathData item = mock(PathData.class);
     when(expr.apply(item, -1)).thenReturn(Result.PASS).thenReturn(Result.FAIL);
@@ -66,7 +75,7 @@ public class TestFilterExpression {
   }
 
   // test that the finish method is called
-  @Test(timeout = 1000)
+  @Test
   public void finish() throws IOException {
     test.finish();
     verify(expr).finish();
@@ -74,7 +83,7 @@ public class TestFilterExpression {
   }
 
   // test that the getUsage method is called
-  @Test(timeout = 1000)
+  @Test
   public void getUsage() {
     String[] usage = new String[] { "Usage 1", "Usage 2", "Usage 3" };
     when(expr.getUsage()).thenReturn(usage);
@@ -84,7 +93,7 @@ public class TestFilterExpression {
   }
 
   // test that the getHelp method is called
-  @Test(timeout = 1000)
+  @Test
   public void getHelp() {
     String[] help = new String[] { "Help 1", "Help 2", "Help 3" };
     when(expr.getHelp()).thenReturn(help);
@@ -94,7 +103,7 @@ public class TestFilterExpression {
   }
 
   // test that the isAction method is called
-  @Test(timeout = 1000)
+  @Test
   public void isAction() {
     when(expr.isAction()).thenReturn(true).thenReturn(false);
     assertTrue(test.isAction());
@@ -104,7 +113,7 @@ public class TestFilterExpression {
   }
 
   // test that the isOperator method is called
-  @Test(timeout = 1000)
+  @Test
   public void isOperator() {
     when(expr.isAction()).thenReturn(true).thenReturn(false);
     assertTrue(test.isAction());
@@ -114,7 +123,7 @@ public class TestFilterExpression {
   }
 
   // test that the getPrecedence method is called
-  @Test(timeout = 1000)
+  @Test
   public void getPrecedence() {
     int precedence = 12345;
     when(expr.getPrecedence()).thenReturn(precedence);
@@ -124,7 +133,7 @@ public class TestFilterExpression {
   }
 
   // test that the addChildren method is called
-  @Test(timeout = 1000)
+  @Test
   public void addChildren() {
     @SuppressWarnings("unchecked")
     Deque<Expression> expressions = mock(Deque.class);
@@ -134,7 +143,7 @@ public class TestFilterExpression {
   }
 
   // test that the addArguments method is called
-  @Test(timeout = 1000)
+  @Test
   public void addArguments() {
     @SuppressWarnings("unchecked")
     Deque<String> args = mock(Deque.class);

@@ -23,18 +23,19 @@ import java.security.PrivilegedExceptionAction;
 import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
 
-import org.apache.commons.logging.Log;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSUtil;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.util.Lists;
+import org.apache.hadoop.util.Sets;
 
-import com.google.common.base.Joiner;
-import com.google.common.base.Preconditions;
-import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
-import com.google.common.collect.Sets;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.base.Joiner;
+import org.apache.hadoop.util.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
+import org.slf4j.Logger;
 
 /**
  * Manages the BPOfferService objects for the data node.
@@ -43,7 +44,7 @@ import com.google.common.collect.Sets;
  */
 @InterfaceAudience.Private
 class BlockPoolManager {
-  private static final Log LOG = DataNode.LOG;
+  private static final Logger LOG = DataNode.LOG;
   
   private final Map<String, BPOfferService> bpByNameserviceId =
     Maps.newHashMap();
@@ -146,23 +147,39 @@ class BlockPoolManager {
   
   void refreshNamenodes(Configuration conf)
       throws IOException {
-    LOG.info("Refresh request received for nameservices: " + conf.get
-            (DFSConfigKeys.DFS_NAMESERVICES));
+    LOG.info("Refresh request received for nameservices: " +
+        conf.get(DFSConfigKeys.DFS_NAMESERVICES));
 
-    Map<String, Map<String, InetSocketAddress>> newAddressMap = DFSUtil
-            .getNNServiceRpcAddressesForCluster(conf);
+    Map<String, Map<String, InetSocketAddress>> newAddressMap = null;
+    Map<String, Map<String, InetSocketAddress>> newLifelineAddressMap = null;
+
+    try {
+      newAddressMap =
+          DFSUtil.getNNServiceRpcAddressesForCluster(conf);
+      newLifelineAddressMap =
+          DFSUtil.getNNLifelineRpcAddressesForCluster(conf);
+    } catch (IOException ioe) {
+      LOG.warn("Unable to get NameNode addresses.", ioe);
+    }
+
+    if (newAddressMap == null || newAddressMap.isEmpty()) {
+      throw new IOException("No services to connect, missing NameNode " +
+          "address.");
+    }
 
     synchronized (refreshNamenodesLock) {
-      doRefreshNamenodes(newAddressMap);
+      doRefreshNamenodes(newAddressMap, newLifelineAddressMap);
     }
   }
   
   private void doRefreshNamenodes(
-      Map<String, Map<String, InetSocketAddress>> addrMap) throws IOException {
+      Map<String, Map<String, InetSocketAddress>> addrMap,
+      Map<String, Map<String, InetSocketAddress>> lifelineAddrMap)
+      throws IOException {
     assert Thread.holdsLock(refreshNamenodesLock);
 
-    Set<String> toRefresh = Sets.newLinkedHashSet();
-    Set<String> toAdd = Sets.newLinkedHashSet();
+    Set<String> toRefresh = new LinkedHashSet<>();
+    Set<String> toAdd = new LinkedHashSet<>();
     Set<String> toRemove;
     
     synchronized (this) {
@@ -179,8 +196,8 @@ class BlockPoolManager {
       
       // Step 2. Any nameservices we currently have but are no longer present
       // need to be removed.
-      toRemove = Sets.newHashSet(Sets.difference(
-          bpByNameserviceId.keySet(), addrMap.keySet()));
+      toRemove = Sets.difference(
+          bpByNameserviceId.keySet(), addrMap.keySet());
       
       assert toRefresh.size() + toAdd.size() ==
         addrMap.size() :
@@ -195,9 +212,23 @@ class BlockPoolManager {
             Joiner.on(",").useForNull("<default>").join(toAdd));
       
         for (String nsToAdd : toAdd) {
+          Map<String, InetSocketAddress> nnIdToAddr = addrMap.get(nsToAdd);
+          Map<String, InetSocketAddress> nnIdToLifelineAddr =
+              lifelineAddrMap.get(nsToAdd);
           ArrayList<InetSocketAddress> addrs =
-            Lists.newArrayList(addrMap.get(nsToAdd).values());
-          BPOfferService bpos = createBPOS(addrs);
+              Lists.newArrayListWithCapacity(nnIdToAddr.size());
+          ArrayList<String> nnIds =
+              Lists.newArrayListWithCapacity(nnIdToAddr.size());
+          ArrayList<InetSocketAddress> lifelineAddrs =
+              Lists.newArrayListWithCapacity(nnIdToAddr.size());
+          for (String nnId : nnIdToAddr.keySet()) {
+            addrs.add(nnIdToAddr.get(nnId));
+            nnIds.add(nnId);
+            lifelineAddrs.add(nnIdToLifelineAddr != null ?
+                nnIdToLifelineAddr.get(nnId) : null);
+          }
+          BPOfferService bpos = createBPOS(nsToAdd, nnIds, addrs,
+              lifelineAddrs);
           bpByNameserviceId.put(nsToAdd, bpos);
           offerServices.add(bpos);
         }
@@ -227,9 +258,35 @@ class BlockPoolManager {
       
       for (String nsToRefresh : toRefresh) {
         BPOfferService bpos = bpByNameserviceId.get(nsToRefresh);
+        Map<String, InetSocketAddress> nnIdToAddr = addrMap.get(nsToRefresh);
+        Map<String, InetSocketAddress> nnIdToLifelineAddr =
+            lifelineAddrMap.get(nsToRefresh);
         ArrayList<InetSocketAddress> addrs =
-          Lists.newArrayList(addrMap.get(nsToRefresh).values());
-        bpos.refreshNNList(addrs);
+            Lists.newArrayListWithCapacity(nnIdToAddr.size());
+        ArrayList<InetSocketAddress> lifelineAddrs =
+            Lists.newArrayListWithCapacity(nnIdToAddr.size());
+        ArrayList<String> nnIds = Lists.newArrayListWithCapacity(
+            nnIdToAddr.size());
+        for (String nnId : nnIdToAddr.keySet()) {
+          addrs.add(nnIdToAddr.get(nnId));
+          lifelineAddrs.add(nnIdToLifelineAddr != null ?
+              nnIdToLifelineAddr.get(nnId) : null);
+          nnIds.add(nnId);
+        }
+        try {
+          UserGroupInformation.getLoginUser()
+              .doAs(new PrivilegedExceptionAction<Object>() {
+                @Override
+                public Object run() throws Exception {
+                  bpos.refreshNNList(nsToRefresh, nnIds, addrs, lifelineAddrs);
+                  return null;
+                }
+              });
+        } catch (InterruptedException ex) {
+          IOException ioe = new IOException();
+          ioe.initCause(ex.getCause());
+          throw ioe;
+        }
       }
     }
   }
@@ -237,7 +294,33 @@ class BlockPoolManager {
   /**
    * Extracted out for test purposes.
    */
-  protected BPOfferService createBPOS(List<InetSocketAddress> nnAddrs) {
-    return new BPOfferService(nnAddrs, dn);
+  protected BPOfferService createBPOS(
+      final String nameserviceId,
+      List<String> nnIds,
+      List<InetSocketAddress> nnAddrs,
+      List<InetSocketAddress> lifelineNnAddrs) {
+    return new BPOfferService(nameserviceId, nnIds, nnAddrs, lifelineNnAddrs,
+        dn);
+  }
+
+  @VisibleForTesting
+  Map<String, BPOfferService> getBpByNameserviceId() {
+    return bpByNameserviceId;
+  }
+
+  boolean isSlownodeByBlockPoolId(String bpId) {
+    if (bpByBlockPoolId.containsKey(bpId)) {
+      return bpByBlockPoolId.get(bpId).isSlownode();
+    }
+    return false;
+  }
+
+  boolean isSlownode() {
+    for (BPOfferService bpOfferService : bpByBlockPoolId.values()) {
+      if (bpOfferService.isSlownode()) {
+        return true;
+      }
+    }
+    return false;
   }
 }

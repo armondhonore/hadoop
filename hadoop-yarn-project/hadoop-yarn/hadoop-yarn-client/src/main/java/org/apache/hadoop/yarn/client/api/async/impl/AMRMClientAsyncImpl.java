@@ -19,16 +19,18 @@
 package org.apache.hadoop.yarn.client.api.async.impl;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 import org.apache.hadoop.yarn.api.protocolrecords.AllocateResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.RegisterApplicationMasterResponse;
 import org.apache.hadoop.yarn.api.records.Container;
@@ -36,53 +38,87 @@ import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.ContainerStatus;
 import org.apache.hadoop.yarn.api.records.FinalApplicationStatus;
 import org.apache.hadoop.yarn.api.records.NodeReport;
+import org.apache.hadoop.yarn.api.records.PreemptionMessage;
 import org.apache.hadoop.yarn.api.records.Priority;
+import org.apache.hadoop.yarn.api.records.RejectedSchedulingRequest;
 import org.apache.hadoop.yarn.api.records.Resource;
+import org.apache.hadoop.yarn.api.records.SchedulingRequest;
+import org.apache.hadoop.yarn.api.records.UpdateContainerRequest;
+import org.apache.hadoop.yarn.api.records.UpdatedContainer;
+import org.apache.hadoop.yarn.api.resource.PlacementConstraint;
 import org.apache.hadoop.yarn.client.api.AMRMClient;
 import org.apache.hadoop.yarn.client.api.AMRMClient.ContainerRequest;
+import org.apache.hadoop.yarn.client.api.TimelineV2Client;
 import org.apache.hadoop.yarn.client.api.async.AMRMClientAsync;
 import org.apache.hadoop.yarn.client.api.impl.AMRMClientImpl;
 import org.apache.hadoop.yarn.exceptions.ApplicationAttemptNotFoundException;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @Private
 @Unstable
 public class AMRMClientAsyncImpl<T extends ContainerRequest> 
 extends AMRMClientAsync<T> {
   
-  private static final Log LOG = LogFactory.getLog(AMRMClientAsyncImpl.class);
+  private static final Logger LOG =
+          LoggerFactory.getLogger(AMRMClientAsyncImpl.class);
   
   private final HeartbeatThread heartbeatThread;
   private final CallbackHandlerThread handlerThread;
 
-  private final BlockingQueue<AllocateResponse> responseQueue;
+  private final BlockingQueue<Object> responseQueue;
   
   private final Object unregisterHeartbeatLock = new Object();
   
   private volatile boolean keepRunning;
   private volatile float progress;
-  
-  private volatile Throwable savedException;
-  
+
+  /**
+   *
+   * @param intervalMs heartbeat interval in milliseconds between AM and RM
+   * @param callbackHandler callback handler that processes responses from
+   *                        the <code>ResourceManager</code>
+   */
+  public AMRMClientAsyncImpl(
+      int intervalMs, AbstractCallbackHandler callbackHandler) {
+    this(new AMRMClientImpl<T>(), intervalMs, callbackHandler);
+  }
+
+  public AMRMClientAsyncImpl(AMRMClient<T> client, int intervalMs,
+      AbstractCallbackHandler callbackHandler) {
+    super(client, intervalMs, callbackHandler);
+    heartbeatThread = new HeartbeatThread();
+    handlerThread = new CallbackHandlerThread();
+    responseQueue = new LinkedBlockingQueue<>();
+    keepRunning = true;
+  }
+
+  /**
+   *
+   * @deprecated Use {@link #AMRMClientAsyncImpl(int,
+   *             AMRMClientAsync.AbstractCallbackHandler)} instead.
+   */
+  @Deprecated
   public AMRMClientAsyncImpl(int intervalMs, CallbackHandler callbackHandler) {
     this(new AMRMClientImpl<T>(), intervalMs, callbackHandler);
   }
-  
+
   @Private
   @VisibleForTesting
+  @Deprecated
   public AMRMClientAsyncImpl(AMRMClient<T> client, int intervalMs,
       CallbackHandler callbackHandler) {
     super(client, intervalMs, callbackHandler);
     heartbeatThread = new HeartbeatThread();
     handlerThread = new CallbackHandlerThread();
-    responseQueue = new LinkedBlockingQueue<AllocateResponse>();
+    responseQueue = new LinkedBlockingQueue<Object>();
     keepRunning = true;
-    savedException = null;
   }
-    
+
   @Override
   protected void serviceInit(Configuration conf) throws Exception {
     super.serviceInit(conf);
@@ -114,29 +150,57 @@ extends AMRMClientAsync<T> {
     handlerThread.interrupt();
     super.serviceStop();
   }
-  
-  public void setHeartbeatInterval(int interval) {
-    heartbeatIntervalMs.set(interval);
-  }
-  
+
   public List<? extends Collection<T>> getMatchingRequests(
                                                    Priority priority, 
                                                    String resourceName, 
                                                    Resource capability) {
     return client.getMatchingRequests(priority, resourceName, capability);
   }
-  
+
+  @Override
+  public void addSchedulingRequests(
+      Collection<SchedulingRequest> schedulingRequests) {
+    client.addSchedulingRequests(schedulingRequests);
+  }
+
   /**
    * Registers this application master with the resource manager. On successful
    * registration, starts the heartbeating thread.
+   *
+   * @param appHostName Name of the host on which master is running
+   * @param appHostPort Port master is listening on
+   * @param appTrackingUrl URL at which the master info can be seen
+   * @return Register AM Response.
    * @throws YarnException
    * @throws IOException
    */
   public RegisterApplicationMasterResponse registerApplicationMaster(
       String appHostName, int appHostPort, String appTrackingUrl)
       throws YarnException, IOException {
+    return registerApplicationMaster(
+        appHostName, appHostPort, appTrackingUrl, null);
+  }
+
+  /**
+   * Registers this application master with the resource manager. On successful
+   * registration, starts the heartbeating thread.
+   *
+   * @param appHostName Name of the host on which master is running
+   * @param appHostPort Port master is listening on
+   * @param appTrackingUrl URL at which the master info can be seen
+   * @param placementConstraintsMap Placement Constraints Mapping.
+   * @return Register AM Response.
+   * @throws YarnException
+   * @throws IOException
+   */
+  public RegisterApplicationMasterResponse registerApplicationMaster(
+      String appHostName, int appHostPort, String appTrackingUrl,
+      Map<Set<String>, PlacementConstraint> placementConstraintsMap)
+      throws YarnException, IOException {
     RegisterApplicationMasterResponse response = client
-        .registerApplicationMaster(appHostName, appHostPort, appTrackingUrl);
+        .registerApplicationMaster(appHostName, appHostPort,
+            appTrackingUrl, placementConstraintsMap);
     heartbeatThread.start();
     return response;
   }
@@ -175,6 +239,12 @@ extends AMRMClientAsync<T> {
    */
   public void removeContainerRequest(T req) {
     client.removeContainerRequest(req);
+  }
+
+  @Override
+  public void requestContainerUpdate(Container container,
+      UpdateContainerRequest updateContainerRequest) {
+    client.requestContainerUpdate(container, updateContainerRequest);
   }
 
   /**
@@ -218,15 +288,20 @@ extends AMRMClientAsync<T> {
                               List<String> blacklistRemovals) {
     client.updateBlacklist(blacklistAdditions, blacklistRemovals);
   }
+
+  @Override
+  public void updateTrackingUrl(String trackingUrl) {
+    client.updateTrackingUrl(trackingUrl);
+  }
   
-  private class HeartbeatThread extends Thread {
+  private class HeartbeatThread extends SubjectInheritingThread {
     public HeartbeatThread() {
       super("AMRM Heartbeater thread");
     }
     
-    public void run() {
+    public void work() {
       while (true) {
-        AllocateResponse response = null;
+        Object response = null;
         // synchronization ensures we don't send heartbeats after unregistering
         synchronized (unregisterHeartbeatLock) {
           if (!keepRunning) {
@@ -241,10 +316,7 @@ extends AMRMClientAsync<T> {
             return;
           } catch (Throwable ex) {
             LOG.error("Exception on heartbeat", ex);
-            savedException = ex;
-            // interrupt handler thread in case it waiting on the queue
-            handlerThread.interrupt();
-            return;
+            response = ex;
           }
           if (response != null) {
             while (true) {
@@ -266,29 +338,44 @@ extends AMRMClientAsync<T> {
     }
   }
   
-  private class CallbackHandlerThread extends Thread {
+  private class CallbackHandlerThread extends SubjectInheritingThread {
     public CallbackHandlerThread() {
       super("AMRM Callback Handler Thread");
     }
     
-    public void run() {
+    public void work() {
       while (true) {
         if (!keepRunning) {
           return;
         }
         try {
-          AllocateResponse response;
-          if(savedException != null) {
-            LOG.error("Stopping callback due to: ", savedException);
-            handler.onError(savedException);
-            return;
-          }
+          Object object;
           try {
-            response = responseQueue.take();
+            object = responseQueue.take();
           } catch (InterruptedException ex) {
-            LOG.info("Interrupted while waiting for queue", ex);
+            LOG.debug("Interrupted while waiting for queue", ex);
+            Thread.currentThread().interrupt();
             continue;
           }
+          if (object instanceof Throwable) {
+            progress = handler.getProgress();
+            handler.onError((Throwable) object);
+            continue;
+          }
+
+          AllocateResponse response = (AllocateResponse) object;
+          String collectorAddress = null;
+          if (response.getCollectorInfo() != null) {
+            collectorAddress = response.getCollectorInfo().getCollectorAddr();
+          }
+
+          TimelineV2Client timelineClient =
+              client.getRegisteredTimelineV2Client();
+          if (timelineClient != null && response.getCollectorInfo() != null) {
+            timelineClient.
+                setTimelineCollectorInfo(response.getCollectorInfo());
+          }
+
           List<NodeReport> updatedNodes = response.getUpdatedNodes();
           if (!updatedNodes.isEmpty()) {
             handler.onNodesUpdated(updatedNodes);
@@ -300,11 +387,45 @@ extends AMRMClientAsync<T> {
             handler.onContainersCompleted(completed);
           }
 
+          if (handler instanceof AMRMClientAsync.AbstractCallbackHandler) {
+            // RM side of the implementation guarantees that there are
+            // no duplications between increased and decreased containers
+            List<UpdatedContainer> changed = new ArrayList<>();
+            changed.addAll(response.getUpdatedContainers());
+            if (!changed.isEmpty()) {
+              ((AMRMClientAsync.AbstractCallbackHandler) handler)
+                  .onContainersUpdated(changed);
+            }
+          }
+
           List<Container> allocated = response.getAllocatedContainers();
           if (!allocated.isEmpty()) {
             handler.onContainersAllocated(allocated);
           }
 
+          PreemptionMessage preemptionMessage = response.getPreemptionMessage();
+          if (preemptionMessage != null) {
+            if (handler instanceof AMRMClientAsync.AbstractCallbackHandler) {
+              ((AMRMClientAsync.AbstractCallbackHandler) handler)
+                  .onPreemptionMessageReceived(preemptionMessage);
+            }
+          }
+
+          if (!response.getContainersFromPreviousAttempts().isEmpty()) {
+            if (handler instanceof AMRMClientAsync.AbstractCallbackHandler) {
+              ((AMRMClientAsync.AbstractCallbackHandler) handler)
+                  .onContainersReceivedFromPreviousAttempts(
+                      response.getContainersFromPreviousAttempts());
+            }
+          }
+          List<RejectedSchedulingRequest> rejectedSchedulingRequests =
+              response.getRejectedSchedulingRequests();
+          if (!rejectedSchedulingRequests.isEmpty()) {
+            if (handler instanceof AMRMClientAsync.AbstractCallbackHandler) {
+              ((AMRMClientAsync.AbstractCallbackHandler) handler)
+                  .onRequestsRejected(rejectedSchedulingRequests);
+            }
+          }
           progress = handler.getProgress();
         } catch (Throwable ex) {
           handler.onError(ex);

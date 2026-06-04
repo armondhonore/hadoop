@@ -30,8 +30,6 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.v2.api.records.JobId;
@@ -47,11 +45,15 @@ import org.apache.hadoop.mapreduce.v2.app.job.event.TaskAttemptStatusUpdateEvent
 import org.apache.hadoop.mapreduce.v2.app.job.event.TaskEvent;
 import org.apache.hadoop.mapreduce.v2.app.job.event.TaskEventType;
 import org.apache.hadoop.service.AbstractService;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 import org.apache.hadoop.yarn.event.EventHandler;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 import org.apache.hadoop.yarn.util.Clock;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.yarn.event.Event;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class DefaultSpeculator extends AbstractService implements
     Speculator {
@@ -69,7 +71,8 @@ public class DefaultSpeculator extends AbstractService implements
   private double proportionTotalTasksSpeculatable;
   private int  minimumAllowedSpeculativeTasks;
 
-  private static final Log LOG = LogFactory.getLog(DefaultSpeculator.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(DefaultSpeculator.class);
 
   private final ConcurrentMap<TaskId, Boolean> runningTasks
       = new ConcurrentHashMap<TaskId, Boolean>();
@@ -98,15 +101,13 @@ public class DefaultSpeculator extends AbstractService implements
   private AppContext context;
   private Thread speculationBackgroundThread = null;
   private volatile boolean stopped = false;
-  private BlockingQueue<SpeculatorEvent> eventQueue
-      = new LinkedBlockingQueue<SpeculatorEvent>();
   private TaskRuntimeEstimator estimator;
 
   private BlockingQueue<Object> scanControl = new LinkedBlockingQueue<Object>();
 
   private final Clock clock;
 
-  private final EventHandler<TaskEvent> eventHandler;
+  private final EventHandler<Event> eventHandler;
 
   public DefaultSpeculator(Configuration conf, AppContext context) {
     this(conf, context, context.getClock());
@@ -219,7 +220,7 @@ public class DefaultSpeculator extends AbstractService implements
               }
             }
           };
-    speculationBackgroundThread = new Thread
+    speculationBackgroundThread = new SubjectInheritingThread
         (speculationBackgroundCore, "DefaultSpeculator background processing");
     speculationBackgroundThread.start();
 
@@ -245,7 +246,7 @@ public class DefaultSpeculator extends AbstractService implements
   // This section is not part of the Speculator interface; it's used only for
   //  testing
   public boolean eventQueueEmpty() {
-    return eventQueue.isEmpty();
+    return scanControl.isEmpty();
   }
 
   // This interface is intended to be used only for test cases.
@@ -416,7 +417,8 @@ public class DefaultSpeculator extends AbstractService implements
           if (estimatedRunTime == data.getEstimatedRunTime()
               && progress == data.getProgress()) {
             // Previous stats are same as same stats
-            if (data.notHeartbeatedInAWhile(now)) {
+            if (data.notHeartbeatedInAWhile(now)
+                || estimator.hasStagnatedProgress(runningTaskAttemptID, now)) {
               // Stats have stagnated for a while, simulate heart-beat.
               TaskAttemptStatus taskAttemptStatus = new TaskAttemptStatus();
               taskAttemptStatus.id = runningTaskAttemptID;

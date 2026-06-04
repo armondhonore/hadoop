@@ -25,13 +25,13 @@ this="${BASH_SOURCE-$0}"
 bin=$(cd -P -- "$(dirname -- "${this}")" >/dev/null && pwd -P)
 
 # let's locate libexec...
-if [[ -n "${HADOOP_PREFIX}" ]]; then
-  DEFAULT_LIBEXEC_DIR="${HADOOP_PREFIX}/libexec"
+if [[ -n "${HADOOP_HOME}" ]]; then
+  HADOOP_DEFAULT_LIBEXEC_DIR="${HADOOP_HOME}/libexec"
 else
-  DEFAULT_LIBEXEC_DIR="${bin}/../libexec"
+  HADOOP_DEFAULT_LIBEXEC_DIR="${bin}/../libexec"
 fi
 
-HADOOP_LIBEXEC_DIR="${HADOOP_LIBEXEC_DIR:-$DEFAULT_LIBEXEC_DIR}"
+HADOOP_LIBEXEC_DIR="${HADOOP_LIBEXEC_DIR:-$HADOOP_DEFAULT_LIBEXEC_DIR}"
 # shellcheck disable=SC2034
 HADOOP_NEW_CONFIG=true
 if [[ -f "${HADOOP_LIBEXEC_DIR}/yarn-config.sh" ]]; then
@@ -47,13 +47,13 @@ daemonmode=$1
 shift
 
 hadoop_error "WARNING: Use of this script to ${daemonmode} YARN daemons is deprecated."
-hadoop_error "WARNING: Attempting to execute replacement \"yarn --slaves --daemon ${daemonmode}\" instead."
+hadoop_error "WARNING: Attempting to execute replacement \"yarn --workers --daemon ${daemonmode}\" instead."
 
 #
 # Original input was usually:
 #  yarn-daemons.sh (shell options) (start|stop) nodemanager (daemon options)
 # we're going to turn this into
-#  yarn --slaves --daemon (start|stop) (rest of options)
+#  yarn --workers --daemon (start|stop) (rest of options)
 #
 for (( i = 0; i < ${#HADOOP_USER_PARAMS[@]}; i++ ))
 do
@@ -64,5 +64,5 @@ do
   fi
 done
 
-${yarnscript} --slaves --daemon "${daemonmode}" "${HADOOP_USER_PARAMS[@]}"
+${yarnscript} --workers --daemon "${daemonmode}" "${HADOOP_USER_PARAMS[@]}"
 

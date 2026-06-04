@@ -23,17 +23,18 @@ import java.text.SimpleDateFormat;
 import java.util.Random;
 import java.util.StringTokenizer;
 
-import junit.framework.TestCase;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.CommandLineParser;
-import org.apache.commons.cli.GnuParser;
+import org.apache.commons.cli.DefaultParser;
 import org.apache.commons.cli.HelpFormatter;
 import org.apache.commons.cli.Option;
-import org.apache.commons.cli.OptionBuilder;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
-import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
@@ -43,9 +44,10 @@ import org.apache.hadoop.io.BytesWritable;
 import org.apache.hadoop.io.SequenceFile;
 import org.apache.hadoop.io.compress.CompressionCodec;
 import org.apache.hadoop.io.file.tfile.TFile.Reader.Scanner.Entry;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.Time;
 
-public class TestTFileSeqFileComparison extends TestCase {
+public class TestTFileSeqFileComparison {
   MyOptions options;
 
   private FileSystem fs;
@@ -55,7 +57,7 @@ public class TestTFileSeqFileComparison extends TestCase {
   private DateFormat formatter;
   byte[][] dictionary;
 
-  @Override
+  @BeforeEach
   public void setUp() throws IOException {
     if (options == null) {
       options = new MyOptions(new String[0]);
@@ -82,7 +84,7 @@ public class TestTFileSeqFileComparison extends TestCase {
     }
   }
 
-  @Override
+  @AfterEach
   public void tearDown() throws IOException {
     // do nothing
   }
@@ -151,8 +153,8 @@ public class TestTFileSeqFileComparison extends TestCase {
     @Override
     public void append(BytesWritable key, BytesWritable value)
         throws IOException {
-      writer.append(key.get(), 0, key.getSize(), value.get(), 0, value
-          .getSize());
+      writer.append(key.getBytes(), 0, key.getLength(), value.getBytes(), 0,
+          value.getLength());
     }
 
     @Override
@@ -301,22 +303,22 @@ public class TestTFileSeqFileComparison extends TestCase {
 
     @Override
     public byte[] getKey() {
-      return key.get();
+      return key.getBytes();
     }
 
     @Override
     public int getKeyLength() {
-      return key.getSize();
+      return key.getLength();
     }
 
     @Override
     public byte[] getValue() {
-      return value.get();
+      return value.getBytes();
     }
 
     @Override
     public int getValueLength() {
-      return value.getSize();
+      return value.getLength();
     }
 
     @Override
@@ -479,6 +481,7 @@ public class TestTFileSeqFileComparison extends TestCase {
     readSeqFile(parameters, true);
   }
 
+  @Test
   public void testRunComparisons() throws IOException {
     String[] compresses = new String[] { "none", "lzo", "gz" };
     for (String compress : compresses) {
@@ -512,9 +515,7 @@ public class TestTFileSeqFileComparison extends TestCase {
   }
 
   private static class MyOptions {
-    String rootDir =
-        System
-            .getProperty("test.build.data", "/tmp/tfile-test");
+    String rootDir = GenericTestUtils.getTestDir().getAbsolutePath();
     String compress = "gz";
     String format = "tfile";
     int dictSize = 1000;
@@ -551,7 +552,7 @@ public class TestTFileSeqFileComparison extends TestCase {
 
       try {
         Options opts = buildOptions();
-        CommandLineParser parser = new GnuParser();
+        CommandLineParser parser = new DefaultParser();
         CommandLine line = parser.parse(opts, args, true);
         processOptions(line, opts);
         validateOptions();
@@ -569,87 +570,70 @@ public class TestTFileSeqFileComparison extends TestCase {
 
     private Options buildOptions() {
       Option compress =
-          OptionBuilder.withLongOpt("compress").withArgName("[none|lzo|gz]")
-              .hasArg().withDescription("compression scheme").create('c');
+          Option.builder("c").longOpt("compress").argName("[none|lzo|gz]")
+          .hasArg().desc("compression scheme").build();
 
       Option ditSize =
-          OptionBuilder.withLongOpt("dict").withArgName("size").hasArg()
-              .withDescription("number of dictionary entries").create('d');
+          Option.builder("d").longOpt("dict").argName("size")
+          .hasArg().desc("number of dictionary entries").build();
 
       Option fileSize =
-          OptionBuilder.withLongOpt("file-size").withArgName("size-in-MB")
-              .hasArg().withDescription("target size of the file (in MB).")
-              .create('s');
+          Option.builder("s").longOpt("file-size").argName("size-in-MB")
+          .hasArg().desc("target size of the file (in MB).").build();
 
       Option format =
-          OptionBuilder.withLongOpt("format").withArgName("[tfile|seqfile]")
-              .hasArg().withDescription("choose TFile or SeqFile").create('f');
+          Option.builder("f").longOpt("format").argName("[tfile|seqfile]")
+          .hasArg().desc("choose TFile or SeqFile").build();
 
       Option fsInputBufferSz =
-          OptionBuilder.withLongOpt("fs-input-buffer").withArgName("size")
-              .hasArg().withDescription(
-                  "size of the file system input buffer (in bytes).").create(
-                  'i');
+          Option.builder("i").longOpt("fs-input-buffer").argName("size")
+          .hasArg().desc("size of the file system input buffer (in bytes).").build();
 
       Option fsOutputBufferSize =
-          OptionBuilder.withLongOpt("fs-output-buffer").withArgName("size")
-              .hasArg().withDescription(
-                  "size of the file system output buffer (in bytes).").create(
-                  'o');
+          Option.builder("o").longOpt("fs-output-buffer").argName("size")
+          .hasArg().desc("size of the file system output buffer (in bytes).").build();
 
       Option keyLen =
-          OptionBuilder
-              .withLongOpt("key-length")
-              .withArgName("length")
-              .hasArg()
-              .withDescription(
-                  "base length of the key (in bytes), actual length varies in [base, 2*base)")
-              .create('k');
+          Option.builder("o").longOpt("key-length").argName("length")
+          .hasArg()
+          .desc("base length of the key (in bytes), actual length varies in [base, 2*base)")
+          .build();
 
       Option valueLen =
-          OptionBuilder
-              .withLongOpt("value-length")
-              .withArgName("length")
-              .hasArg()
-              .withDescription(
-                  "base length of the value (in bytes), actual length varies in [base, 2*base)")
-              .create('v');
+          Option.builder("v").longOpt("key-length").argName("length")
+          .longOpt("value-length").argName("length").hasArg()
+          .desc("base length of the value (in bytes), actual length varies in [base, 2*base)")
+          .build();
 
       Option wordLen =
-          OptionBuilder.withLongOpt("word-length").withArgName("min,max")
-              .hasArg().withDescription(
-                  "range of dictionary word length (in bytes)").create('w');
+          Option.builder("w").longOpt("word-length").argName("min,max")
+          .hasArg().desc("range of dictionary word length (in bytes)").build();
 
       Option blockSz =
-          OptionBuilder.withLongOpt("block").withArgName("size-in-KB").hasArg()
-              .withDescription("minimum block size (in KB)").create('b');
+          Option.builder("b").longOpt("block").argName("size-in-KB").hasArg()
+          .desc("minimum block size (in KB)").build();
 
       Option seed =
-          OptionBuilder.withLongOpt("seed").withArgName("long-int").hasArg()
-              .withDescription("specify the seed").create('S');
+          Option.builder("S").longOpt("seed").argName("long-int").hasArg()
+          .desc("specify the seed").build();
 
       Option operation =
-          OptionBuilder.withLongOpt("operation").withArgName("r|w|rw").hasArg()
-              .withDescription(
-                  "action: read-only, create-only, read-after-create").create(
-                  'x');
+          Option.builder("x").longOpt("operation").argName("r|w|rw").hasArg()
+          .desc("action: read-only, create-only, read-after-create").build();
 
       Option rootDir =
-          OptionBuilder.withLongOpt("root-dir").withArgName("path").hasArg()
-              .withDescription(
-                  "specify root directory where files will be created.")
-              .create('r');
+          Option.builder("r").longOpt("root-dir").argName("path").hasArg()
+          .desc("specify root directory where files will be created.").build();
 
       Option help =
-          OptionBuilder.withLongOpt("help").hasArg(false).withDescription(
-              "show this screen").create("h");
+          Option.builder("h").longOpt("help").hasArg(false)
+          .desc("show this screen").build();
 
       return new Options().addOption(compress).addOption(ditSize).addOption(
           fileSize).addOption(format).addOption(fsInputBufferSz).addOption(
           fsOutputBufferSize).addOption(keyLen).addOption(wordLen).addOption(
           blockSz).addOption(rootDir).addOption(valueLen).addOption(operation)
           .addOption(help);
-
     }
 
     private void processOptions(CommandLine line, Options opts)

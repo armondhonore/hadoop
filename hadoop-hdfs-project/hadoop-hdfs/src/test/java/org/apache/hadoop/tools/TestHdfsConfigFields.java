@@ -22,6 +22,7 @@ import java.util.HashSet;
 
 import org.apache.hadoop.conf.TestConfigurationFieldsBase;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
+import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 
 /**
  * Unit test class to compare the following MR Configuration classes:
@@ -38,12 +39,72 @@ public class TestHdfsConfigFields extends TestConfigurationFieldsBase {
 
   @Override
   public void initializeMemberVariables() {
-    xmlFilename = new String("hdfs-default.xml");
-    configurationClasses = new Class[] { DFSConfigKeys.class };
+    xmlFilename = "hdfs-default.xml";
+    configurationClasses = new Class[] { HdfsClientConfigKeys.class,
+        HdfsClientConfigKeys.Failover.class,
+        HdfsClientConfigKeys.StripedRead.class, DFSConfigKeys.class,
+        HdfsClientConfigKeys.BlockWrite.class, HdfsClientConfigKeys.Write.class,
+        HdfsClientConfigKeys.Read.class, HdfsClientConfigKeys.HedgedRead.class,
+        HdfsClientConfigKeys.ShortCircuit.class,
+        HdfsClientConfigKeys.Retry.class, HdfsClientConfigKeys.Mmap.class,
+        HdfsClientConfigKeys.BlockWrite.ReplaceDatanodeOnFailure.class,
+        HdfsClientConfigKeys.Write.ECRedundancy.class};
 
     // Set error modes
     errorIfMissingConfigProps = true;
-    errorIfMissingXmlProps = false;
+    errorIfMissingXmlProps = true;
+
+    // Initialize used variables
+    configurationPropsToSkipCompare = new HashSet<String>();
+
+    // Ignore testing based parameter
+    configurationPropsToSkipCompare.add("ignore.secure.ports.for.testing");
+
+    // Remove deprecated properties listed in Configuration#DeprecationDelta
+    configurationPropsToSkipCompare.add(DFSConfigKeys.DFS_DF_INTERVAL_KEY);
+
+    // Remove support property
+    configurationPropsToSkipCompare
+        .add(DFSConfigKeys.DFS_NAMENODE_MIN_SUPPORTED_DATANODE_VERSION_KEY);
+    configurationPropsToSkipCompare
+        .add(DFSConfigKeys.DFS_DATANODE_MIN_SUPPORTED_NAMENODE_VERSION_KEY);
+
+    // Purposely hidden, based on comments in DFSConfigKeys
+    configurationPropsToSkipCompare
+        .add(DFSConfigKeys.DFS_DATANODE_XCEIVER_STOP_TIMEOUT_MILLIS_KEY);
+
+    // Fully deprecated properties?
+    configurationPropsToSkipCompare
+        .add("dfs.corruptfilesreturned.max");
+    configurationPropsToSkipCompare
+        .add("dfs.metrics.session-id");
+    configurationPropsToSkipCompare
+        .add("dfs.datanode.synconclose");
+    configurationPropsToSkipCompare
+        .add("dfs.datanode.non.local.lazy.persist");
+    configurationPropsToSkipCompare
+        .add("dfs.namenode.tolerate.heartbeat.multiplier");
+    configurationPropsToSkipCompare
+        .add("dfs.namenode.replqueue.threshold-pct");
+
+    // Removed by HDFS-6440
+    configurationPropsToSkipCompare
+        .add("dfs.ha.log-roll.rpc.timeout");
+
+    // Example (not real) property in hdfs-default.xml
+    configurationPropsToSkipCompare.add("dfs.ha.namenodes");
+
+    // Property used for internal testing only
+    configurationPropsToSkipCompare
+        .add(DFSConfigKeys.DFS_DATANODE_DUPLICATE_REPLICA_DELETION);
+
+    // Property not intended for users
+    configurationPropsToSkipCompare
+        .add(DFSConfigKeys.DFS_DATANODE_STARTUP_KEY);
+    configurationPropsToSkipCompare
+        .add(DFSConfigKeys.DFS_NAMENODE_STARTUP_KEY);
+    configurationPropsToSkipCompare.add(DFSConfigKeys
+        .DFS_DATANODE_ENABLE_FILEIO_FAULT_INJECTION_KEY);
 
     // Allocate
     xmlPropsToSkipCompare = new HashSet<String>();
@@ -56,14 +117,25 @@ public class TestHdfsConfigFields extends TestConfigurationFieldsBase {
     // Used dynamically as part of DFSConfigKeys.DFS_NAMENODE_EDITS_PLUGIN_PREFIX
     xmlPropsToSkipCompare.add("dfs.namenode.edits.journal-plugin.qjournal");
 
-    // Example (not real) property in hdfs-default.xml
-    xmlPropsToSkipCompare.add("dfs.ha.namenodes.EXAMPLENAMESERVICE");
-
     // Defined in org.apache.hadoop.fs.CommonConfigurationKeys
     xmlPropsToSkipCompare.add("hadoop.user.group.metrics.percentiles.intervals");
 
     // Used oddly by DataNode to create new config String
     xmlPropsToSkipCompare.add("hadoop.hdfs.configuration.version");
+
+    // Some properties have moved to HdfsClientConfigKeys
+    xmlPropsToSkipCompare.add("dfs.client.short.circuit.replica.stale.threshold.ms");
+
+    // Ignore HTrace properties
+    xmlPropsToSkipCompare.add("fs.client.htrace");
+    xmlPropsToSkipCompare.add("hadoop.htrace");
+
+    // Ignore SpanReceiveHost properties
+    xmlPropsToSkipCompare.add("dfs.htrace.spanreceiver.classes");
+    xmlPropsToSkipCompare.add("dfs.client.htrace.spanreceiver.classes");
+
+    // Remove deprecated properties listed in Configuration#DeprecationDelta
+    xmlPropsToSkipCompare.add(DFSConfigKeys.DFS_DF_INTERVAL_KEY);
 
     // Kept in the NfsConfiguration class in the hadoop-hdfs-nfs module
     xmlPrefixToSkipCompare.add("nfs");
@@ -71,14 +143,7 @@ public class TestHdfsConfigFields extends TestConfigurationFieldsBase {
     // Not a hardcoded property.  Used by SaslRpcClient
     xmlPrefixToSkipCompare.add("dfs.namenode.kerberos.principal.pattern");
 
-    // Skip comparing in branch-2.  Removed in trunk with HDFS-7985.
-    xmlPropsToSkipCompare.add("dfs.webhdfs.enabled");
-
-    // Some properties have moved to HdfsClientConfigKeys
-    xmlPropsToSkipCompare.add("dfs.client.short.circuit.replica.stale.threshold.ms");
-
-    // Ignore SpanReceiveHost properties
-    xmlPropsToSkipCompare.add("dfs.htrace.spanreceiver.classes");
-    xmlPropsToSkipCompare.add("dfs.client.htrace.spanreceiver.classes");
+    // Skip over example property
+    xmlPrefixToSkipCompare.add("dfs.ha.namenodes");
   }
 }

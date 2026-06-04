@@ -21,6 +21,7 @@ import java.io.PrintStream;
 import java.text.SimpleDateFormat;
 import java.util.Comparator;
 import java.util.Date;
+import java.util.EnumSet;
 
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
@@ -31,37 +32,56 @@ import org.apache.hadoop.hdfs.DFSUtilClient;
  */
 public class SnapshottableDirectoryStatus {
   /** Compare the statuses by full paths. */
-  public static final Comparator<SnapshottableDirectoryStatus> COMPARATOR
-      = new Comparator<SnapshottableDirectoryStatus>() {
-    @Override
-    public int compare(SnapshottableDirectoryStatus left,
-                       SnapshottableDirectoryStatus right) {
-      int d = DFSUtilClient.compareBytes(left.parentFullPath, right.parentFullPath);
-      return d != 0? d
-          : DFSUtilClient.compareBytes(left.dirStatus.getLocalNameInBytes(),
+  public static final Comparator<SnapshottableDirectoryStatus> COMPARATOR =
+      new Comparator<SnapshottableDirectoryStatus>() {
+        @Override
+        public int compare(SnapshottableDirectoryStatus left,
+            SnapshottableDirectoryStatus right) {
+          int d = DFSUtilClient.compareBytes(left.parentFullPath,
+              right.parentFullPath);
+          return d != 0? d
+              : DFSUtilClient.compareBytes(left.dirStatus.getLocalNameInBytes(),
               right.dirStatus.getLocalNameInBytes());
-    }
-  };
+        }
+      };
 
   /** Basic information of the snapshottable directory */
   private final HdfsFileStatus dirStatus;
-  
+
   /** Number of snapshots that have been taken*/
   private final int snapshotNumber;
-  
+
   /** Number of snapshots allowed. */
   private final int snapshotQuota;
-  
+
   /** Full path of the parent. */
   private final byte[] parentFullPath;
-  
+
   public SnapshottableDirectoryStatus(long modification_time, long access_time,
-      FsPermission permission, String owner, String group, byte[] localName,
-      long inodeId, int childrenNum,
+      FsPermission permission, EnumSet<HdfsFileStatus.Flags> flags,
+      String owner, String group, byte[] localName, long inodeId,
+      int childrenNum, int snapshotNumber, int snapshotQuota,
+      byte[] parentFullPath) {
+    this.dirStatus = new HdfsFileStatus.Builder()
+      .isdir(true)
+      .mtime(modification_time)
+      .atime(access_time)
+      .perm(permission)
+      .flags(flags)
+      .owner(owner)
+      .group(group)
+      .path(localName)
+      .fileId(inodeId)
+      .children(childrenNum)
+      .build();
+    this.snapshotNumber = snapshotNumber;
+    this.snapshotQuota = snapshotQuota;
+    this.parentFullPath = parentFullPath;
+  }
+
+  public SnapshottableDirectoryStatus(HdfsFileStatus dirStatus,
       int snapshotNumber, int snapshotQuota, byte[] parentFullPath) {
-    this.dirStatus = new HdfsFileStatus(0, true, 0, 0, modification_time,
-        access_time, permission, owner, group, null, localName, inodeId,
-        childrenNum, null, HdfsConstants.BLOCK_STORAGE_POLICY_ID_UNSPECIFIED);
+    this.dirStatus = dirStatus;
     this.snapshotNumber = snapshotNumber;
     this.snapshotQuota = snapshotQuota;
     this.parentFullPath = parentFullPath;
@@ -80,7 +100,7 @@ public class SnapshottableDirectoryStatus {
   public int getSnapshotQuota() {
     return snapshotQuota;
   }
-  
+
   /**
    * @return Full path of the parent
    */
@@ -94,13 +114,13 @@ public class SnapshottableDirectoryStatus {
   public HdfsFileStatus getDirStatus() {
     return dirStatus;
   }
-  
+
   /**
    * @return Full path of the file
    */
   public Path getFullPath() {
-    String parentFullPathStr = 
-        (parentFullPath == null || parentFullPath.length == 0) ? 
+    String parentFullPathStr =
+        (parentFullPath == null || parentFullPath.length == 0) ?
             null : DFSUtilClient.bytes2String(parentFullPath);
     if (parentFullPathStr == null
         && dirStatus.getLocalNameInBytes().length == 0) {
@@ -111,13 +131,13 @@ public class SnapshottableDirectoryStatus {
           : new Path(parentFullPathStr, dirStatus.getLocalName());
     }
   }
-  
+
   /**
    * Print a list of {@link SnapshottableDirectoryStatus} out to a given stream.
    * @param stats The list of {@link SnapshottableDirectoryStatus}
    * @param out The given stream for printing.
    */
-  public static void print(SnapshottableDirectoryStatus[] stats, 
+  public static void print(SnapshottableDirectoryStatus[] stats,
       PrintStream out) {
     if (stats == null || stats.length == 0) {
       out.println();
@@ -133,30 +153,28 @@ public class SnapshottableDirectoryStatus {
       maxSnapshotNum = maxLength(maxSnapshotNum, status.snapshotNumber);
       maxSnapshotQuota = maxLength(maxSnapshotQuota, status.snapshotQuota);
     }
-    
-    StringBuilder fmt = new StringBuilder();
-    fmt.append("%s%s "); // permission string
-    fmt.append("%"  + maxRepl  + "s ");
-    fmt.append((maxOwner > 0) ? "%-" + maxOwner + "s " : "%s");
-    fmt.append((maxGroup > 0) ? "%-" + maxGroup + "s " : "%s");
-    fmt.append("%"  + maxLen   + "s ");
-    fmt.append("%s "); // mod time
-    fmt.append("%"  + maxSnapshotNum  + "s ");
-    fmt.append("%"  + maxSnapshotQuota  + "s ");
-    fmt.append("%s"); // path
-    
-    String lineFormat = fmt.toString();
+
+    String lineFormat = "%s%s " // permission string
+        + "%"  + maxRepl  + "s "
+        + (maxOwner > 0 ? "%-" + maxOwner + "s " : "%s")
+        + (maxGroup > 0 ? "%-" + maxGroup + "s " : "%s")
+        + "%"  + maxLen   + "s "
+        + "%s " // mod time
+        + "%"  + maxSnapshotNum  + "s "
+        + "%"  + maxSnapshotQuota  + "s "
+        + "%s"; // path
+
     SimpleDateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm");
-         
+
     for (SnapshottableDirectoryStatus status : stats) {
-      String line = String.format(lineFormat, "d", 
+      String line = String.format(lineFormat, "d",
           status.dirStatus.getPermission(),
           status.dirStatus.getReplication(),
           status.dirStatus.getOwner(),
           status.dirStatus.getGroup(),
           String.valueOf(status.dirStatus.getLen()),
           dateFormat.format(new Date(status.dirStatus.getModificationTime())),
-          status.snapshotNumber, status.snapshotQuota, 
+          status.snapshotNumber, status.snapshotQuota,
           status.getFullPath().toString()
       );
       out.println(line);

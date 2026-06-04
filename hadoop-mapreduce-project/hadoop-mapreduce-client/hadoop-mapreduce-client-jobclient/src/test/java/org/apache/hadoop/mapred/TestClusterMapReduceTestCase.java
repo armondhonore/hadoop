@@ -29,7 +29,21 @@ import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Text;
+
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 public class TestClusterMapReduceTestCase extends ClusterMapReduceTestCase {
+
+  @BeforeAll
+  public static void setupClass() throws Exception {
+    setupClassBase(TestClusterMapReduceTestCase.class);
+  }
+
   public void _testMapReduce(boolean restart) throws Exception {
     OutputStream os = getFileSystem().create(new Path(getInputDir(), "text.txt"));
     Writer wr = new OutputStreamWriter(os);
@@ -82,17 +96,19 @@ public class TestClusterMapReduceTestCase extends ClusterMapReduceTestCase {
       reader.close();
       assertEquals(4, counter);
     }
-
   }
 
+  @Test
   public void testMapReduce() throws Exception {
     _testMapReduce(false);
   }
 
+  @Test
   public void testMapReduceRestarting() throws Exception {
     _testMapReduce(true);
   }
 
+  @Test
   public void testDFSRestart() throws Exception {
     Path file = new Path(getInputDir(), "text.txt");
     OutputStream os = getFileSystem().create(file);
@@ -109,6 +125,7 @@ public class TestClusterMapReduceTestCase extends ClusterMapReduceTestCase {
     
   }
 
+  @Test
   public void testMRConfig() throws Exception {
     JobConf conf = createJobConf();
     assertNull(conf.get("xyz"));

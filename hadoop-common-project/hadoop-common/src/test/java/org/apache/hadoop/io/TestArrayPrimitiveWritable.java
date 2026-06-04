@@ -22,13 +22,15 @@ import java.io.*;
 import java.util.Arrays;
 
 import org.apache.hadoop.util.StringUtils;
-import org.junit.*;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
-import junit.framework.TestCase;
 
 /** Unit tests for {@link ArrayPrimitiveWritable} */
-public class TestArrayPrimitiveWritable extends TestCase {
-  
+public class TestArrayPrimitiveWritable {
   static final boolean[] b = {true, true, false};
   static final char[] c = {'a', 'b', 'c'};
   static final byte[] by = {1, 2, 3};
@@ -46,7 +48,7 @@ public class TestArrayPrimitiveWritable extends TestCase {
   final DataOutputBuffer out = new DataOutputBuffer();
   final DataInputBuffer in = new DataInputBuffer();
 
-  @Before
+  @BeforeEach
   public void resetBuffers() throws IOException {
     out.reset();
     in.reset();
@@ -77,12 +79,11 @@ public class TestArrayPrimitiveWritable extends TestCase {
     //validate data structures and values
     assertEquals(expectedResultSet.length, resultSet.length);
     for (int x = 0; x < resultSet.length; x++) {
-      assertEquals("ComponentType of array " + x,
-          expectedResultSet[x].getClass().getComponentType(), 
-          resultSet[x].getClass().getComponentType());
+      assertEquals(expectedResultSet[x].getClass().getComponentType(),
+          resultSet[x].getClass().getComponentType(), "ComponentType of array " + x);
     }
-    assertTrue("In and Out arrays didn't match values", 
-        Arrays.deepEquals(expectedResultSet, resultSet));
+    assertTrue(Arrays.deepEquals(expectedResultSet, resultSet),
+        "In and Out arrays didn't match values");
   }
   
   @Test
@@ -105,36 +106,35 @@ public class TestArrayPrimitiveWritable extends TestCase {
     //Read the int[] object as written by ObjectWritable, but
     //"going around" ObjectWritable
     String className = UTF8.readString(in);
-    assertEquals("The int[] written by ObjectWritable was not labelled as "
-        + "an ArrayPrimitiveWritable.Internal",
-        ArrayPrimitiveWritable.Internal.class.getName(), className);
+    assertEquals(ArrayPrimitiveWritable.Internal.class.getName(), className,
+        "The int[] written by ObjectWritable was not labelled as "
+        + "an ArrayPrimitiveWritable.Internal");
     ArrayPrimitiveWritable.Internal apwi = 
         new ArrayPrimitiveWritable.Internal();
     apwi.readFields(in);
-    assertEquals("The ArrayPrimitiveWritable.Internal component type was corrupted",
-        int.class, apw.getComponentType());
-    assertTrue("The int[] written by ObjectWritable as "
-        + "ArrayPrimitiveWritable.Internal was corrupted",
-        Arrays.equals(i, (int[])(apwi.get())));
+    assertEquals(int.class, apw.getComponentType(),
+        "The ArrayPrimitiveWritable.Internal component type was corrupted");
+    assertTrue(Arrays.equals(i, (int[])(apwi.get())), "The int[] written by ObjectWritable as "
+        + "ArrayPrimitiveWritable.Internal was corrupted");
     
     //Read the APW object as written by ObjectWritable, but
     //"going around" ObjectWritable
     String declaredClassName = UTF8.readString(in);
-    assertEquals("The APW written by ObjectWritable was not labelled as "
-        + "declaredClass ArrayPrimitiveWritable",
-        ArrayPrimitiveWritable.class.getName(), declaredClassName);
+    assertEquals(ArrayPrimitiveWritable.class.getName(), declaredClassName,
+        "The APW written by ObjectWritable was not labelled as "
+        + "declaredClass ArrayPrimitiveWritable");
     className = UTF8.readString(in);
-    assertEquals("The APW written by ObjectWritable was not labelled as "
-        + "class ArrayPrimitiveWritable",
-        ArrayPrimitiveWritable.class.getName(), className);
+    assertEquals(ArrayPrimitiveWritable.class.getName(), className,
+        "The APW written by ObjectWritable was not labelled as "
+        + "class ArrayPrimitiveWritable");
     ArrayPrimitiveWritable apw2 = 
         new ArrayPrimitiveWritable();
     apw2.readFields(in);
-    assertEquals("The ArrayPrimitiveWritable component type was corrupted",
-        int.class, apw2.getComponentType());
-    assertTrue("The int[] written by ObjectWritable as "
-        + "ArrayPrimitiveWritable was corrupted",
-        Arrays.equals(i, (int[])(apw2.get())));
+    assertEquals(int.class, apw2.getComponentType(),
+        "The ArrayPrimitiveWritable component type was corrupted");
+    assertTrue(Arrays.equals(i, (int[])(apw2.get())),
+        "The int[] written by ObjectWritable as "
+        + "ArrayPrimitiveWritable was corrupted");
   }
   
   @Test
@@ -152,13 +152,14 @@ public class TestArrayPrimitiveWritable extends TestCase {
     //"going around" ObjectWritable
     @SuppressWarnings("deprecation")
     String className = UTF8.readString(in);
-    assertEquals("The int[] written by ObjectWritable as a non-compact array "
-        + "was not labelled as an array of int", 
-        i.getClass().getName(), className);
+    assertEquals(i.getClass().getName(), className,
+        "The int[] written by ObjectWritable as a non-compact array "
+        + "was not labelled as an array of int");
     
     int length = in.readInt();
-    assertEquals("The int[] written by ObjectWritable as a non-compact array "
-        + "was not expected length", i.length, length);
+    assertEquals(i.length, length,
+        "The int[] written by ObjectWritable as a non-compact array "
+        + "was not expected length");
     
     int[] readValue = new int[length];
     try {
@@ -171,8 +172,9 @@ public class TestArrayPrimitiveWritable extends TestCase {
           + length + ". Got exception:\n"
           + StringUtils.stringifyException(e));
     }
-    assertTrue("The int[] written by ObjectWritable as a non-compact array "
-        + "was corrupted.", Arrays.equals(i, readValue));
+    assertTrue(Arrays.equals(i, readValue),
+        "The int[] written by ObjectWritable as a non-compact array "
+        + "was corrupted.");
     
   }
 }

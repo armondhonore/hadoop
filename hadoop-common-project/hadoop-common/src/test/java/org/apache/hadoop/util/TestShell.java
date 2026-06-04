@@ -17,21 +17,46 @@
  */
 package org.apache.hadoop.util;
 
-import junit.framework.TestCase;
-import org.junit.Assert;
+import java.util.function.Supplier;
+import org.apache.commons.io.FileUtils;
+
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.TestInfo;
+import org.junit.jupiter.api.Assertions;
 
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.io.PrintWriter;
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadInfo;
 import java.lang.management.ThreadMXBean;
+import java.util.HashMap;
+import java.util.Map;
 
 import org.apache.hadoop.fs.FileUtil;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 
-public class TestShell extends TestCase {
+import static org.apache.hadoop.util.Shell.*;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
+
+@Timeout(value = 30)
+public class TestShell extends Assertions {
+
+  private File rootTestDir = GenericTestUtils.getTestDir();
+
+  /**
+   * A filename generated uniquely for each test method. The file
+   * itself is neither created nor deleted during test setup/teardown.
+   */
+  private File methodDir;
 
   private static class Command extends Shell {
     private int runCount = 0;
@@ -45,7 +70,7 @@ public class TestShell extends TestCase {
       // There is no /bin/echo equivalent on Windows so just launch it as a
       // shell built-in.
       //
-      return Shell.WINDOWS ?
+      return WINDOWS ?
           (new String[] {"cmd.exe", "/c", "echo", "hello"}) :
           (new String[] {"echo", "hello"});
     }
@@ -60,6 +85,14 @@ public class TestShell extends TestCase {
     }
   }
 
+  @BeforeEach
+  public void setup(TestInfo testInfo) {
+    rootTestDir.mkdirs();
+    assertTrue(rootTestDir.isDirectory(), "Not a directory " + rootTestDir);
+    methodDir = new File(rootTestDir, testInfo.getDisplayName());
+  }
+
+  @Test
   public void testInterval() throws IOException {
     testInterval(Long.MIN_VALUE / 60000);  // test a negative interval
     testInterval(0L);  // test a zero interval
@@ -73,12 +106,13 @@ public class TestShell extends TestCase {
    * @param search what to search for it
    */
   private void assertInString(String string, String search) {
-    assertNotNull("Empty String", string);
+    assertNotNull(string, "Empty String");
     if (!string.contains(search)) {
       fail("Did not find \"" + search + "\" in " + string);
     }
   }
 
+  @Test
   public void testShellCommandExecutorToString() throws Throwable {
     Shell.ShellCommandExecutor sce=new Shell.ShellCommandExecutor(
             new String[] { "ls", "..","arg 2"});
@@ -87,30 +121,62 @@ public class TestShell extends TestCase {
     assertInString(command, " .. ");
     assertInString(command, "\"arg 2\"");
   }
-  
+
+  @Test
   public void testShellCommandTimeout() throws Throwable {
-    if(Shell.WINDOWS) {
-      // setExecutable does not work on Windows
-      return;
-    }
-    String rootDir = new File(System.getProperty(
-        "test.build.data", "/tmp")).getAbsolutePath();
+    assumeFalse(WINDOWS);
+    String rootDir = rootTestDir.getAbsolutePath();
     File shellFile = new File(rootDir, "timeout.sh");
     String timeoutCommand = "sleep 4; echo \"hello\"";
-    PrintWriter writer = new PrintWriter(new FileOutputStream(shellFile));
-    writer.println(timeoutCommand);
-    writer.close();
+    Shell.ShellCommandExecutor shexc;
+    try (PrintWriter writer = new PrintWriter(new FileOutputStream(shellFile))) {
+      writer.println(timeoutCommand);
+      writer.close();
+    }
     FileUtil.setExecutable(shellFile, true);
-    Shell.ShellCommandExecutor shexc 
-    = new Shell.ShellCommandExecutor(new String[]{shellFile.getAbsolutePath()},
-                                      null, null, 100);
+    shexc = new Shell.ShellCommandExecutor(new String[]{shellFile.getAbsolutePath()},
+        null, null, 100);
     try {
       shexc.execute();
     } catch (Exception e) {
       //When timing out exception is thrown.
     }
     shellFile.delete();
-    assertTrue("Script didnt not timeout" , shexc.isTimedOut());
+    assertTrue(shexc.isTimedOut(), "Script did not timeout");
+  }
+
+  @Test
+  public void testEnvVarsWithInheritance() throws Exception {
+    assumeFalse(WINDOWS);
+    testEnvHelper(true);
+  }
+
+  @Test
+  public void testEnvVarsWithoutInheritance() throws Exception {
+    assumeFalse(WINDOWS);
+    testEnvHelper(false);
+  }
+
+  private void testEnvHelper(boolean inheritParentEnv) throws Exception {
+    Map<String, String> customEnv = new HashMap<>();
+    customEnv.put("AAA" + System.currentTimeMillis(), "AAA");
+    customEnv.put("BBB" + System.currentTimeMillis(), "BBB");
+    customEnv.put("CCC" + System.currentTimeMillis(), "CCC");
+    Shell.ShellCommandExecutor command = new ShellCommandExecutor(
+        new String[]{"env"}, null, customEnv, 0L, inheritParentEnv);
+    command.execute();
+    String[] varsArr = command.getOutput().split("\n");
+    Map<String, String> vars = new HashMap<>();
+    for (String var : varsArr) {
+      int eqIndex = var.indexOf('=');
+      vars.put(var.substring(0, eqIndex), var.substring(eqIndex + 1));
+    }
+    Map<String, String> expectedEnv = new HashMap<>();
+    expectedEnv.putAll(customEnv);
+    if (inheritParentEnv) {
+      expectedEnv.putAll(System.getenv());
+    }
+    assertEquals(expectedEnv, vars);
   }
   
   private static int countTimerThreads() {
@@ -129,7 +195,8 @@ public class TestShell extends TestCase {
     }
     return count;
   }
-  
+
+  @Test
   public void testShellCommandTimerLeak() throws Exception {
     String quickCommand[] = new String[] {"/bin/sleep", "100"};
     
@@ -152,44 +219,48 @@ public class TestShell extends TestCase {
     assertEquals(timersBefore, timersAfter);
   }
 
+  @Test
   public void testGetCheckProcessIsAliveCommand() throws Exception {
     String anyPid = "9999";
-    String[] checkProcessAliveCommand = Shell.getCheckProcessIsAliveCommand(
+    String[] checkProcessAliveCommand = getCheckProcessIsAliveCommand(
         anyPid);
 
     String[] expectedCommand;
 
     if (Shell.WINDOWS) {
       expectedCommand =
-          new String[]{ Shell.WINUTILS, "task", "isAlive", anyPid };
+          new String[]{getWinUtilsPath(), "task", "isAlive", anyPid };
     } else if (Shell.isSetsidAvailable) {
-      expectedCommand = new String[]{ "kill", "-0", "--", "-" + anyPid };
+      expectedCommand = new String[] { "bash", "-c", "kill -0 -- -'" +
+            anyPid + "'"};
     } else {
-      expectedCommand = new String[]{"kill", "-0", anyPid};
+      expectedCommand = new String[] {"bash", "-c", "kill -0 '" + anyPid +
+            "'" };
     }
-    Assert.assertArrayEquals(expectedCommand, checkProcessAliveCommand);
+    assertArrayEquals(expectedCommand, checkProcessAliveCommand);
   }
 
+  @Test
   public void testGetSignalKillCommand() throws Exception {
     String anyPid = "9999";
     int anySignal = 9;
-    String[] checkProcessAliveCommand = Shell.getSignalKillCommand(anySignal,
+    String[] checkProcessAliveCommand = getSignalKillCommand(anySignal,
         anyPid);
 
     String[] expectedCommand;
+
     if (Shell.WINDOWS) {
       expectedCommand =
-          new String[]{ Shell.WINUTILS, "task", "kill", anyPid };
+          new String[]{getWinUtilsPath(), "task", "kill", anyPid };
     } else if (Shell.isSetsidAvailable) {
-      expectedCommand =
-          new String[]{ "kill", "-" + anySignal, "--", "-" + anyPid };
+      expectedCommand = new String[] { "bash", "-c", "kill -9 -- -'" + anyPid +
+            "'"};
     } else {
-      expectedCommand =
-          new String[]{ "kill", "-" + anySignal, anyPid };
+      expectedCommand = new String[]{ "bash", "-c", "kill -9 '" + anyPid +
+            "'"};
     }
-    Assert.assertArrayEquals(expectedCommand, checkProcessAliveCommand);
+    assertArrayEquals(expectedCommand, checkProcessAliveCommand);
   }
-  
 
   private void testInterval(long interval) throws IOException {
     Command command = new Command(interval);
@@ -203,5 +274,259 @@ public class TestShell extends TestCase {
     } else {
       assertEquals(2, command.getRunCount());
     }
+  }
+
+  @Test
+  public void testHadoopHomeUnset() throws Throwable {
+    assertHomeResolveFailed(null, "unset");
+  }
+
+  @Test
+  public void testHadoopHomeEmpty() throws Throwable {
+    assertHomeResolveFailed("", E_HADOOP_PROPS_EMPTY);
+  }
+
+  @Test
+  public void testHadoopHomeEmptyDoubleQuotes() throws Throwable {
+    assertHomeResolveFailed("\"\"", E_HADOOP_PROPS_EMPTY);
+  }
+
+  @Test
+  public void testHadoopHomeEmptySingleQuote() throws Throwable {
+    assertHomeResolveFailed("\"", E_HADOOP_PROPS_EMPTY);
+  }
+
+  @Test
+  public void testHadoopHomeValid() throws Throwable {
+    File f = checkHadoopHomeInner(rootTestDir.getCanonicalPath());
+    assertEquals(rootTestDir, f);
+  }
+
+  @Test
+  public void testHadoopHomeValidQuoted() throws Throwable {
+    File f = checkHadoopHomeInner('"'+ rootTestDir.getCanonicalPath() + '"');
+    assertEquals(rootTestDir, f);
+  }
+
+  @Test
+  public void testHadoopHomeNoDir() throws Throwable {
+    assertHomeResolveFailed(methodDir.getCanonicalPath(), E_DOES_NOT_EXIST);
+  }
+
+  @Test
+  public void testHadoopHomeNotADir() throws Throwable {
+    File touched = touch(methodDir);
+    try {
+      assertHomeResolveFailed(touched.getCanonicalPath(), E_NOT_DIRECTORY);
+    } finally {
+      FileUtils.deleteQuietly(touched);
+    }
+  }
+
+  @Test
+  public void testHadoopHomeRelative() throws Throwable {
+    assertHomeResolveFailed("./target", E_IS_RELATIVE);
+  }
+
+  @Test
+  public void testBinDirMissing() throws Throwable {
+    FileNotFoundException ex = assertWinutilsResolveFailed(methodDir,
+        E_DOES_NOT_EXIST);
+    assertInString(ex.toString(), "Hadoop bin directory");
+  }
+
+  @Test
+  public void testHadoopBinNotADir() throws Throwable {
+    File bin = new File(methodDir, "bin");
+    touch(bin);
+    try {
+      assertWinutilsResolveFailed(methodDir, E_NOT_DIRECTORY);
+    } finally {
+      FileUtils.deleteQuietly(methodDir);
+    }
+  }
+
+  @Test
+  public void testBinWinUtilsFound() throws Throwable {
+    try {
+      File bin = new File(methodDir, "bin");
+      File winutils = new File(bin, WINUTILS_EXE);
+      touch(winutils);
+      assertEquals(winutils.getCanonicalPath(),
+          getQualifiedBinInner(methodDir, WINUTILS_EXE).getCanonicalPath());
+    } finally {
+      FileUtils.deleteQuietly(methodDir);
+    }
+  }
+
+  @Test
+  public void testBinWinUtilsNotAFile() throws Throwable {
+    try {
+      File bin = new File(methodDir, "bin");
+      File winutils = new File(bin, WINUTILS_EXE);
+      winutils.mkdirs();
+      assertWinutilsResolveFailed(methodDir, E_NOT_EXECUTABLE_FILE);
+    } finally {
+      FileUtils.deleteDirectory(methodDir);
+    }
+  }
+
+  /**
+   * This test takes advantage of the invariant winutils path is valid
+   * or access to it will raise an exception holds on Linux, and without
+   * any winutils binary even if HADOOP_HOME points to a real hadoop
+   * directory, the exception reporting can be validated
+   */
+  @Test
+  public void testNoWinutilsOnUnix() throws Throwable {
+    assumeFalse(WINDOWS);
+    try {
+      getWinUtilsFile();
+    } catch (FileNotFoundException ex) {
+      assertExContains(ex, E_NOT_A_WINDOWS_SYSTEM);
+    }
+    try {
+      getWinUtilsPath();
+    } catch (RuntimeException ex) {
+      assertExContains(ex, E_NOT_A_WINDOWS_SYSTEM);
+      if ( ex.getCause() == null
+          || !(ex.getCause() instanceof FileNotFoundException)) {
+        throw ex;
+      }
+    }
+  }
+
+  /**
+   * Touch a file; creating parent dirs on demand.
+   * @param path path of file
+   * @return the file created
+   * @throws IOException on any failure to write
+   */
+  private File touch(File path) throws IOException {
+    path.getParentFile().mkdirs();
+    FileUtils.writeByteArrayToFile(path, new byte[]{});
+    return path;
+  }
+
+  /**
+   * Assert that an attept to resolve the hadoop home dir failed with
+   * an expected text in the exception string value.
+   * @param path input
+   * @param expectedText expected exception text
+   * @return the caught exception
+   * @throws FileNotFoundException any FileNotFoundException that was thrown
+   * but which did not contain the expected text
+   */
+  private FileNotFoundException assertHomeResolveFailed(String path,
+      String expectedText) throws Exception {
+    try {
+      File f = checkHadoopHomeInner(path);
+      fail("Expected an exception with the text `" + expectedText + "`"
+          + " -but got the path " + f);
+      // unreachable
+      return null;
+    } catch (FileNotFoundException ex) {
+      assertExContains(ex, expectedText);
+      return ex;
+    }
+  }
+
+  /**
+   * Assert that an attept to resolve the {@code bin/winutils.exe} failed with
+   * an expected text in the exception string value.
+   * @param hadoopHome hadoop home directory
+   * @param expectedText expected exception text
+   * @return the caught exception
+   * @throws Exception any Exception that was thrown
+   * but which did not contain the expected text
+   */
+  private FileNotFoundException assertWinutilsResolveFailed(File hadoopHome,
+      String expectedText) throws Exception {
+    try {
+      File f = getQualifiedBinInner(hadoopHome, WINUTILS_EXE);
+      fail("Expected an exception with the text `" + expectedText + "`"
+          + " -but got the path " + f);
+      // unreachable
+      return null;
+    } catch (FileNotFoundException ex) {
+      assertExContains(ex, expectedText);
+      return ex;
+    }
+  }
+
+  private void assertExContains(Exception ex, String expectedText)
+      throws Exception {
+    if (!ex.toString().contains(expectedText)) {
+      throw ex;
+    }
+  }
+
+  @Test
+  public void testBashQuote() {
+    assertEquals("'foobar'", Shell.bashQuote("foobar"));
+    assertEquals("'foo'\\''bar'", Shell.bashQuote("foo'bar"));
+    assertEquals("''\\''foo'\\''bar'\\'''", Shell.bashQuote("'foo'bar'"));
+  }
+
+  @Test
+  @Timeout(value = 120)
+  public void testDestroyAllShellProcesses() throws Throwable {
+    assumeFalse(WINDOWS);
+    StringBuilder sleepCommand = new StringBuilder();
+    sleepCommand.append("sleep 200");
+    String[] shellCmd = {"bash", "-c", sleepCommand.toString()};
+    final ShellCommandExecutor shexc1 = new ShellCommandExecutor(shellCmd);
+    final ShellCommandExecutor shexc2 = new ShellCommandExecutor(shellCmd);
+
+    SubjectInheritingThread shellThread1 = new SubjectInheritingThread() {
+      @Override
+      public void work() {
+        try {
+          shexc1.execute();
+        } catch(IOException ioe) {
+          //ignore IOException from thread interrupt
+        }
+      }
+    };
+    SubjectInheritingThread shellThread2 = new SubjectInheritingThread() {
+      @Override
+      public void work() {
+        try {
+          shexc2.execute();
+        } catch(IOException ioe) {
+          //ignore IOException from thread interrupt
+        }
+      }
+    };
+
+    shellThread1.start();
+    shellThread2.start();
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+      @Override
+      public Boolean get() {
+        return shexc1.getProcess() != null;
+      }
+    }, 10, 10000);
+
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+      @Override
+      public Boolean get() {
+        return shexc2.getProcess() != null;
+      }
+    }, 10, 10000);
+
+    Shell.destroyAllShellProcesses();
+    shexc1.getProcess().waitFor();
+    shexc2.getProcess().waitFor();
+  }
+
+  @Test
+  public void testIsJavaVersionAtLeast() {
+    assertTrue(Shell.isJavaVersionAtLeast(8));
+  }
+
+  @Test
+  public void testIsBashSupported() throws InterruptedIOException {
+    assumeTrue(Shell.checkIsBashSupported(), "Bash is not supported");
   }
 }

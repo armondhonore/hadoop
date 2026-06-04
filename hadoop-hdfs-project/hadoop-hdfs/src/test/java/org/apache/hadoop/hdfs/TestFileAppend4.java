@@ -17,12 +17,13 @@
  */
 package org.apache.hadoop.hdfs;
 
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
-import static org.mockito.Matchers.anyLong;
-import static org.mockito.Matchers.anyObject;
-import static org.mockito.Matchers.anyString;
+import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.IPC_CLIENT_CONNECT_MAX_RETRIES_KEY;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.ArgumentMatchers.anyLong;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.spy;
 
@@ -31,32 +32,32 @@ import java.io.OutputStream;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
-import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
-import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
-import org.apache.hadoop.hdfs.server.datanode.SimulatedFSDataset;
 import org.apache.hadoop.hdfs.server.namenode.FSDirectory;
 import org.apache.hadoop.hdfs.server.namenode.INodeFile;
+import org.apache.hadoop.hdfs.server.namenode.LeaseExpiredException;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocols;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.apache.log4j.Level;
-import org.junit.Before;
-import org.junit.Test;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.slf4j.event.Level;
 
 /* File Append tests for HDFS-200 & HDFS-142, specifically focused on:
  *  using append()/sync() to recover block information
  */
 public class TestFileAppend4 {
-  static final Log LOG = LogFactory.getLog(TestFileAppend4.class);
+  static final Logger LOG = LoggerFactory.getLogger(TestFileAppend4.class);
   static final long BLOCK_SIZE = 1024;
   static final long BBW_SIZE = 500; // don't align on bytes/checksum
 
@@ -66,20 +67,16 @@ public class TestFileAppend4 {
   MiniDFSCluster cluster;
   Path file1;
   FSDataOutputStream stm;
-  final boolean simulatedStorage = false;
 
   {
-    DFSTestUtil.setNameNodeLogLevel(Level.ALL);
-    GenericTestUtils.setLogLevel(DataNode.LOG, Level.ALL);
-    GenericTestUtils.setLogLevel(DFSClient.LOG, Level.ALL);
+    DFSTestUtil.setNameNodeLogLevel(Level.TRACE);
+    GenericTestUtils.setLogLevel(DataNode.LOG, Level.TRACE);
+    GenericTestUtils.setLogLevel(DFSClient.LOG, Level.TRACE);
   }
 
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     this.conf = new Configuration();
-    if (simulatedStorage) {
-      SimulatedFSDataset.setFactory(conf);
-    }
 
     // lower heartbeat interval for fast recognition of DN death
     conf.setInt(DFSConfigKeys.DFS_NAMENODE_HEARTBEAT_RECHECK_INTERVAL_KEY,
@@ -88,12 +85,12 @@ public class TestFileAppend4 {
     conf.setInt(HdfsClientConfigKeys.DFS_CLIENT_SOCKET_TIMEOUT_KEY, 5000);
     // handle under-replicated blocks quickly (for replication asserts)
     conf.setInt(
-        DFSConfigKeys.DFS_NAMENODE_REPLICATION_PENDING_TIMEOUT_SEC_KEY, 5);
-    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REPLICATION_INTERVAL_KEY, 1);
+        DFSConfigKeys.DFS_NAMENODE_RECONSTRUCTION_PENDING_TIMEOUT_SEC_KEY, 5);
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY, 1);
     
     // handle failures in the DFSClient pipeline quickly
     // (for cluster.shutdown(); fs.close() idiom)
-    conf.setInt("ipc.client.connect.max.retries", 1);
+    conf.setInt(IPC_CLIENT_CONNECT_MAX_RETRIES_KEY, 1);
   }
   
   /*
@@ -111,7 +108,9 @@ public class TestFileAppend4 {
 
     // set the soft limit to be 1 second so that the
     // namenode triggers lease recovery upon append request
-    cluster.setLeasePeriod(1000, HdfsServerConstants.LEASE_HARDLIMIT_PERIOD);
+    cluster.setLeasePeriod(1000,
+        conf.getLong(DFSConfigKeys.DFS_LEASE_HARDLIMIT_KEY,
+            DFSConfigKeys.DFS_LEASE_HARDLIMIT_DEFAULT) * 1000);
 
     // Trying recovery
     int tries = 60;
@@ -145,7 +144,8 @@ public class TestFileAppend4 {
    * before calling completeFile, and then tries to recover
    * the lease from another thread.
    */
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testRecoverFinalizedBlock() throws Throwable {
     cluster = new MiniDFSCluster.Builder(conf).numDataNodes(5).build();
  
@@ -157,7 +157,7 @@ public class TestFileAppend4 {
       // Delay completeFile
       GenericTestUtils.DelayAnswer delayer = new GenericTestUtils.DelayAnswer(LOG);
       doAnswer(delayer).when(spyNN).complete(
-          anyString(), anyString(), (ExtendedBlock)anyObject(), anyLong());
+          anyString(), anyString(), any(), anyLong());
  
       DFSClient client = new DFSClient(null, spyNN, conf, null);
       file1 = new Path("/testRecoverFinalized");
@@ -166,9 +166,9 @@ public class TestFileAppend4 {
       // write 1/2 block
       AppendTestUtil.write(stm, 0, 4096);
       final AtomicReference<Throwable> err = new AtomicReference<Throwable>();
-      Thread t = new Thread() { 
+      SubjectInheritingThread t = new SubjectInheritingThread() {
           @Override
-          public void run() {
+          public void work() {
             try {
               stm.close();
             } catch (Throwable t) {
@@ -198,14 +198,12 @@ public class TestFileAppend4 {
       t.join();
       LOG.info("Close finished.");
  
-      // We expect that close will get a "File is not open"
-      // error.
+      // We expect that close will get a "File is not open" error.
       Throwable thrownByClose = err.get();
       assertNotNull(thrownByClose);
-      assertTrue(thrownByClose instanceof IOException);
-      if (!thrownByClose.getMessage().contains(
-            "No lease on /testRecoverFinalized"))
-        throw thrownByClose;
+      assertTrue(thrownByClose instanceof LeaseExpiredException);
+      GenericTestUtils.assertExceptionContains("File is not open for writing",
+          thrownByClose);
     } finally {
       cluster.shutdown();
     }
@@ -217,7 +215,8 @@ public class TestFileAppend4 {
    * starts writing from that writer, and then has the old lease holder
    * call completeFile
    */
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testCompleteOtherLeaseHoldersFile() throws Throwable {
     cluster = new MiniDFSCluster.Builder(conf).numDataNodes(5).build();
  
@@ -230,7 +229,7 @@ public class TestFileAppend4 {
       GenericTestUtils.DelayAnswer delayer =
         new GenericTestUtils.DelayAnswer(LOG);
       doAnswer(delayer).when(spyNN).complete(anyString(), anyString(),
-          (ExtendedBlock) anyObject(), anyLong());
+          any(), anyLong());
  
       DFSClient client = new DFSClient(null, spyNN, conf, null);
       file1 = new Path("/testCompleteOtherLease");
@@ -239,9 +238,9 @@ public class TestFileAppend4 {
       // write 1/2 block
       AppendTestUtil.write(stm, 0, 4096);
       final AtomicReference<Throwable> err = new AtomicReference<Throwable>();
-      Thread t = new Thread() { 
+      SubjectInheritingThread t = new SubjectInheritingThread() {
           @Override
-          public void run() {
+          public void work() {
             try {
               stm.close();
             } catch (Throwable t) {
@@ -281,10 +280,9 @@ public class TestFileAppend4 {
       // error.
       Throwable thrownByClose = err.get();
       assertNotNull(thrownByClose);
-      assertTrue(thrownByClose instanceof IOException);
-      if (!thrownByClose.getMessage().contains(
-            "Lease mismatch"))
-        throw thrownByClose;
+      assertTrue(thrownByClose instanceof LeaseExpiredException);
+      GenericTestUtils.assertExceptionContains("not the lease owner",
+          thrownByClose);
       
       // The appender should be able to close properly
       appenderStream.close();
@@ -296,7 +294,8 @@ public class TestFileAppend4 {
   /**
    * Test the updation of NeededReplications for the Appended Block
    */
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testUpdateNeededReplicationsForAppendedFile() throws Exception {
     Configuration conf = new Configuration();
     MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).numDataNodes(1)
@@ -332,7 +331,8 @@ public class TestFileAppend4 {
    * Test that an append with no locations fails with an exception
    * showing insufficient locations.
    */
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testAppendInsufficientLocations() throws Exception {
     Configuration conf = new Configuration();
 
@@ -385,7 +385,7 @@ public class TestFileAppend4 {
       FSDirectory dir = cluster.getNamesystem().getFSDirectory();
       final INodeFile inode = INodeFile.
           valueOf(dir.getINode("/testAppend"), "/testAppend");
-      assertTrue("File should remain closed", !inode.isUnderConstruction());
+      assertTrue(!inode.isUnderConstruction(), "File should remain closed");
     } finally {
       if (null != fileSystem) {
         fileSystem.close();

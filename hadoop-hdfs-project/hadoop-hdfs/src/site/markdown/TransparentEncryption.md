@@ -15,29 +15,7 @@
 Transparent Encryption in HDFS
 ==============================
 
-* [Overview](#Overview)
-* [Background](#Background)
-* [Use Cases](#Use_Cases)
-* [Architecture](#Architecture)
-    * [Overview](#Overview)
-    * [Accessing data within an encryption zone](#Accessing_data_within_an_encryption_zone)
-    * [Key Management Server, KeyProvider, EDEKs](#Key_Management_Server_KeyProvider_EDEKs)
-* [Configuration](#Configuration)
-    * [Configuring the cluster KeyProvider](#Configuring_the_cluster_KeyProvider)
-    * [Selecting an encryption algorithm and codec](#Selecting_an_encryption_algorithm_and_codec)
-    * [Namenode configuration](#Namenode_configuration)
-* [crypto command-line interface](#crypto_command-line_interface)
-    * [createZone](#createZone)
-    * [listZones](#listZones)
-* [Example usage](#Example_usage)
-* [Distcp considerations](#Distcp_considerations)
-    * [Running as the superuser](#Running_as_the_superuser)
-    * [Copying between encrypted and unencrypted locations](#Copying_between_encrypted_and_unencrypted_locations)
-* [Attack vectors](#Attack_vectors)
-    * [Hardware access exploits](#Hardware_access_exploits)
-    * [Root access exploits](#Root_access_exploits)
-    * [HDFS admin exploits](#HDFS_admin_exploits)
-    * [Rogue user exploits](#Rogue_user_exploits)
+<!-- MACRO{toc|fromDepth=0|toDepth=2} -->
 
 Overview
 --------
@@ -74,6 +52,8 @@ Architecture
 ### Overview
 
 For transparent encryption, we introduce a new abstraction to HDFS: the *encryption zone*. An encryption zone is a special directory whose contents will be transparently encrypted upon write and transparently decrypted upon read. Each encryption zone is associated with a single *encryption zone key* which is specified when the zone is created. Each file within an encryption zone has its own unique *data encryption key (DEK)*. DEKs are never handled directly by HDFS. Instead, HDFS only ever handles an *encrypted data encryption key (EDEK)*. Clients decrypt an EDEK, and then use the subsequent DEK to read and write data. HDFS datanodes simply see a stream of encrypted bytes.
+
+A very important use case of encryption is to "switch it on" and ensure all files across the entire filesystem are encrypted. To support this strong guarantee without losing the flexibility of using different encryption zone keys in different parts of the filesystem, HDFS allows *nested encryption zones*. After an encryption zone is created (e.g. on the root directory `/`), a user can create more encryption zones on its descendant directories (e.g. `/home/alice`) with different keys. The EDEK of a file will be generated using the encryption zone key from the closest ancestor encryption zone.
 
 A new cluster service is required to manage encryption keys: the Hadoop Key Management Server (KMS). In the context of HDFS encryption, the KMS performs three basic responsibilities:
 
@@ -114,9 +94,10 @@ Once a KMS has been set up and the NameNode and HDFS clients have been correctly
 
 ### Configuring the cluster KeyProvider
 
-#### dfs.encryption.key.provider.uri
+#### hadoop.security.key.provider.path
 
 The KeyProvider to use when interacting with encryption keys used when reading and writing to an encryption zone.
+HDFS clients will use the provider path returned from Namenode via getServerDefaults. If namenode doesn't support returning key provider uri then client's conf will be used.
 
 ### Selecting an encryption algorithm and codec
 
@@ -130,11 +111,17 @@ Default: `org.apache.hadoop.crypto.OpensslAesCtrCryptoCodec, org.apache.hadoop.c
 
 Comma-separated list of crypto codec implementations for AES/CTR/NoPadding. The first implementation will be used if available, others are fallbacks.
 
+#### hadoop.security.crypto.codec.classes.sm4.ctr.nopadding
+
+Default: `org.apache.hadoop.crypto.OpensslSm4CtrCryptoCodec, org.apache.hadoop.crypto.JceSm4CtrCryptoCodec`
+
+Comma-separated list of crypto codec implementations for SM4/CTR/NoPadding. The first implementation will be used if available, others are fallbacks.
+
 #### hadoop.security.crypto.cipher.suite
 
 Default: `AES/CTR/NoPadding`
 
-Cipher suite for crypto codec.
+Cipher suite for crypto codec, now AES/CTR/NoPadding and SM4/CTR/NoPadding are supported.
 
 #### hadoop.security.crypto.jce.provider
 
@@ -167,8 +154,8 @@ Create a new encryption zone.
 
 | | |
 |:---- |:---- |
-| *path* | The path of the encryption zone to create. It must be an empty directory. |
-| *keyName* | Name of the key to use for the encryption zone. |
+| *path* | The path of the encryption zone to create. It must be an empty directory. A trash directory is provisioned under this path.|
+| *keyName* | Name of the key to use for the encryption zone. Uppercase key names are unsupported. |
 
 ### listZones
 
@@ -176,17 +163,64 @@ Usage: `[-listZones]`
 
 List all encryption zones. Requires superuser permissions.
 
+### provisionTrash
+
+Usage: `[-provisionTrash -path <path>]`
+
+Provision a trash directory for an encryption zone.
+
+| | |
+|:---- |:---- |
+| *path* | The path to the root of the encryption zone. |
+
+### getFileEncryptionInfo
+
+Usage: `[-getFileEncryptionInfo -path <path>]`
+
+Get encryption information from a file. This can be used to find out whether a file is being encrypted, and the key name / key version used to encrypt it.
+
+| | |
+|:---- |:---- |
+| *path* | The path of the file to get encryption information. |
+
+### reencryptZone
+
+Usage: `[-reencryptZone <action> -path <zone>]`
+
+Re-encrypts an encryption zone, by iterating through the encryption zone, and calling the KeyProvider's reencryptEncryptedKeys interface to batch-re-encrypt all files' EDEKs with the latest version encryption zone key in the key provider. Requires superuser permissions.
+
+Note that re-encryption does not apply to snapshots, due to snapshots' immutable nature.
+
+| | |
+|:---- |:---- |
+| *action* | The re-encrypt action to perform. Must be either `-start` or `-cancel`. |
+| *path* | The path to the root of the encryption zone. |
+
+Re-encryption is a NameNode-only operation in HDFS, so could potentially put intensive load to the NameNode. The following configurations can be changed to control the stress on the NameNode, depending on the acceptable throughput impact to the cluster.
+
+| | |
+|:---- |:---- |
+| *dfs.namenode.reencrypt.batch.size* | The number of EDEKs in a batch to be sent to the KMS for re-encryption. Each batch is processed when holding the name system read/write lock, with throttling happening between batches. See configs below. |
+| *dfs.namenode.reencrypt.throttle.limit.handler.ratio* | Ratio of read locks to be held during re-encryption. 1.0 means no throttling. 0.5 means re-encryption can hold the readlock at most 50% of its total processing time. Negative value or 0 are invalid. |
+| *dfs.namenode.reencrypt.throttle.limit.updater.ratio* | Ratio of write locks to be held during re-encryption. 1.0 means no throttling. 0.5 means re-encryption can hold the writelock at most 50% of its total processing time. Negative value or 0 are invalid. |
+
+### listReencryptionStatus
+
+Usage: `[-listReencryptionStatus]`
+
+List re-encryption information for all encryption zones. Requires superuser permissions.
+
 Example usage
 -------------
 
 These instructions assume that you are running as the normal user or HDFS superuser as is appropriate. Use `sudo` as needed for your environment.
 
     # As the normal user, create a new encryption key
-    hadoop key create myKey
+    hadoop key create mykey
 
     # As the super user, create a new empty directory and make it an encryption zone
     hadoop fs -mkdir /zone
-    hdfs crypto -createZone -keyName myKey -path /zone
+    hdfs crypto -createZone -keyName mykey -path /zone
 
     # chown it to the normal user
     hadoop fs -chown myuser:myuser /zone
@@ -194,6 +228,10 @@ These instructions assume that you are running as the normal user or HDFS superu
     # As the normal user, put a file in, read it out
     hadoop fs -put helloWorld /zone
     hadoop fs -cat /zone/helloWorld
+
+    # As the normal user, get encryption information from the file
+    hdfs crypto -getFileEncryptionInfo -path /zone/helloWorld
+    # console output: {cipherSuite: {name: AES/CTR/NoPadding, algorithmBlockSize: 16}, cryptoProtocolVersion: CryptoProtocolVersion{description='Encryption zones', version=1, unknownValue=null}, edek: 2010d301afbd43b58f10737ce4e93b39, iv: ade2293db2bab1a2e337f91361304cb3, keyName: mykey, ezKeyVersionName: mykey@0}
 
 Distcp considerations
 ---------------------
@@ -204,11 +242,24 @@ One common usecase for distcp is to replicate data between clusters for backup a
 
 To enable this same workflow when using HDFS encryption, we introduced a new virtual path prefix, `/.reserved/raw/`, that gives superusers direct access to the underlying block data in the filesystem. This allows superusers to distcp data without needing having access to encryption keys, and also avoids the overhead of decrypting and re-encrypting data. It also means the source and destination data will be byte-for-byte identical, which would not be true if the data was being re-encrypted with a new EDEK.
 
-When using `/.reserved/raw` to distcp encrypted data, it's important to preserve extended attributes with the [-px](#a-px) flag. This is because encrypted file attributes (such as the EDEK) are exposed through extended attributes within `/.reserved/raw`, and must be preserved to be able to decrypt the file. This means that if the distcp is initiated at or above the encryption zone root, it will automatically create an encryption zone at the destination if it does not already exist. However, it's still recommended that the admin first create identical encryption zones on the destination cluster to avoid any potential mishaps.
+When using `/.reserved/raw` to distcp encrypted data, it's important to preserve extended attributes with the [-px](../../hadoop-distcp/DistCp.html#Command_Line_Options) flag. This is because encrypted file attributes (such as the EDEK) are exposed through extended attributes within `/.reserved/raw`, and must be preserved to be able to decrypt the file. This means that if the distcp is initiated at or above the encryption zone root, it will automatically create an encryption zone at the destination if it does not already exist. However, it's still recommended that the admin first create identical encryption zones on the destination cluster to avoid any potential mishaps.
 
-### Copying between encrypted and unencrypted locations
+### Copying into encrypted locations
 
-By default, distcp compares checksums provided by the filesystem to verify that the data was successfully copied to the destination. When copying between an unencrypted and encrypted location, the filesystem checksums will not match since the underlying block data is different. In this case, specify the [-skipcrccheck](#a-skipcrccheck) and [-update](#a-update) distcp flags to avoid verifying checksums.
+By default, distcp compares checksums provided by the filesystem to verify that the data was successfully copied to the destination. When copying from unencrypted or encrypted location into an encrypted location, the filesystem checksums will not match since the underlying block data is different because a new EDEK will be used to encrypt at destination. In this case, specify the [-skipcrccheck](../../hadoop-distcp/DistCp.html#Command_Line_Options) and [-update](../../hadoop-distcp/DistCp.html#Command_Line_Options) distcp flags to avoid verifying checksums.
+
+Rename and Trash considerations
+---------------------
+
+HDFS restricts file and directory renames across encryption zone boundaries. This includes renaming an encrypted file / directory into an unencrypted directory (e.g., `hdfs dfs mv /zone/encryptedFile /home/bob`), renaming an unencrypted file or directory into an encryption zone (e.g., `hdfs dfs mv /home/bob/unEncryptedFile /zone`), and renaming between two different encryption zones (e.g., `hdfs dfs mv /home/alice/zone1/foo /home/alice/zone2`). In these examples, `/zone`, `/home/alice/zone1`, and `/home/alice/zone2` are encryption zones, while `/home/bob` is not. A rename is only allowed if the source and destination paths are in the same encryption zone, or both paths are unencrypted (not in any encryption zone).
+
+This restriction enhances security and eases system management significantly. All file EDEKs under an encryption zone are encrypted with the encryption zone key. Therefore, if the encryption zone key is compromised, it is important to identify all vulnerable files and re-encrypt them. This is fundamentally difficult if a file initially created in an encryption zone can be renamed to an arbitrary location in the filesystem.
+
+To comply with the above rule, each encryption zone has its own `.Trash` directory under the "zone directory". E.g., after `hdfs dfs rm /zone/encryptedFile`, `encryptedFile` will be moved to `/zone/.Trash`, instead of the `.Trash` directory under the user's home directory. When the entire encryption zone is deleted, the "zone directory" will be moved to the `.Trash` directory under the user's home directory.
+
+If the encryption zone is the root directory (e.g., `/` directory), the trash path of root directory is `/.Trash`, not the `.Trash` directory under the user's home directory, and the behavior of renaming sub-directories or sub-files in root directory will keep consistent with the behavior in a general encryption zone, such as `/zone` which is mentioned at the top of this section.
+
+The `crypto` command before Hadoop 2.8.0 does not provision the `.Trash` directory automatically. If an encryption zone is created before Hadoop 2.8.0, and then the cluster is upgraded to Hadoop 2.8.0 or above, the trash directory can be provisioned using `-provisionTrash` option (e.g., `hdfs crypto -provisionTrash -path /zone`).
 
 Attack vectors
 --------------
@@ -265,4 +316,20 @@ These exploits assume that the attacker has compromised HDFS, but does not have 
 
 ### Rogue user exploits
 
-A rogue user can collect keys of files they have access to, and use them later to decrypt the encrypted data of those files. As the user had access to those files, they already had access to the file contents. This can be mitigated through periodic key rolling policies.
+A rogue user can collect keys of files they have access to, and use them later to decrypt the encrypted data of those files. As the user had access to those files, they already had access to the file contents. This can be mitigated through periodic key rolling policies. The [reencryptZone](#reencryptZone) command is usually required after key rolling, to make sure the EDEKs on existing files use the new version key.
+
+Manual steps to a complete key rolling and re-encryption are listed below. These instructions assume that you are running as the key admin or HDFS superuser as is appropriate.
+
+    # As the key admin, roll the key to a new version
+    hadoop key roll exposedKey
+
+    # As the super user, re-encrypt the encryption zone. Possibly list zones first.
+    hdfs crypto -listZones
+    hdfs crypto -reencryptZone -start -path /zone
+
+    # As the super user, periodically check the status of re-encryption
+    hdfs crypto -listReencryptionStatus
+
+    # As the super user, get encryption information from the file and double check it's encryption key version
+    hdfs crypto -getFileEncryptionInfo -path /zone/helloWorld
+    # console output: {cipherSuite: {name: AES/CTR/NoPadding, algorithmBlockSize: 16}, cryptoProtocolVersion: CryptoProtocolVersion{description='Encryption zones', version=2, unknownValue=null}, edek: 2010d301afbd43b58f10737ce4e93b39, iv: ade2293db2bab1a2e337f91361304cb3, keyName: exposedKey, ezKeyVersionName: exposedKey@1}

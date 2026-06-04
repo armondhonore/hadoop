@@ -17,23 +17,32 @@
  */
 package org.apache.hadoop.mapreduce.lib.join;
 
-import junit.framework.TestCase;
-
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.NullWritable;
-import org.apache.hadoop.mapreduce.*;
+import org.apache.hadoop.mapreduce.InputSplit;
+import org.apache.hadoop.mapreduce.Job;
+import org.apache.hadoop.mapreduce.MRJobConfig;
+import org.apache.hadoop.mapreduce.MapReduceTestUtil;
 import org.apache.hadoop.mapreduce.MapReduceTestUtil.Fake_RR;
+import org.apache.hadoop.mapreduce.RecordReader;
+import org.apache.hadoop.mapreduce.TaskAttemptContext;
+import org.apache.hadoop.mapreduce.TaskAttemptID;
+import org.apache.hadoop.mapreduce.TaskType;
 import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl;
+import org.junit.jupiter.api.Test;
 
-public class TestWrappedRRClassloader extends TestCase {
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+public class TestWrappedRRClassloader {
   /**
    * Tests the class loader set by 
    * {@link Configuration#setClassLoader(ClassLoader)}
    * is inherited by any {@link WrappedRecordReader}s created by
    * {@link CompositeRecordReader}
    */
+  @Test
   public void testClassLoader() throws Exception {
     Configuration conf = new Configuration();
     Fake_ClassLoader classLoader = new Fake_ClassLoader();
@@ -41,8 +50,8 @@ public class TestWrappedRRClassloader extends TestCase {
     assertTrue(conf.getClassLoader() instanceof Fake_ClassLoader);
 
     FileSystem fs = FileSystem.get(conf);
-    Path testdir = new Path(System.getProperty("test.build.data", "/tmp"))
-        .makeQualified(fs);
+    Path testdir = fs.makeQualified(new Path(
+        System.getProperty("test.build.data", "/tmp")));
 
     Path base = new Path(testdir, "/empty");
     Path[] src = { new Path(base, "i0"), new Path("i1"), new Path("i2") };
@@ -78,9 +87,9 @@ public class TestWrappedRRClassloader extends TestCase {
 
     @SuppressWarnings("unchecked")
     public RR_ClassLoaderChecker(Configuration conf) {
-      assertTrue("The class loader has not been inherited from "
-          + CompositeRecordReader.class.getSimpleName(),
-          conf.getClassLoader() instanceof Fake_ClassLoader);
+      assertTrue(conf.getClassLoader() instanceof Fake_ClassLoader,
+          "The class loader has not been inherited from "
+          + CompositeRecordReader.class.getSimpleName());
 
     }
   }

@@ -19,17 +19,23 @@
 package org.apache.hadoop.hdfs.server.datanode;
 
 
+import org.apache.commons.io.FileUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
-import org.junit.Test;
+import org.apache.hadoop.hdfs.MiniDFSCluster;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
+import java.io.File;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestDataNodeUUID {
 
@@ -50,7 +56,7 @@ public class TestDataNodeUUID {
       "hdfs://" + NN_ADDR.getHostName() + ":" + NN_ADDR.getPort());
     ArrayList<StorageLocation> locations = new ArrayList<>();
 
-    DataNode dn = new DataNode(conf, locations, null);
+    DataNode dn = new DataNode(conf, locations, null, null);
 
     //Assert that Node iD is null
     String nullString = null;
@@ -61,5 +67,51 @@ public class TestDataNodeUUID {
 
     // Make sure that we have a valid DataNodeUUID at that point of time.
     assertNotEquals(dn.getDatanodeUuid(), nullString);
+  }
+
+  @Test
+  @Timeout(value = 10)
+  public void testUUIDRegeneration() throws Exception {
+    File baseDir = GenericTestUtils.getTestDir();
+    File disk1 = new File(baseDir, "disk1");
+    File disk2 = new File(baseDir, "disk2");
+
+    // Ensure the configured disks do not pre-exist
+    FileUtils.deleteDirectory(disk1);
+    FileUtils.deleteDirectory(disk2);
+
+    MiniDFSCluster cluster = null;
+    HdfsConfiguration conf = new HdfsConfiguration();
+    conf.setStrings(DFSConfigKeys.DFS_DATANODE_DATA_DIR_KEY,
+            disk1.toURI().toString(),
+            disk2.toURI().toString());
+    try {
+      cluster = new MiniDFSCluster.Builder(conf)
+              .numDataNodes(1)
+              .manageDataDfsDirs(false)
+              .build();
+      cluster.waitActive();
+
+      // Grab the new-cluster UUID as the original one to test against
+      String originalUUID = cluster.getDataNodes().get(0).getDatanodeUuid();
+      // Stop and simulate a DN wipe or unmount-but-root-path condition
+      // on the second disk
+      MiniDFSCluster.DataNodeProperties dn = cluster.stopDataNode(0);
+      FileUtils.deleteDirectory(disk2);
+      assertTrue(disk2.mkdirs(), "Failed to recreate the data directory: " + disk2);
+
+      // Restart and check if the UUID changed
+      assertTrue(cluster.restartDataNode(dn), "DataNode failed to start up: " + dn);
+      // We need to wait until the DN has completed registration
+      while (!cluster.getDataNodes().get(0).isDatanodeFullyStarted()) {
+        Thread.sleep(50);
+      }
+      assertEquals(originalUUID, cluster.getDataNodes().get(0).getDatanodeUuid(),
+          "DN generated a new UUID despite disk1 having it intact");
+    } finally {
+      if (cluster != null) {
+        cluster.shutdown();
+      }
+    }
   }
 }

@@ -17,47 +17,31 @@
  */
 package org.apache.hadoop.tracing;
 
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.List;
-
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.tracing.SpanReceiverInfo.ConfigurationPair;
-import org.apache.htrace.HTraceConfiguration;
+import org.apache.hadoop.thirdparty.protobuf.ByteString;
 
 /**
  * This class provides utility functions for tracing.
  */
 @InterfaceAudience.Private
 public class TraceUtils {
-  private static List<ConfigurationPair> EMPTY = Collections.emptyList();
+  static final String DEFAULT_HADOOP_TRACE_PREFIX = "hadoop.htrace.";
 
-  public static HTraceConfiguration wrapHadoopConf(final String prefix,
-        final Configuration conf) {
-    return wrapHadoopConf(prefix, conf, EMPTY);
+  public static TraceConfiguration wrapHadoopConf(final String prefix,
+      final Configuration conf) {
+    return null;
   }
 
-  public static HTraceConfiguration wrapHadoopConf(final String prefix,
-        final Configuration conf, List<ConfigurationPair> extraConfig) {
-    final HashMap<String, String> extraMap = new HashMap<String, String>();
-    for (ConfigurationPair pair : extraConfig) {
-      extraMap.put(pair.getKey(), pair.getValue());
-    }
-    return new HTraceConfiguration() {
-      @Override
-      public String get(String key) {
-        return get(key, "");
-      }
+  public static Tracer createAndRegisterTracer(String name) {
+    return null;
+  }
 
-      @Override
-      public String get(String key, String defaultValue) {
-        String prefixedKey = prefix + key;
-        if (extraMap.containsKey(prefixedKey)) {
-          return extraMap.get(prefixedKey);
-        }
-        return conf.get(prefixedKey, defaultValue);
-      }
-    };
+  public static SpanContext byteStringToSpanContext(ByteString byteString) {
+    return null;
+  }
+
+  public static ByteString spanContextToByteString(SpanContext context) {
+    return null;
   }
 }

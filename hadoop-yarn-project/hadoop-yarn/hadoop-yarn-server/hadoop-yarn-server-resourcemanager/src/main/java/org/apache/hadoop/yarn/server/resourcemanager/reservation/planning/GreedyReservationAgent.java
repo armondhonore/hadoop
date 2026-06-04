@@ -18,6 +18,7 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.reservation.planning;
 
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.yarn.api.records.ReservationDefinition;
 import org.apache.hadoop.yarn.api.records.ReservationId;
 import org.apache.hadoop.yarn.server.resourcemanager.reservation.Plan;
@@ -45,9 +46,34 @@ public class GreedyReservationAgent implements ReservationAgent {
       .getLogger(GreedyReservationAgent.class);
 
   // Greedy planner
-  private final ReservationAgent planner = new IterativePlanner(
-      new StageEarliestStartByJobArrival(), new StageAllocatorGreedy());
+  private ReservationAgent planner;
+  private boolean allocateLeft;
 
+  public GreedyReservationAgent() {
+  }
+
+  @Override
+  public void init(Configuration conf) {
+    allocateLeft = conf.getBoolean(FAVOR_EARLY_ALLOCATION,
+        DEFAULT_GREEDY_FAVOR_EARLY_ALLOCATION);
+    if (allocateLeft) {
+      LOG.info("Initializing the GreedyReservationAgent to favor \"early\""
+          + " (left) allocations (controlled by parameter: "
+          + FAVOR_EARLY_ALLOCATION + ")");
+    } else {
+      LOG.info("Initializing the GreedyReservationAgent to favor \"late\""
+          + " (right) allocations (controlled by parameter: "
+          + FAVOR_EARLY_ALLOCATION + ")");
+    }
+
+    planner =
+        new IterativePlanner(new StageExecutionIntervalUnconstrained(),
+            new StageAllocatorGreedyRLE(allocateLeft), allocateLeft);
+  }
+
+  public boolean isAllocateLeft(){
+    return allocateLeft;
+  }
   @Override
   public boolean createReservation(ReservationId reservationId, String user,
       Plan plan, ReservationDefinition contract) throws PlanningException {

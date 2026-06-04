@@ -26,20 +26,11 @@ import java.util.List;
 import java.util.Properties;
 import java.text.ParseException;
 
-import java.io.ByteArrayInputStream;
-import java.io.UnsupportedEncodingException;
-import java.security.PublicKey;
-import java.security.cert.CertificateFactory;
-import java.security.cert.X509Certificate;
-import java.security.cert.CertificateException;
 import java.security.interfaces.RSAPublicKey;
 
-import org.apache.commons.codec.binary.Base64;
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.security.authentication.client.AuthenticationException;
-import org.apache.hadoop.security.authentication.server.AltKerberosAuthenticationHandler;
-import org.apache.hadoop.security.authentication.server.AuthenticationToken;
 import org.apache.hadoop.security.authentication.util.CertificateUtil;
-import org.apache.hadoop.security.authentication.util.KerberosName;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -83,7 +74,8 @@ public class JWTRedirectAuthenticationHandler extends
   private static Logger LOG = LoggerFactory
       .getLogger(JWTRedirectAuthenticationHandler.class);
 
-  public static final String AUTHENTICATION_PROVIDER_URL = "authentication.provider.url";
+  public static final String AUTHENTICATION_PROVIDER_URL =
+      "authentication.provider.url";
   public static final String PUBLIC_KEY_PEM = "public.key.pem";
   public static final String EXPECTED_JWT_AUDIENCES = "expected.jwt.audiences";
   public static final String JWT_COOKIE_NAME = "jwt.cookie.name";
@@ -205,7 +197,6 @@ public class JWTRedirectAuthenticationHandler extends
   protected String getJWTFromCookie(HttpServletRequest req) {
     String serializedJWT = null;
     Cookie[] cookies = req.getCookies();
-    String userName = null;
     if (cookies != null) {
       for (Cookie cookie : cookies) {
         if (cookieName.equals(cookie.getName())) {
@@ -226,15 +217,21 @@ public class JWTRedirectAuthenticationHandler extends
    * @param request for getting the original request URL
    * @return url to use as login url for redirect
    */
-  protected String constructLoginURL(HttpServletRequest request) {
+  @VisibleForTesting
+  String constructLoginURL(HttpServletRequest request) {
     String delimiter = "?";
     if (authenticationProviderUrl.contains("?")) {
       delimiter = "&";
     }
     String loginURL = authenticationProviderUrl + delimiter
         + ORIGINAL_URL_QUERY_PARAM
-        + request.getRequestURL().toString();
+        + request.getRequestURL().toString() + getOriginalQueryString(request);
     return loginURL;
+  }
+
+  private String getOriginalQueryString(HttpServletRequest request) {
+    String originalQueryString = request.getQueryString();
+    return (originalQueryString == null) ? "" : "?" + originalQueryString;
   }
 
   /**
@@ -345,7 +342,7 @@ public class JWTRedirectAuthenticationHandler extends
     boolean valid = false;
     try {
       Date expires = jwtToken.getJWTClaimsSet().getExpirationTime();
-      if (expires != null && new Date().before(expires)) {
+      if (expires == null || new Date().before(expires)) {
         LOG.debug("JWT token expiration date has been "
             + "successfully validated");
         valid = true;

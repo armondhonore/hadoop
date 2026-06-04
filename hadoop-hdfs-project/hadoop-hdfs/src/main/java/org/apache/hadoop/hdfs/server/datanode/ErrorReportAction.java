@@ -20,6 +20,7 @@ package org.apache.hadoop.hdfs.server.datanode;
 
 import java.io.IOException;
 
+import org.apache.commons.lang3.builder.ToStringBuilder;
 import org.apache.hadoop.hdfs.protocolPB.DatanodeProtocolClientSideTranslatorPB;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeRegistration;
 import org.apache.hadoop.ipc.RemoteException;
@@ -49,7 +50,7 @@ public class ErrorReportAction implements BPServiceActorAction {
           + "errorMessage: " + errorMessage + "  errorCode: " + errorCode, re);
     } catch(IOException e) {
       throw new BPServiceActorActionException("Error reporting "
-          + "an error to namenode: ");
+          + "an error to namenode.", e);
     }
   }
 
@@ -68,7 +69,7 @@ public class ErrorReportAction implements BPServiceActorAction {
     if (this == obj) {
       return true;
     }
-    if (obj == null || !(obj instanceof ErrorReportAction)) {
+    if (!(obj instanceof ErrorReportAction)) {
       return false;
     }
     ErrorReportAction other = (ErrorReportAction) obj;
@@ -83,5 +84,13 @@ public class ErrorReportAction implements BPServiceActorAction {
       return false;
     }
     return true;
+  }
+
+  @Override
+  public String toString() {
+    return new ToStringBuilder(this)
+        .append("errorCode", errorCode)
+        .append("errorMessage", errorMessage)
+        .toString();
   }
 }

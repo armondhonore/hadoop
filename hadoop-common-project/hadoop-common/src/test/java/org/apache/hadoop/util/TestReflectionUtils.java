@@ -25,16 +25,25 @@ import java.net.URLClassLoader;
 import java.util.HashMap;
 import java.util.List;
 
-import static org.junit.Assert.*;
-import org.junit.Before;
-import org.junit.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+
+import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.hadoop.test.GenericTestUtils.LogCapturer;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
+import org.assertj.core.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class TestReflectionUtils {
 
   private static Class toConstruct[] = { String.class, TestReflectionUtils.class, HashMap.class };
   private Throwable failure = null;
 
-  @Before
+  @BeforeEach
   public void setUp() {
     ReflectionUtils.clearCache();
   }
@@ -62,11 +71,11 @@ public class TestReflectionUtils {
 
   @Test
   public void testThreadSafe() throws Exception {
-    Thread[] th = new Thread[32];
+    SubjectInheritingThread[] th = new SubjectInheritingThread[32];
     for (int i=0; i<th.length; i++) {
-      th[i] = new Thread() {
+      th[i] = new SubjectInheritingThread() {
           @Override
-          public void run() {
+          public void work() {
             try {
               doTestCache();
             } catch (Throwable t) {
@@ -110,7 +119,7 @@ public class TestReflectionUtils {
       assertEquals(cl, o.getClass());
     }
     System.gc();
-    assertTrue(cacheSize()+" too big", cacheSize()<iterations);
+    assertTrue(cacheSize()<iterations, cacheSize()+" too big");
   }
   
   @Test
@@ -145,12 +154,52 @@ public class TestReflectionUtils {
       }
     }
     
-    assertTrue("Missing parent field", containsParentField);
-    assertTrue("Missing child field", containsChildField);
-    assertTrue("Missing parent method", containsParentMethod);
-    assertTrue("Missing child method", containsChildMethod);
+    assertTrue(containsParentField, "Missing parent field");
+    assertTrue(containsChildField, "Missing child field");
+    assertTrue(containsParentMethod, "Missing parent method");
+    assertTrue(containsChildMethod, "Missing child method");
   }
-  
+
+  @Test
+  public void testLogThreadInfo() throws Exception {
+    Logger logger = LoggerFactory.getLogger(TestReflectionUtils.class);
+    LogCapturer logCapturer = LogCapturer.captureLogs(logger);
+
+    final String title = "title";
+    ReflectionUtils.logThreadInfo(logger, title, 0L);
+
+    Assertions.assertThat(logCapturer.getOutput())
+        .contains("Process Thread Dump: " + title);
+  }
+
+  @Test
+  public void testNewInstanceForNonDefaultConstructor() {
+    Object x = ReflectionUtils.newInstance(
+        NoDefaultCtor.class, null, new Class[] {int.class}, 1);
+    assertTrue(x instanceof NoDefaultCtor);
+  }
+
+  @Test
+  public void testNewInstanceForNonDefaultConstructorWithException() {
+    try {
+      ReflectionUtils.newInstance(
+          NoDefaultCtor.class, null, new Class[]{int.class}, 1, 2);
+      fail("Should have failed before this point");
+    } catch (IllegalArgumentException e) {
+      GenericTestUtils.assertExceptionContains(
+          "1 parameters are required but 2 arguments are provided", e);
+    }
+
+    try {
+      ReflectionUtils.newInstance(
+          NoDefaultCtor.class, null, new Class[]{int.class});
+      fail("Should have failed before this point");
+    } catch (IllegalArgumentException e) {
+      GenericTestUtils.assertExceptionContains(
+          "1 parameters are required but 0 arguments are provided", e);
+    }
+  }
+
   // Used for testGetDeclaredFieldsIncludingInherited
   private class Parent {
     private int parentField;

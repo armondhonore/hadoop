@@ -18,7 +18,17 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.nodelabels;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
+
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.Collection;
@@ -28,21 +38,32 @@ import java.util.Map;
 import java.util.Set;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.service.Service;
 import org.apache.hadoop.yarn.api.records.NodeId;
+import org.apache.hadoop.yarn.api.records.NodeLabel;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
+import org.apache.hadoop.yarn.event.Dispatcher;
+import org.apache.hadoop.yarn.event.EventHandler;
+import org.apache.hadoop.yarn.event.InlineDispatcher;
 import org.apache.hadoop.yarn.nodelabels.CommonNodeLabelsManager;
-import org.apache.hadoop.yarn.nodelabels.RMNodeLabel;
 import org.apache.hadoop.yarn.nodelabels.NodeLabelTestBase;
+import org.apache.hadoop.yarn.nodelabels.RMNodeLabel;
 import org.apache.hadoop.yarn.server.resourcemanager.MockRM;
+import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacitySchedulerConfiguration;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.QueuePath;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.NodeLabelsUpdateSchedulerEvent;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.SchedulerEvent;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.SchedulerEventType;
 import org.apache.hadoop.yarn.util.resource.Resources;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
-import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableMap;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableSet;
 
 public class TestRMNodeLabelsManager extends NodeLabelTestBase {
   private final Resource EMPTY_RESOURCE = Resource.newInstance(0, 0);
@@ -52,7 +73,7 @@ public class TestRMNodeLabelsManager extends NodeLabelTestBase {
   NullRMNodeLabelsManager mgr = null;
   RMNodeLabelsManager lmgr = null;
   boolean checkQueueCall = false;
-  @Before
+  @BeforeEach
   public void before() {
     mgr = new NullRMNodeLabelsManager();
     Configuration conf = new Configuration();
@@ -61,48 +82,49 @@ public class TestRMNodeLabelsManager extends NodeLabelTestBase {
     mgr.start();
   }
 
-  @After
+  @AfterEach
   public void after() {
     mgr.stop();
   }
   
-  @Test(timeout = 5000)
+  @Test
+  @Timeout(value = 5)
   public void testGetLabelResourceWhenNodeActiveDeactive() throws Exception {
     mgr.addToCluserNodeLabelsWithDefaultExclusivity(toSet("p1", "p2", "p3"));
     mgr.replaceLabelsOnNode(ImmutableMap.of(toNodeId("n1"), toSet("p1"),
         toNodeId("n2"), toSet("p2"), toNodeId("n3"), toSet("p3")));
 
-    Assert.assertEquals(mgr.getResourceByLabel("p1", null), EMPTY_RESOURCE);
-    Assert.assertEquals(mgr.getResourceByLabel("p2", null), EMPTY_RESOURCE);
-    Assert.assertEquals(mgr.getResourceByLabel("p3", null), EMPTY_RESOURCE);
-    Assert.assertEquals(mgr.getResourceByLabel(RMNodeLabelsManager.NO_LABEL, null),
-        EMPTY_RESOURCE);
+    assertThat(mgr.getResourceByLabel("p1", null)).isEqualTo(EMPTY_RESOURCE);
+    assertThat(mgr.getResourceByLabel("p2", null)).isEqualTo(EMPTY_RESOURCE);
+    assertThat(mgr.getResourceByLabel("p3", null)).isEqualTo(EMPTY_RESOURCE);
+    assertThat(mgr.getResourceByLabel(RMNodeLabelsManager.NO_LABEL, null)).
+        isEqualTo(EMPTY_RESOURCE);
 
     // active two NM to n1, one large and one small
     mgr.activateNode(NodeId.newInstance("n1", 1), SMALL_RESOURCE);
     mgr.activateNode(NodeId.newInstance("n1", 2), LARGE_NODE);
-    Assert.assertEquals(mgr.getResourceByLabel("p1", null),
+    assertThat(mgr.getResourceByLabel("p1", null)).isEqualTo(
         Resources.add(SMALL_RESOURCE, LARGE_NODE));
 
     // check add labels multiple times shouldn't overwrite
     // original attributes on labels like resource
     mgr.addToCluserNodeLabelsWithDefaultExclusivity(toSet("p1", "p4"));
-    Assert.assertEquals(mgr.getResourceByLabel("p1", null),
+    assertThat(mgr.getResourceByLabel("p1", null)).isEqualTo(
         Resources.add(SMALL_RESOURCE, LARGE_NODE));
-    Assert.assertEquals(mgr.getResourceByLabel("p4", null), EMPTY_RESOURCE);
+    assertEquals(mgr.getResourceByLabel("p4", null), EMPTY_RESOURCE);
 
     // change the large NM to small, check if resource updated
     mgr.updateNodeResource(NodeId.newInstance("n1", 2), SMALL_RESOURCE);
-    Assert.assertEquals(mgr.getResourceByLabel("p1", null),
+    assertThat(mgr.getResourceByLabel("p1", null)).isEqualTo(
         Resources.multiply(SMALL_RESOURCE, 2));
 
     // deactive one NM, and check if resource updated
     mgr.deactivateNode(NodeId.newInstance("n1", 1));
-    Assert.assertEquals(mgr.getResourceByLabel("p1", null), SMALL_RESOURCE);
+    assertThat(mgr.getResourceByLabel("p1", null)).isEqualTo(SMALL_RESOURCE);
 
     // continus deactive, check if resource updated
     mgr.deactivateNode(NodeId.newInstance("n1", 2));
-    Assert.assertEquals(mgr.getResourceByLabel("p1", null), EMPTY_RESOURCE);
+    assertThat(mgr.getResourceByLabel("p1", null)).isEqualTo(EMPTY_RESOURCE);
 
     // Add two NM to n1 back
     mgr.activateNode(NodeId.newInstance("n1", 1), SMALL_RESOURCE);
@@ -110,11 +132,12 @@ public class TestRMNodeLabelsManager extends NodeLabelTestBase {
 
     // And remove p1, now the two NM should come to default label,
     mgr.removeFromClusterNodeLabels(ImmutableSet.of("p1"));
-    Assert.assertEquals(mgr.getResourceByLabel(RMNodeLabelsManager.NO_LABEL, null),
-        Resources.add(SMALL_RESOURCE, LARGE_NODE));
+    assertThat(mgr.getResourceByLabel(RMNodeLabelsManager.NO_LABEL, null)).
+        isEqualTo(Resources.add(SMALL_RESOURCE, LARGE_NODE));
   }
   
-  @Test(timeout = 5000)
+  @Test
+  @Timeout(value = 5)
   public void testActivateNodeManagerWithZeroPort() throws Exception {
     // active two NM, one is zero port , another is non-zero port. no exception
     // should be raised
@@ -123,7 +146,8 @@ public class TestRMNodeLabelsManager extends NodeLabelTestBase {
   }
 
   @SuppressWarnings({ "unchecked", "rawtypes" })
-  @Test(timeout = 5000)
+  @Test
+  @Timeout(value = 5)
   public void testGetLabelResource() throws Exception {
     mgr.addToCluserNodeLabelsWithDefaultExclusivity(toSet("p1", "p2", "p3"));
     mgr.replaceLabelsOnNode(ImmutableMap.of(toNodeId("n1"), toSet("p1"),
@@ -136,10 +160,10 @@ public class TestRMNodeLabelsManager extends NodeLabelTestBase {
 
     // change label of n1 to p2
     mgr.replaceLabelsOnNode(ImmutableMap.of(toNodeId("n1"), toSet("p2")));
-    Assert.assertEquals(mgr.getResourceByLabel("p1", null), EMPTY_RESOURCE);
-    Assert.assertEquals(mgr.getResourceByLabel("p2", null),
+    assertThat(mgr.getResourceByLabel("p1", null)).isEqualTo(EMPTY_RESOURCE);
+    assertThat(mgr.getResourceByLabel("p2", null)).isEqualTo(
         Resources.multiply(SMALL_RESOURCE, 2));
-    Assert.assertEquals(mgr.getResourceByLabel("p3", null), SMALL_RESOURCE);
+    assertThat(mgr.getResourceByLabel("p3", null)).isEqualTo(SMALL_RESOURCE);
 
     // add more labels
     mgr.addToCluserNodeLabelsWithDefaultExclusivity(toSet("p4", "p5", "p6"));
@@ -164,17 +188,17 @@ public class TestRMNodeLabelsManager extends NodeLabelTestBase {
     mgr.activateNode(NodeId.newInstance("n9", 1), SMALL_RESOURCE);
 
     // check varibles
-    Assert.assertEquals(mgr.getResourceByLabel("p1", null), SMALL_RESOURCE);
-    Assert.assertEquals(mgr.getResourceByLabel("p2", null),
+    assertThat(mgr.getResourceByLabel("p1", null)).isEqualTo(SMALL_RESOURCE);
+    assertThat(mgr.getResourceByLabel("p2", null)).isEqualTo(
         Resources.multiply(SMALL_RESOURCE, 3));
-    Assert.assertEquals(mgr.getResourceByLabel("p3", null),
+    assertThat(mgr.getResourceByLabel("p3", null)).isEqualTo(
         Resources.multiply(SMALL_RESOURCE, 2));
-    Assert.assertEquals(mgr.getResourceByLabel("p4", null),
+    assertThat(mgr.getResourceByLabel("p4", null)).isEqualTo(
         Resources.multiply(SMALL_RESOURCE, 1));
-    Assert.assertEquals(mgr.getResourceByLabel("p5", null),
+    assertThat(mgr.getResourceByLabel("p5", null)).isEqualTo(
         Resources.multiply(SMALL_RESOURCE, 1));
-    Assert.assertEquals(mgr.getResourceByLabel(RMNodeLabelsManager.NO_LABEL, null),
-        Resources.multiply(SMALL_RESOURCE, 1));
+    assertThat(mgr.getResourceByLabel(RMNodeLabelsManager.NO_LABEL, null)).
+        isEqualTo(Resources.multiply(SMALL_RESOURCE, 1));
 
     // change a bunch of nodes -> labels
     // n4 -> p2
@@ -196,21 +220,23 @@ public class TestRMNodeLabelsManager extends NodeLabelTestBase {
         toNodeId("n9"), toSet("p1")));
 
     // check varibles
-    Assert.assertEquals(mgr.getResourceByLabel("p1", null),
+    assertThat(mgr.getResourceByLabel("p1", null)).isEqualTo(
         Resources.multiply(SMALL_RESOURCE, 2));
-    Assert.assertEquals(mgr.getResourceByLabel("p2", null),
+    assertThat(mgr.getResourceByLabel("p2", null)).isEqualTo(
         Resources.multiply(SMALL_RESOURCE, 3));
-    Assert.assertEquals(mgr.getResourceByLabel("p3", null),
+    assertThat(mgr.getResourceByLabel("p3", null)).isEqualTo(
         Resources.multiply(SMALL_RESOURCE, 2));
-    Assert.assertEquals(mgr.getResourceByLabel("p4", null),
+    assertThat(mgr.getResourceByLabel("p4", null)).isEqualTo(
         Resources.multiply(SMALL_RESOURCE, 0));
-    Assert.assertEquals(mgr.getResourceByLabel("p5", null),
+    assertThat(mgr.getResourceByLabel("p5", null)).isEqualTo(
         Resources.multiply(SMALL_RESOURCE, 0));
-    Assert.assertEquals(mgr.getResourceByLabel("", null),
+    assertThat(mgr.getResourceByLabel("", null)).isEqualTo(
         Resources.multiply(SMALL_RESOURCE, 2));
   }
   
-  @Test(timeout=5000)
+  @Test
+  @Timeout(value = 5)
+  @SuppressWarnings("checkstyle:MethodLength")
   public void testGetQueueResource() throws Exception {
     Resource clusterResource = Resource.newInstance(9999, 1);
     
@@ -249,15 +275,15 @@ public class TestRMNodeLabelsManager extends NodeLabelTestBase {
     mgr.reinitializeQueueLabels(queueToLabels);
     
     // check resource
-    Assert.assertEquals(Resources.multiply(SMALL_RESOURCE, 3),
+    assertEquals(Resources.multiply(SMALL_RESOURCE, 3),
         mgr.getQueueResource("Q1", q1Label, clusterResource));
-    Assert.assertEquals(Resources.multiply(SMALL_RESOURCE, 3),
+    assertEquals(Resources.multiply(SMALL_RESOURCE, 3),
         mgr.getQueueResource("Q2", q2Label, clusterResource));
-    Assert.assertEquals(Resources.multiply(SMALL_RESOURCE, 2),
+    assertEquals(Resources.multiply(SMALL_RESOURCE, 2),
         mgr.getQueueResource("Q3", q3Label, clusterResource));
-    Assert.assertEquals(Resources.multiply(SMALL_RESOURCE, 1),
+    assertEquals(Resources.multiply(SMALL_RESOURCE, 1),
         mgr.getQueueResource("Q4", q4Label, clusterResource));
-    Assert.assertEquals(clusterResource,
+    assertEquals(clusterResource,
         mgr.getQueueResource("Q5", q5Label, clusterResource));
     
     mgr.removeLabelsFromNode(ImmutableMap.of(toNodeId("host2"), toSet("blue")));
@@ -271,15 +297,15 @@ public class TestRMNodeLabelsManager extends NodeLabelTestBase {
      */
     
     // check resource
-    Assert.assertEquals(Resources.multiply(SMALL_RESOURCE, 3),
+    assertEquals(Resources.multiply(SMALL_RESOURCE, 3),
         mgr.getQueueResource("Q1", q1Label, clusterResource));
-    Assert.assertEquals(Resources.multiply(SMALL_RESOURCE, 3),
+    assertEquals(Resources.multiply(SMALL_RESOURCE, 3),
         mgr.getQueueResource("Q2", q2Label, clusterResource));
-    Assert.assertEquals(Resources.multiply(SMALL_RESOURCE, 3),
+    assertEquals(Resources.multiply(SMALL_RESOURCE, 3),
         mgr.getQueueResource("Q3", q3Label, clusterResource));
-    Assert.assertEquals(Resources.multiply(SMALL_RESOURCE, 2),
+    assertEquals(Resources.multiply(SMALL_RESOURCE, 2),
         mgr.getQueueResource("Q4", q4Label, clusterResource));
-    Assert.assertEquals(clusterResource,
+    assertEquals(clusterResource,
         mgr.getQueueResource("Q5", q5Label, clusterResource));
     
     /*
@@ -295,15 +321,15 @@ public class TestRMNodeLabelsManager extends NodeLabelTestBase {
     mgr.activateNode(NodeId.newInstance("host3", 1), SMALL_RESOURCE);
     
     // check resource
-    Assert.assertEquals(Resources.multiply(SMALL_RESOURCE, 2),
+    assertEquals(Resources.multiply(SMALL_RESOURCE, 2),
         mgr.getQueueResource("Q1", q1Label, clusterResource));
-    Assert.assertEquals(Resources.multiply(SMALL_RESOURCE, 3),
+    assertEquals(Resources.multiply(SMALL_RESOURCE, 3),
         mgr.getQueueResource("Q2", q2Label, clusterResource));
-    Assert.assertEquals(Resources.multiply(SMALL_RESOURCE, 3),
+    assertEquals(Resources.multiply(SMALL_RESOURCE, 3),
         mgr.getQueueResource("Q3", q3Label, clusterResource));
-    Assert.assertEquals(Resources.multiply(SMALL_RESOURCE, 2),
+    assertEquals(Resources.multiply(SMALL_RESOURCE, 2),
         mgr.getQueueResource("Q4", q4Label, clusterResource));
-    Assert.assertEquals(clusterResource,
+    assertEquals(clusterResource,
         mgr.getQueueResource("Q5", q5Label, clusterResource));
     
     /*
@@ -330,15 +356,15 @@ public class TestRMNodeLabelsManager extends NodeLabelTestBase {
     mgr.reinitializeQueueLabels(queueToLabels);
     
     // check resource
-    Assert.assertEquals(Resources.multiply(SMALL_RESOURCE, 2),
+    assertEquals(Resources.multiply(SMALL_RESOURCE, 2),
         mgr.getQueueResource("Q1", q1Label, clusterResource));
-    Assert.assertEquals(Resources.multiply(SMALL_RESOURCE, 2),
+    assertEquals(Resources.multiply(SMALL_RESOURCE, 2),
         mgr.getQueueResource("Q2", q2Label, clusterResource));
-    Assert.assertEquals(Resources.multiply(SMALL_RESOURCE, 2),
+    assertEquals(Resources.multiply(SMALL_RESOURCE, 2),
         mgr.getQueueResource("Q3", q3Label, clusterResource));
-    Assert.assertEquals(Resources.multiply(SMALL_RESOURCE, 2),
+    assertEquals(Resources.multiply(SMALL_RESOURCE, 2),
         mgr.getQueueResource("Q4", q4Label, clusterResource));
-    Assert.assertEquals(clusterResource,
+    assertEquals(clusterResource,
         mgr.getQueueResource("Q5", q5Label, clusterResource));
     
     /*
@@ -353,15 +379,15 @@ public class TestRMNodeLabelsManager extends NodeLabelTestBase {
     mgr.activateNode(NodeId.newInstance("host4", 2), SMALL_RESOURCE);
     
     // check resource
-    Assert.assertEquals(Resources.multiply(SMALL_RESOURCE, 3),
+    assertEquals(Resources.multiply(SMALL_RESOURCE, 3),
         mgr.getQueueResource("Q1", q1Label, clusterResource));
-    Assert.assertEquals(Resources.multiply(SMALL_RESOURCE, 3),
+    assertEquals(Resources.multiply(SMALL_RESOURCE, 3),
         mgr.getQueueResource("Q2", q2Label, clusterResource));
-    Assert.assertEquals(Resources.multiply(SMALL_RESOURCE, 3),
+    assertEquals(Resources.multiply(SMALL_RESOURCE, 3),
         mgr.getQueueResource("Q3", q3Label, clusterResource));
-    Assert.assertEquals(Resources.multiply(SMALL_RESOURCE, 3),
+    assertEquals(Resources.multiply(SMALL_RESOURCE, 3),
         mgr.getQueueResource("Q4", q4Label, clusterResource));
-    Assert.assertEquals(clusterResource,
+    assertEquals(clusterResource,
         mgr.getQueueResource("Q5", q5Label, clusterResource));
     
     /*
@@ -376,19 +402,20 @@ public class TestRMNodeLabelsManager extends NodeLabelTestBase {
     mgr.deactivateNode(NodeId.newInstance("host4", 1));
     
     // check resource
-    Assert.assertEquals(Resources.multiply(SMALL_RESOURCE, 1),
+    assertEquals(Resources.multiply(SMALL_RESOURCE, 1),
         mgr.getQueueResource("Q1", q1Label, clusterResource));
-    Assert.assertEquals(Resources.multiply(SMALL_RESOURCE, 1),
+    assertEquals(Resources.multiply(SMALL_RESOURCE, 1),
         mgr.getQueueResource("Q2", q2Label, clusterResource));
-    Assert.assertEquals(Resources.multiply(SMALL_RESOURCE, 1),
+    assertEquals(Resources.multiply(SMALL_RESOURCE, 1),
         mgr.getQueueResource("Q3", q3Label, clusterResource));
-    Assert.assertEquals(Resources.multiply(SMALL_RESOURCE, 1),
+    assertEquals(Resources.multiply(SMALL_RESOURCE, 1),
         mgr.getQueueResource("Q4", q4Label, clusterResource));
-    Assert.assertEquals(clusterResource,
+    assertEquals(clusterResource,
         mgr.getQueueResource("Q5", q5Label, clusterResource));
   }
 
-  @Test(timeout=5000)
+  @Test
+  @Timeout(value = 5)
   public void testGetLabelResourceWhenMultipleNMsExistingInSameHost() throws IOException {
     // active two NM to n1, one large and one small
     mgr.activateNode(NodeId.newInstance("n1", 1), SMALL_RESOURCE);
@@ -397,9 +424,9 @@ public class TestRMNodeLabelsManager extends NodeLabelTestBase {
     mgr.activateNode(NodeId.newInstance("n1", 4), SMALL_RESOURCE);
     
     // check resource of no label, it should be small * 4
-    Assert.assertEquals(
-        mgr.getResourceByLabel(CommonNodeLabelsManager.NO_LABEL, null),
-        Resources.multiply(SMALL_RESOURCE, 4));
+    assertThat(
+        mgr.getResourceByLabel(CommonNodeLabelsManager.NO_LABEL, null)).
+        isEqualTo(Resources.multiply(SMALL_RESOURCE, 4));
     
     // change two of these nodes to p1, check resource of no_label and P1
     mgr.addToCluserNodeLabelsWithDefaultExclusivity(toSet("p1"));
@@ -407,15 +434,16 @@ public class TestRMNodeLabelsManager extends NodeLabelTestBase {
         toNodeId("n1:2"), toSet("p1")));
     
     // check resource
-    Assert.assertEquals(
-        mgr.getResourceByLabel(CommonNodeLabelsManager.NO_LABEL, null),
-        Resources.multiply(SMALL_RESOURCE, 2));    
-    Assert.assertEquals(
-            mgr.getResourceByLabel("p1", null),
-            Resources.multiply(SMALL_RESOURCE, 2));
+    assertThat(
+        mgr.getResourceByLabel(CommonNodeLabelsManager.NO_LABEL, null)).
+        isEqualTo(Resources.multiply(SMALL_RESOURCE, 2));
+    assertThat(
+        mgr.getResourceByLabel("p1", null)).isEqualTo(
+        Resources.multiply(SMALL_RESOURCE, 2));
   }
 
-  @Test(timeout = 5000)
+  @Test
+  @Timeout(value = 5)
   public void testRemoveLabelsFromNode() throws Exception {
     mgr.addToCluserNodeLabelsWithDefaultExclusivity(toSet("p1", "p2", "p3"));
     mgr.replaceLabelsOnNode(ImmutableMap.of(toNodeId("n1"), toSet("p1"),
@@ -424,18 +452,100 @@ public class TestRMNodeLabelsManager extends NodeLabelTestBase {
     mgr.activateNode(NodeId.newInstance("n1", 1), SMALL_RESOURCE);
     try {
       mgr.removeLabelsFromNode(ImmutableMap.of(toNodeId("n1:1"), toSet("p1")));
-      Assert.fail("removeLabelsFromNode should trigger IOException");
+      fail("removeLabelsFromNode should trigger IOException");
     } catch (IOException e) {
     }
     mgr.replaceLabelsOnNode(ImmutableMap.of(toNodeId("n1:1"), toSet("p1")));
     try {
       mgr.removeLabelsFromNode(ImmutableMap.of(toNodeId("n1:1"), toSet("p1")));
     } catch (IOException e) {
-      Assert.fail("IOException from removeLabelsFromNode " + e);
+      fail("IOException from removeLabelsFromNode " + e);
     }
   }
-  
-  @Test(timeout = 5000)
+
+  private static class SchedulerEventHandler
+      implements EventHandler<SchedulerEvent> {
+    Map<NodeId, Set<String>> updatedNodeToLabels = new HashMap<>();
+    boolean receivedEvent;
+
+    @Override
+    public void handle(SchedulerEvent event) {
+      switch (event.getType()) {
+      case NODE_LABELS_UPDATE:
+        receivedEvent = true;
+        updatedNodeToLabels =
+            ((NodeLabelsUpdateSchedulerEvent) event).getUpdatedNodeToLabels();
+        break;
+      default:
+        break;
+      }
+    }
+  }
+
+  @Test
+  public void testReplaceLabelsFromNode() throws Exception {
+    RMContext rmContext = mock(RMContext.class);
+    Dispatcher syncDispatcher = new InlineDispatcher();
+    SchedulerEventHandler schedEventsHandler = new SchedulerEventHandler();
+    syncDispatcher.register(SchedulerEventType.class, schedEventsHandler);
+    when(rmContext.getDispatcher()).thenReturn(syncDispatcher);
+    mgr.setRMContext(rmContext);
+
+    mgr.addToCluserNodeLabelsWithDefaultExclusivity(toSet("p1", "p2", "p3"));
+    mgr.activateNode(NodeId.newInstance("n1", 1), SMALL_RESOURCE);
+    mgr.activateNode(NodeId.newInstance("n2", 1), SMALL_RESOURCE);
+    mgr.activateNode(NodeId.newInstance("n3", 1), SMALL_RESOURCE);
+
+    mgr.replaceLabelsOnNode(ImmutableMap.of(toNodeId("n1:1"), toSet("p1"),
+        toNodeId("n2:1"), toSet("p2"), toNodeId("n3"), toSet("p3")));
+    assertTrue(schedEventsHandler.receivedEvent,
+        "Event should be sent when there is change in labels");
+    assertEquals(3, schedEventsHandler.updatedNodeToLabels.size(),
+        "3 node label mapping modified");
+    ImmutableMap<NodeId, Set<String>> modifiedMap =
+        ImmutableMap.of(toNodeId("n1:1"), toSet("p1"), toNodeId("n2:1"),
+            toSet("p2"), toNodeId("n3:1"), toSet("p3"));
+    assertEquals(modifiedMap, schedEventsHandler.updatedNodeToLabels,
+        "Node label mapping is not matching");
+    schedEventsHandler.receivedEvent = false;
+
+    mgr.replaceLabelsOnNode(ImmutableMap.of(toNodeId("n1:1"), toSet("p1")));
+    assertFalse(schedEventsHandler.receivedEvent,
+        "No event should be sent when there is no change in labels");
+    schedEventsHandler.receivedEvent = false;
+
+    mgr.replaceLabelsOnNode(ImmutableMap.of(toNodeId("n2:1"), toSet("p1"),
+        toNodeId("n3"), toSet("p3")));
+    assertTrue(schedEventsHandler.receivedEvent,
+        "Event should be sent when there is change in labels");
+    assertEquals(1, schedEventsHandler.updatedNodeToLabels.size(),
+        "Single node label mapping modified");
+    assertCollectionEquals(toSet("p1"),
+        schedEventsHandler.updatedNodeToLabels.get(toNodeId("n2:1")));
+    schedEventsHandler.receivedEvent = false;
+
+    mgr.replaceLabelsOnNode(ImmutableMap.of(toNodeId("n3"), toSet("p2")));
+    assertTrue(schedEventsHandler.receivedEvent,
+        "Event should be sent when there is change in labels @ HOST");
+    assertEquals(1, schedEventsHandler.updatedNodeToLabels.size(),
+        "Single node label mapping modified");
+    assertCollectionEquals(toSet("p2"),
+        schedEventsHandler.updatedNodeToLabels.get(toNodeId("n3:1")));
+    schedEventsHandler.receivedEvent = false;
+
+    mgr.replaceLabelsOnNode(ImmutableMap.of(toNodeId("n1"), toSet("p2")));
+    assertTrue(schedEventsHandler.receivedEvent,
+        "Event should be sent when labels are " +
+        "modified at host though labels were set @ NM level");
+    assertEquals(1, schedEventsHandler.updatedNodeToLabels.size(),
+        "Single node label mapping modified");
+    assertCollectionEquals(toSet("p2"),
+        schedEventsHandler.updatedNodeToLabels.get(toNodeId("n1:1")));
+    schedEventsHandler.receivedEvent = false;
+  }
+
+  @Test
+  @Timeout(value = 5)
   public void testGetLabelsOnNodesWhenNodeActiveDeactive() throws Exception {
     mgr.addToCluserNodeLabelsWithDefaultExclusivity(toSet("p1", "p2", "p3"));
     mgr.replaceLabelsOnNode(ImmutableMap.of(
@@ -445,54 +555,54 @@ public class TestRMNodeLabelsManager extends NodeLabelTestBase {
     // Active/Deactive a node directly assigned label, should not remove from
     // node->label map
     mgr.activateNode(toNodeId("n1:1"), SMALL_RESOURCE);
-    assertCollectionEquals(mgr.getNodeLabels().get(toNodeId("n1:1")),
-        toSet("p1"));
+    assertCollectionEquals(toSet("p1"),
+        mgr.getNodeLabels().get(toNodeId("n1:1")));
     mgr.deactivateNode(toNodeId("n1:1"));
-    assertCollectionEquals(mgr.getNodeLabels().get(toNodeId("n1:1")),
-        toSet("p1"));
+    assertCollectionEquals(toSet("p1"),
+        mgr.getNodeLabels().get(toNodeId("n1:1")));
     // Host will not affected
-    assertCollectionEquals(mgr.getNodeLabels().get(toNodeId("n1")),
-        toSet("p2"));
-    
+    assertCollectionEquals(toSet("p2"),
+        mgr.getNodeLabels().get(toNodeId("n1")));
+
     // Active/Deactive a node doesn't directly assigned label, should remove
     // from node->label map
     mgr.activateNode(toNodeId("n1:2"), SMALL_RESOURCE);
-    assertCollectionEquals(mgr.getNodeLabels().get(toNodeId("n1:2")),
-        toSet("p2"));
+    assertCollectionEquals(toSet("p2"),
+        mgr.getNodeLabels().get(toNodeId("n1:2")));
     mgr.deactivateNode(toNodeId("n1:2"));
-    Assert.assertNull(mgr.getNodeLabels().get(toNodeId("n1:2")));
+    assertNull(mgr.getNodeLabels().get(toNodeId("n1:2")));
     // Host will not affected too
-    assertCollectionEquals(mgr.getNodeLabels().get(toNodeId("n1")),
-        toSet("p2"));
-    
+    assertCollectionEquals(toSet("p2"),
+        mgr.getNodeLabels().get(toNodeId("n1")));
+
     // When we change label on the host after active a node without directly
     // assigned label, such node will still be removed after deactive
     // Active/Deactive a node doesn't directly assigned label, should remove
     // from node->label map
     mgr.activateNode(toNodeId("n1:2"), SMALL_RESOURCE);
     mgr.replaceLabelsOnNode(ImmutableMap.of(toNodeId("n1"), toSet("p3")));
-    assertCollectionEquals(mgr.getNodeLabels().get(toNodeId("n1:2")),
-        toSet("p3"));
+    assertCollectionEquals(toSet("p3"),
+        mgr.getNodeLabels().get(toNodeId("n1:2")));
     mgr.deactivateNode(toNodeId("n1:2"));
-    Assert.assertNull(mgr.getNodeLabels().get(toNodeId("n1:2")));
+    assertNull(mgr.getNodeLabels().get(toNodeId("n1:2")));
     // Host will not affected too
-    assertCollectionEquals(mgr.getNodeLabels().get(toNodeId("n1")),
-        toSet("p3"));
-    
+    assertCollectionEquals(toSet("p3"),
+        mgr.getNodeLabels().get(toNodeId("n1")));
   }
   
   private void checkNodeLabelInfo(List<RMNodeLabel> infos, String labelName, int activeNMs, int memory) {
     for (RMNodeLabel info : infos) {
       if (info.getLabelName().equals(labelName)) {
-        Assert.assertEquals(activeNMs, info.getNumActiveNMs());
-        Assert.assertEquals(memory, info.getResource().getMemory());
+        assertEquals(activeNMs, info.getNumActiveNMs());
+        assertEquals(memory, info.getResource().getMemorySize());
         return;
       }
     }
-    Assert.fail("Failed to find info has label=" + labelName);
+    fail("Failed to find info has label=" + labelName);
   }
   
-  @Test(timeout = 5000)
+  @Test
+  @Timeout(value = 5)
   public void testPullRMNodeLabelsInfo() throws IOException {
     mgr.addToCluserNodeLabelsWithDefaultExclusivity(toSet("x", "y", "z"));
     mgr.activateNode(NodeId.newInstance("n1", 1), Resource.newInstance(10, 0));
@@ -505,25 +615,17 @@ public class TestRMNodeLabelsManager extends NodeLabelTestBase {
     
     // x, y, z and ""
     List<RMNodeLabel> infos = mgr.pullRMNodeLabelsInfo();
-    Assert.assertEquals(4, infos.size());
+    assertEquals(4, infos.size());
     checkNodeLabelInfo(infos, RMNodeLabelsManager.NO_LABEL, 2, 20);
     checkNodeLabelInfo(infos, "x", 2, 20);
     checkNodeLabelInfo(infos, "y", 1, 10);
     checkNodeLabelInfo(infos, "z", 0, 0);
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testcheckRemoveFromClusterNodeLabelsOfQueue() throws Exception {
-    class TestRMLabelManger extends RMNodeLabelsManager {
-      @Override
-      protected void checkRemoveFromClusterNodeLabelsOfQueue(
-          Collection<String> labelsToRemove) throws IOException {
-        checkQueueCall = true;
-        // Do nothing
-      }
-
-    }
-    lmgr = new TestRMLabelManger();
+    lmgr = new RMNodeLabelsManager();
     Configuration conf = new Configuration();
     File tempDir = File.createTempFile("nlb", ".tmp");
     tempDir.delete();
@@ -532,30 +634,66 @@ public class TestRMNodeLabelsManager extends NodeLabelTestBase {
     conf.set(YarnConfiguration.FS_NODE_LABELS_STORE_ROOT_DIR,
         tempDir.getAbsolutePath());
     conf.setBoolean(YarnConfiguration.NODE_LABELS_ENABLED, true);
+    conf.set(YarnConfiguration.RM_SCHEDULER,
+        "org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler");
+    Configuration withQueueLabels = getConfigurationWithQueueLabels(conf);
+    MockRM rm = initRM(conf);
+    lmgr.addToCluserNodeLabels(toSet(NodeLabel.newInstance("x", false)));
+    lmgr.removeFromClusterNodeLabels(Arrays.asList(new String[] { "x" }));
+    lmgr.addToCluserNodeLabelsWithDefaultExclusivity(toSet("x"));
+    rm.stop();
+    class TestRMLabelManger extends RMNodeLabelsManager {
+      @Override
+      protected void checkRemoveFromClusterNodeLabelsOfQueue(
+          Collection<String> labelsToRemove) throws IOException {
+        checkQueueCall = true;
+        // Do nothing
+      }
+    }
+    lmgr = new TestRMLabelManger();
+    MockRM rm2 = initRM(withQueueLabels);
+    assertFalse(checkQueueCall,
+        "checkRemoveFromClusterNodeLabelsOfQueue should not be called on recovery");
+    lmgr.removeFromClusterNodeLabels(Arrays.asList(new String[] { "x" }));
+    assertTrue(checkQueueCall, "checkRemoveFromClusterNodeLabelsOfQueue should be called "
+        + "since its not recovery");
+    rm2.stop();
+  }
+
+  private MockRM initRM(Configuration conf) {
     MockRM rm = new MockRM(conf) {
       @Override
       public RMNodeLabelsManager createNodeLabelManager() {
         return lmgr;
       }
     };
-    lmgr.addToCluserNodeLabelsWithDefaultExclusivity(toSet("a"));
-    lmgr.removeFromClusterNodeLabels(Arrays.asList(new String[] { "a" }));
     rm.getRMContext().setNodeLabelManager(lmgr);
     rm.start();
-    lmgr.addToCluserNodeLabelsWithDefaultExclusivity(toSet("a"));
-    Assert.assertEquals(false, checkQueueCall);
-    lmgr.removeFromClusterNodeLabels(Arrays.asList(new String[] { "a" }));
-    Assert.assertEquals(true, checkQueueCall);
-    lmgr.stop();
-    lmgr.close();
-    rm.stop();
+    assertEquals(Service.STATE.STARTED, rm.getServiceState());
+    return rm;
   }
 
-  @Test(timeout = 5000)
+  private Configuration getConfigurationWithQueueLabels(Configuration config) {
+    CapacitySchedulerConfiguration conf =
+        new CapacitySchedulerConfiguration(config);
+    // Define top-level queues
+    final QueuePath root = new QueuePath(CapacitySchedulerConfiguration.ROOT);
+    conf.setQueues(root, new String[] {"a"});
+    conf.setCapacityByLabel(root, "x", 100);
+
+    final QueuePath a = root.createNewLeaf("a");
+    conf.setCapacity(a, 100);
+    conf.setAccessibleNodeLabels(a, ImmutableSet.of("x"));
+    conf.setCapacityByLabel(a, "x", 100);
+    return conf;
+  }
+
+  @Test
+  @Timeout(value = 5)
   public void testLabelsToNodesOnNodeActiveDeactive() throws Exception {
     // Activate a node without assigning any labels
     mgr.activateNode(NodeId.newInstance("n1", 1), Resource.newInstance(10, 0));
-    Assert.assertTrue(mgr.getLabelsToNodes().isEmpty());
+    assertTrue(mgr.getLabelsToNodes().isEmpty());
     assertLabelsToNodesEquals(
         mgr.getLabelsToNodes(), transposeNodeToLabels(mgr.getNodeLabels()));
 
@@ -563,23 +701,71 @@ public class TestRMNodeLabelsManager extends NodeLabelTestBase {
     mgr.addToCluserNodeLabelsWithDefaultExclusivity(toSet("p1"));
     mgr.replaceLabelsOnNode(ImmutableMap.of(toNodeId("n1"), toSet("p1")));
     // p1 -> n1, n1:1
-    Assert.assertEquals(2, mgr.getLabelsToNodes().get("p1").size());
+    assertEquals(2, mgr.getLabelsToNodes().get("p1").size());
     assertLabelsToNodesEquals(
         mgr.getLabelsToNodes(), transposeNodeToLabels(mgr.getNodeLabels()));
 
     // Activate a node for which host to label mapping exists
     mgr.activateNode(NodeId.newInstance("n1", 2), Resource.newInstance(10, 0));
     // p1 -> n1, n1:1, n1:2
-    Assert.assertEquals(3, mgr.getLabelsToNodes().get("p1").size());
+    assertEquals(3, mgr.getLabelsToNodes().get("p1").size());
     assertLabelsToNodesEquals(
         mgr.getLabelsToNodes(), transposeNodeToLabels(mgr.getNodeLabels()));
 
     // Deactivate a node. n1:1 will be removed from the map
     mgr.deactivateNode(NodeId.newInstance("n1", 1));
     // p1 -> n1, n1:2
-    Assert.assertEquals(2, mgr.getLabelsToNodes().get("p1").size());
+    assertEquals(2, mgr.getLabelsToNodes().get("p1").size());
     assertLabelsToNodesEquals(
         mgr.getLabelsToNodes(), transposeNodeToLabels(mgr.getNodeLabels()));
   }
 
+  @Test
+  @Timeout(value = 60)
+  public void testBackwardsCompatableMirror() throws Exception {
+    lmgr = new RMNodeLabelsManager();
+    Configuration conf = new Configuration();
+    File tempDir = File.createTempFile("nlb", ".tmp");
+    tempDir.delete();
+    tempDir.mkdirs();
+    tempDir.deleteOnExit();
+    String tempDirName = tempDir.getAbsolutePath();
+    conf.set(YarnConfiguration.FS_NODE_LABELS_STORE_ROOT_DIR, tempDirName);
+
+    // The following are the contents of a 2.7-formatted levelDB file to be
+    // placed in nodelabel.mirror. There are 3 labels: 'a', 'b', and 'c'.
+    // host1 is labeled with 'a', host2 is labeled with 'b', and c is not
+    // associated with a node.
+    byte[] contents =
+      {
+          0x09, 0x0A, 0x01, 0x61, 0x0A, 0x01, 0x62, 0x0A, 0x01, 0x63, 0x20,
+          0x0A, 0x0E, 0x0A, 0x09, 0x0A, 0x05, 0x68, 0x6F, 0x73, 0x74, 0x32,
+          0x10, 0x00, 0x12, 0x01, 0x62, 0x0A, 0x0E, 0x0A, 0x09, 0x0A, 0x05,
+          0x68, 0x6F, 0x73, 0x74, 0x31, 0x10, 0x00, 0x12, 0x01, 0x61
+      };
+    File file = new File(tempDirName + "/nodelabel.mirror");
+    file.createNewFile();
+    FileOutputStream stream = new FileOutputStream(file);
+    stream.write(contents);
+    stream.close();
+
+    conf.setBoolean(YarnConfiguration.NODE_LABELS_ENABLED, true);
+    conf.set(YarnConfiguration.RM_SCHEDULER,
+        "org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacityScheduler");
+    Configuration withQueueLabels = getConfigurationWithQueueLabels(conf);
+
+    MockRM rm = initRM(withQueueLabels);
+    Set<String> labelNames = lmgr.getClusterNodeLabelNames();
+    Map<String, Set<NodeId>> labeledNodes = lmgr.getLabelsToNodes();
+
+    assertTrue(labelNames.contains("a"));
+    assertTrue(labelNames.contains("b"));
+    assertTrue(labelNames.contains("c"));
+    assertTrue(labeledNodes.get("a")
+        .contains(NodeId.newInstance("host1", 0)));
+    assertTrue(labeledNodes.get("b")
+        .contains(NodeId.newInstance("host2", 0)));
+
+    rm.stop();
+  }
 }

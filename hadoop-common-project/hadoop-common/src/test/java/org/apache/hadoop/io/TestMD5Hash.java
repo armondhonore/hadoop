@@ -18,8 +18,12 @@
 
 package org.apache.hadoop.io;
 
-import org.apache.hadoop.io.TestWritable;
-import junit.framework.TestCase;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.fail;
+
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
@@ -27,8 +31,7 @@ import java.security.MessageDigest;
 import java.util.Random;
 
 /** Unit tests for MD5Hash. */
-public class TestMD5Hash extends TestCase {
-  public TestMD5Hash(String name) { super(name); }
+public class TestMD5Hash {
 
   private static final Random RANDOM = new Random();
 
@@ -42,7 +45,8 @@ public class TestMD5Hash extends TestCase {
 
   protected static byte[] D00 = new byte[] {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
   protected static byte[] DFF = new byte[] {-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1}; 
-  
+
+  @Test
   public void testMD5Hash() throws Exception {
     MD5Hash md5Hash = getTestHash();
 
@@ -87,12 +91,12 @@ public class TestMD5Hash extends TestCase {
     
     assertEquals(0x0102030405060708L, orderedHash.halfDigest());
     assertEquals(0xfffefdfcfbfaf9f8L, backwardHash.halfDigest());
-    assertTrue("hash collision", 
-               closeHash1.hashCode() != closeHash2.hashCode());
+    assertTrue(closeHash1.hashCode() != closeHash2.hashCode(),
+        "hash collision");
      
-    Thread t1 = new Thread() {      
+    SubjectInheritingThread t1 = new SubjectInheritingThread() {
       @Override
-      public void run() {
+      public void work() {
         for (int i = 0; i < 100; i++) {
           MD5Hash hash = new MD5Hash(DFF);
           assertEquals(hash, md5HashFF);
@@ -100,9 +104,9 @@ public class TestMD5Hash extends TestCase {
       }
     };
     
-    Thread t2 = new Thread() {
+    SubjectInheritingThread t2 = new SubjectInheritingThread() {
       @Override
-      public void run() {
+      public void work() {
         for (int i = 0; i < 100; i++) {
           MD5Hash hash = new MD5Hash(D00);
           assertEquals(hash, md5Hash00);
@@ -116,6 +120,7 @@ public class TestMD5Hash extends TestCase {
     t2.join();
   }
 
+  @Test
   public void testFactoryReturnsClearedHashes() throws IOException {
     // A stream that will throw an IOE after reading some bytes
     ByteArrayInputStream failingStream = new ByteArrayInputStream(

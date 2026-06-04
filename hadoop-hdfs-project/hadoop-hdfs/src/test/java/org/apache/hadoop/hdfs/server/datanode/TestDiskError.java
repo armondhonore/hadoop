@@ -17,16 +17,21 @@
  */
 package org.apache.hadoop.hdfs.server.datanode;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.DataOutputStream;
 import java.io.File;
 import java.io.IOException;
+import java.io.RandomAccessFile;
 import java.net.InetSocketAddress;
 import java.net.Socket;
+import java.util.concurrent.TimeUnit;
 
+import java.util.function.Supplier;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
@@ -37,19 +42,24 @@ import org.apache.hadoop.hdfs.DFSTestUtil;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
+import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
 import org.apache.hadoop.hdfs.protocol.datatransfer.BlockConstructionStage;
 import org.apache.hadoop.hdfs.protocol.datatransfer.Sender;
 import org.apache.hadoop.hdfs.security.token.block.BlockTokenSecretManager;
+import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeDescriptor;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsDatasetSpi;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.FsVolumeSpi;
 import org.apache.hadoop.hdfs.server.namenode.NameNodeAdapter;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.DataChecksum;
 import org.apache.hadoop.util.Time;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.mockito.Mockito;
 
 /**
  * Test that datanodes can correctly handle errors during block read/write.
@@ -60,18 +70,24 @@ public class TestDiskError {
   private MiniDFSCluster cluster;
   private Configuration conf;
 
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     conf = new HdfsConfiguration();
     conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, 512L);
+    conf.setTimeDuration(
+        DFSConfigKeys.DFS_DATANODE_DISK_CHECK_MIN_GAP_KEY,
+        0, TimeUnit.MILLISECONDS);
     cluster = new MiniDFSCluster.Builder(conf).numDataNodes(1).build();
     cluster.waitActive();
     fs = cluster.getFileSystem();
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws Exception {
-    cluster.shutdown();
+    if (cluster != null) {
+      cluster.shutdown();
+      cluster = null;
+    }
   }
 
   /**
@@ -99,16 +115,21 @@ public class TestDiskError {
     File dir2 = MiniDFSCluster.getRbwDir(storageDir, bpid);
     try {
       // make the data directory of the first datanode to be readonly
-      assertTrue("Couldn't chmod local vol", dir1.setReadOnly());
-      assertTrue("Couldn't chmod local vol", dir2.setReadOnly());
+      assertTrue(dir1.setReadOnly(), "Couldn't chmod local vol");
+      assertTrue(dir2.setReadOnly(), "Couldn't chmod local vol");
 
       // create files and make sure that first datanode will be down
       DataNode dn = cluster.getDataNodes().get(dnIndex);
+      long deadline = Time.monotonicNow() + 60000;
       for (int i=0; dn.isDatanodeUp(); i++) {
+        if (Time.monotonicNow() > deadline) {
+            fail("DataNode stayed UP for 60s despite Disk Errors.");
+        }
         Path fileName = new Path("/test.txt"+i);
         DFSTestUtil.createFile(fs, fileName, 1024, (short)2, 1L);
         DFSTestUtil.waitReplication(fs, fileName, (short)2);
         fs.delete(fileName, true);
+        Thread.sleep(200);
       }
     } finally {
       // restore its old permission
@@ -132,7 +153,7 @@ public class TestDiskError {
     // get the block belonged to the created file
     LocatedBlocks blocks = NameNodeAdapter.getBlockLocations(
         cluster.getNameNode(), fileName.toString(), 0, (long)fileLen);
-    assertEquals("Should only find 1 block", blocks.locatedBlockCount(), 1);
+    assertEquals(blocks.locatedBlockCount(), 1, "Should only find 1 block");
     LocatedBlock block = blocks.get(0);
 
     // bring up a second datanode
@@ -140,7 +161,8 @@ public class TestDiskError {
     cluster.waitActive();
     final int sndNode = 1;
     DataNode datanode = cluster.getDataNodes().get(sndNode);
-    
+    FsDatasetTestUtils utils = cluster.getFsDatasetTestUtils(datanode);
+
     // replicate the block to the second datanode
     InetSocketAddress target = datanode.getXferAddress();
     Socket s = new Socket(target.getAddress(), target.getPort());
@@ -151,9 +173,10 @@ public class TestDiskError {
         DataChecksum.Type.CRC32, 512);
     new Sender(out).writeBlock(block.getBlock(), StorageType.DEFAULT,
         BlockTokenSecretManager.DUMMY_TOKEN, "",
-        new DatanodeInfo[0], new StorageType[0], null,
+        DatanodeInfo.EMPTY_ARRAY, StorageType.EMPTY_ARRAY, null,
         BlockConstructionStage.PIPELINE_SETUP_CREATE, 1, 0L, 0L, 0L,
-        checksum, CachingStrategy.newDefaultStrategy(), false, false, null);
+        checksum, CachingStrategy.newDefaultStrategy(), false, false,
+        null, null, new String[0]);
     out.flush();
 
     // close the connection before sending the content of the block
@@ -161,11 +184,7 @@ public class TestDiskError {
 
     // the temporary block & meta files should be deleted
     String bpid = cluster.getNamesystem().getBlockPoolId();
-    File storageDir = cluster.getInstanceStorageDir(sndNode, 0);
-    File dir1 = MiniDFSCluster.getRbwDir(storageDir, bpid);
-    storageDir = cluster.getInstanceStorageDir(sndNode, 1);
-    File dir2 = MiniDFSCluster.getRbwDir(storageDir, bpid);
-    while (dir1.listFiles().length != 0 || dir2.listFiles().length != 0) {
+    while (utils.getStoredReplicas(bpid).hasNext()) {
       Thread.sleep(100);
     }
 
@@ -194,11 +213,10 @@ public class TestDiskError {
       try (FsDatasetSpi.FsVolumeReferences volumes =
           dn.getFSDataset().getFsVolumeReferences()) {
         for (FsVolumeSpi vol : volumes) {
-          String dir = vol.getBasePath();
-          Path dataDir = new Path(dir);
+          Path dataDir = new Path(vol.getStorageLocation().getNormalizedUri());
           FsPermission actual = localFS.getFileStatus(dataDir).getPermission();
-          assertEquals("Permission for dir: " + dataDir + ", is " + actual +
-              ", while expected is " + expected, expected, actual);
+          assertEquals(expected, actual, "Permission for dir: " + dataDir + ", is " + actual
+              + ", while expected is " + expected);
         }
       }
     }
@@ -210,17 +228,71 @@ public class TestDiskError {
    * @throws IOException, InterruptedException
    */
   @Test
-  public void testcheckDiskError() throws IOException, InterruptedException {
+  @Timeout(value = 60)
+  public void testcheckDiskError() throws Exception {
     if(cluster.getDataNodes().size() <= 0) {
       cluster.startDataNodes(conf, 1, true, null, null);
       cluster.waitActive();
     }
     DataNode dataNode = cluster.getDataNodes().get(0);
-    long slackTime = dataNode.checkDiskErrorInterval/2;
     //checking for disk error
-    dataNode.checkDiskErrorAsync();
-    Thread.sleep(dataNode.checkDiskErrorInterval);
-    long lastDiskErrorCheck = dataNode.getLastDiskErrorCheck();
-    assertTrue("Disk Error check is not performed within  " + dataNode.checkDiskErrorInterval +  "  ms", ((Time.monotonicNow()-lastDiskErrorCheck) < (dataNode.checkDiskErrorInterval + slackTime)));
+    final long lastCheckTimestamp = dataNode.getLastDiskErrorCheck();
+    dataNode.checkDiskError();
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+      @Override
+      public Boolean get() {
+        return dataNode.getLastDiskErrorCheck() > lastCheckTimestamp;
+      }
+    }, 100, 60000);
+  }
+
+  @Test
+  public void testDataTransferWhenBytesPerChecksumIsZero() throws IOException {
+    DataNode dn0 = cluster.getDataNodes().get(0);
+    // Make a mock blockScanner class and return true whenever isEnabled is
+    // called on blockScanner
+    BlockScanner mockScanner = Mockito.mock(BlockScanner.class);
+    Mockito.when(mockScanner.isEnabled()).thenReturn(true);
+    dn0.setBlockScanner(mockScanner);
+    Path filePath = new Path("test.dat");
+    FSDataOutputStream out = fs.create(filePath, (short) 1);
+    out.write(1);
+    out.hflush();
+    out.close();
+    // Corrupt the metadata file. Insert all 0's in the type and
+    // bytesPerChecksum files of the metadata header.
+    ExtendedBlock block = DFSTestUtil.getFirstBlock(fs, filePath);
+    File metadataFile = cluster.getBlockMetadataFile(0, block);
+    RandomAccessFile raFile = new RandomAccessFile(metadataFile, "rw");
+    raFile.seek(2);
+    raFile.writeByte(0);
+    raFile.writeInt(0);
+    raFile.close();
+    String datanodeId0 = dn0.getDatanodeUuid();
+    LocatedBlock lb = DFSTestUtil.getAllBlocks(fs, filePath).get(0);
+    String storageId = lb.getStorageIDs()[0];
+    cluster.startDataNodes(conf, 1, true, null, null);
+    DataNode dn1 = null;
+    for (int i = 0; i < cluster.getDataNodes().size(); i++) {
+      if (!cluster.getDataNodes().get(i).equals(datanodeId0)) {
+        dn1 = cluster.getDataNodes().get(i);
+        break;
+      }
+    }
+    DatanodeDescriptor dnd1 =
+        NameNodeAdapter.getDatanode(cluster.getNamesystem(),
+            dn1.getDatanodeId());
+
+    dn0.transferBlock(block, new DatanodeInfo[]{dnd1},
+        new StorageType[]{StorageType.DISK}, new String[0]);
+    // Sleep for 1 second so the DataTrasnfer daemon can start transfer.
+    try {
+      Thread.sleep(1000);
+    } catch (InterruptedException e) {
+      // Do nothing
+    }
+    Mockito.verify(mockScanner).markSuspectBlock(Mockito.eq(storageId),
+        Mockito.eq(block));
+
   }
 }

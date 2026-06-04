@@ -21,8 +21,7 @@ package org.apache.hadoop.fs;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.util.DataChecksum;
-import org.apache.htrace.NullScope;
-import org.apache.htrace.TraceScope;
+import org.apache.hadoop.tracing.TraceScope;
 
 import java.io.IOException;
 import java.io.OutputStream;
@@ -34,7 +33,8 @@ import java.util.zip.Checksum;
  */
 @InterfaceAudience.LimitedPrivate({"HDFS"})
 @InterfaceStability.Unstable
-abstract public class FSOutputSummer extends OutputStream {
+abstract public class FSOutputSummer extends OutputStream implements
+    StreamCapabilities {
   // data checksum
   private final DataChecksum sum;
   // internal buffer for storing data before it is checksumed
@@ -186,6 +186,8 @@ abstract public class FSOutputSummer extends OutputStream {
 
   /**
    * Return the number of valid bytes currently in the buffer.
+   *
+   * @return buffer data size.
    */
   protected synchronized int getBufferedDataSize() {
     return count;
@@ -196,8 +198,12 @@ abstract public class FSOutputSummer extends OutputStream {
     return sum.getChecksumSize();
   }
 
+  protected DataChecksum getDataChecksum() {
+    return sum;
+  }
+
   protected TraceScope createWriteTraceScope() {
-    return NullScope.INSTANCE;
+    return null;
   }
 
   /** Generate checksums for the given data chunks and output chunks & checksums
@@ -215,12 +221,18 @@ abstract public class FSOutputSummer extends OutputStream {
             getChecksumSize());
       }
     } finally {
-      scope.close();
+      if (scope != null) {
+        scope.close();
+      }
     }
   }
 
   /**
    * Converts a checksum integer value to a byte stream
+   *
+   * @param sum check sum.
+   * @param checksumSize check sum size.
+   * @return byte stream.
    */
   static public byte[] convertToByteStream(Checksum sum, int checksumSize) {
     return int2byte((int)sum.getValue(), new byte[checksumSize]);
@@ -239,6 +251,8 @@ abstract public class FSOutputSummer extends OutputStream {
 
   /**
    * Resets existing buffer with a new one of the specified size.
+   *
+   * @param size size.
    */
   protected synchronized void setChecksumBufSize(int size) {
     this.buf = new byte[size];
@@ -248,5 +262,10 @@ abstract public class FSOutputSummer extends OutputStream {
 
   protected synchronized void resetChecksumBufSize() {
     setChecksumBufSize(sum.getBytesPerChecksum() * BUFFER_NUM_CHUNKS);
+  }
+
+  @Override
+  public boolean hasCapability(String capability) {
+    return false;
   }
 }

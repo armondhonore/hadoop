@@ -19,48 +19,39 @@
 package org.apache.hadoop.yarn.server.nodemanager.nodelabels;
 
 import java.io.IOException;
-import java.util.Arrays;
-import java.util.Date;
-import java.util.HashSet;
 import java.util.TimerTask;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 
 /**
  * Provides Node's Labels by constantly monitoring the configuration.
  */
-public class ConfigurationNodeLabelsProvider extends AbstractNodeLabelsProvider {
+public class ConfigurationNodeLabelsProvider extends NodeLabelsProvider {
 
-  private static final Log LOG = LogFactory
-      .getLog(ConfigurationNodeLabelsProvider.class);
+  private static final Logger LOG =
+       LoggerFactory.getLogger(ConfigurationNodeLabelsProvider.class);
 
   public ConfigurationNodeLabelsProvider() {
     super("Configuration Based NodeLabels Provider");
   }
+
   @Override
   protected void serviceInit(Configuration conf) throws Exception {
+    long taskInterval = conf.getLong(
+        YarnConfiguration.NM_NODE_LABELS_PROVIDER_FETCH_INTERVAL_MS,
+        YarnConfiguration.DEFAULT_NM_NODE_LABELS_PROVIDER_FETCH_INTERVAL_MS);
+    this.setIntervalTime(taskInterval);
     super.serviceInit(conf);
-    // In case timer is not configured avoid calling timertask.run thus avoiding
-    // unnecessary creation of YarnConfiguration Object
-    updateNodeLabelsFromConfig(conf);
-    if (intervalTime != DISABLE_NODE_LABELS_PROVIDER_FETCH_TIMER) {
-      startTime = new Date().getTime() + intervalTime;
-    }
   }
 
   private void updateNodeLabelsFromConfig(Configuration conf)
       throws IOException {
-    String confLabelString =
-        conf.get(YarnConfiguration.NM_PROVIDER_CONFIGURED_NODE_LABELS, null);
-    String[] nodeLabelsFromConfiguration =
-        (confLabelString == null || confLabelString.isEmpty()) ? new String[] {}
-            : StringUtils.getStrings(confLabelString);
-    setNodeLabels(convertToNodeLabelSet(new HashSet<String>(
-        Arrays.asList(nodeLabelsFromConfiguration))));
+    String configuredNodePartition =
+        conf.get(YarnConfiguration.NM_PROVIDER_CONFIGURED_NODE_PARTITION, null);
+    setDescriptors(convertToNodeLabelSet(configuredNodePartition));
   }
 
   private class ConfigurationMonitorTimerTask extends TimerTask {
@@ -77,5 +68,10 @@ public class ConfigurationNodeLabelsProvider extends AbstractNodeLabelsProvider 
   @Override
   public TimerTask createTimerTask() {
     return new ConfigurationMonitorTimerTask();
+  }
+
+  @Override
+  protected void cleanUp() throws Exception {
+    //No cleanup Req!
   }
 }

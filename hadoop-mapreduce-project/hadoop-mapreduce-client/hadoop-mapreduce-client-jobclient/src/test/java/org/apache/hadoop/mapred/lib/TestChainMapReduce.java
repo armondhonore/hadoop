@@ -21,11 +21,28 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Text;
-import org.apache.hadoop.mapred.*;
+import org.apache.hadoop.mapred.FileInputFormat;
+import org.apache.hadoop.mapred.FileOutputFormat;
+import org.apache.hadoop.mapred.HadoopTestCase;
+import org.apache.hadoop.mapred.JobClient;
+import org.apache.hadoop.mapred.JobConf;
+import org.apache.hadoop.mapred.Mapper;
+import org.apache.hadoop.mapred.OutputCollector;
+import org.apache.hadoop.mapred.Reducer;
+import org.apache.hadoop.mapred.Reporter;
+import org.apache.hadoop.mapred.RunningJob;
+import org.apache.hadoop.mapred.TextInputFormat;
+import org.apache.hadoop.mapred.TextOutputFormat;
+import org.junit.jupiter.api.Test;
 
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.util.Iterator;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 public class TestChainMapReduce extends HadoopTestCase {
 
@@ -67,6 +84,7 @@ public class TestChainMapReduce extends HadoopTestCase {
     super(HadoopTestCase.LOCAL_MR, HadoopTestCase.LOCAL_FS, 1, 1);
   }
 
+  @Test
   public void testChain() throws Exception {
     Path inDir = new Path("testing/chain/input");
     Path outDir = new Path("testing/chain/output");
@@ -90,7 +108,7 @@ public class TestChainMapReduce extends HadoopTestCase {
 
     fs.delete(outDir, true);
     if (!fs.mkdirs(inDir)) {
-      throw new IOException("Mkdirs failed to create " + inDir.toString());
+      throw new IOException("Mkdirs failed to create " + inDir);
     }
 
     DataOutputStream file = fs.create(new Path(inDir, "part-0"));

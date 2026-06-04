@@ -18,36 +18,49 @@
 package org.apache.hadoop.hdfs.server.datanode.fsdataset.impl;
 
 import java.util.Collection;
-import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Consumer;
 
 import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.hdfs.protocol.Block;
+import org.apache.hadoop.hdfs.server.common.AutoCloseDataSetLock;
+import org.apache.hadoop.hdfs.server.common.DataNodeLockManager;
+import org.apache.hadoop.hdfs.server.common.DataNodeLockManager.LockLevel;
+import org.apache.hadoop.hdfs.server.common.NoLockManager;
 import org.apache.hadoop.hdfs.server.datanode.ReplicaInfo;
+import org.apache.hadoop.util.LightWeightResizableGSet;
 
 /**
  * Maintains the replica map. 
  */
 class ReplicaMap {
-  // Object using which this class is synchronized
-  private final Object mutex;
-  
+  // Lock object to synchronize this instance.
+  private DataNodeLockManager<AutoCloseDataSetLock> lockManager;
+
   // Map of block pool Id to another map of block Id to ReplicaInfo.
-  private final Map<String, Map<Long, ReplicaInfo>> map =
-    new HashMap<String, Map<Long, ReplicaInfo>>();
-  
-  ReplicaMap(Object mutex) {
-    if (mutex == null) {
+  private final Map<String, LightWeightResizableGSet<Block, ReplicaInfo>> map =
+      new ConcurrentHashMap<>();
+
+  ReplicaMap(DataNodeLockManager<AutoCloseDataSetLock> manager) {
+    if (manager == null) {
       throw new HadoopIllegalArgumentException(
           "Object to synchronize on cannot be null");
     }
-    this.mutex = mutex;
+    this.lockManager = manager;
+  }
+
+  // Used for ut or temp replicaMap that no need to protected by lock.
+  ReplicaMap() {
+    this.lockManager = new NoLockManager();
   }
   
   String[] getBlockPoolList() {
-    synchronized(mutex) {
-      return map.keySet().toArray(new String[map.keySet().size()]);   
-    }
+    Set<String> bpset = map.keySet();
+    return bpset.toArray(new String[bpset.size()]);
   }
   
   private void checkBlockPool(String bpid) {
@@ -90,12 +103,12 @@ class ReplicaMap {
    */
   ReplicaInfo get(String bpid, long blockId) {
     checkBlockPool(bpid);
-    synchronized(mutex) {
-      Map<Long, ReplicaInfo> m = map.get(bpid);
-      return m != null ? m.get(blockId) : null;
+    try (AutoCloseDataSetLock l = lockManager.readLock(LockLevel.BLOCK_POOl, bpid)) {
+      LightWeightResizableGSet<Block, ReplicaInfo> m = map.get(bpid);
+      return m != null ? m.get(new Block(blockId)) : null;
     }
   }
-  
+
   /**
    * Add a replica's meta information into the map 
    * 
@@ -107,14 +120,38 @@ class ReplicaMap {
   ReplicaInfo add(String bpid, ReplicaInfo replicaInfo) {
     checkBlockPool(bpid);
     checkBlock(replicaInfo);
-    synchronized(mutex) {
-      Map<Long, ReplicaInfo> m = map.get(bpid);
+    try (AutoCloseDataSetLock l = lockManager.readLock(LockLevel.BLOCK_POOl, bpid)) {
+      LightWeightResizableGSet<Block, ReplicaInfo> m = map.get(bpid);
       if (m == null) {
         // Add an entry for block pool if it does not exist already
-        m = new HashMap<Long, ReplicaInfo>();
-        map.put(bpid, m);
+        map.putIfAbsent(bpid, new LightWeightResizableGSet<Block, ReplicaInfo>());
+        m = map.get(bpid);
       }
-      return  m.put(replicaInfo.getBlockId(), replicaInfo);
+      return  m.put(replicaInfo);
+    }
+  }
+
+  /**
+   * Add a replica's meta information into the map, if already exist
+   * return the old replicaInfo.
+   */
+  ReplicaInfo addAndGet(String bpid, ReplicaInfo replicaInfo) {
+    checkBlockPool(bpid);
+    checkBlock(replicaInfo);
+    try (AutoCloseDataSetLock l = lockManager.readLock(LockLevel.BLOCK_POOl, bpid)) {
+      LightWeightResizableGSet<Block, ReplicaInfo> m = map.get(bpid);
+      if (m == null) {
+        // Add an entry for block pool if it does not exist already
+        map.putIfAbsent(bpid, new LightWeightResizableGSet<Block, ReplicaInfo>());
+        m = map.get(bpid);
+      }
+      ReplicaInfo oldReplicaInfo = m.get(replicaInfo);
+      if (oldReplicaInfo != null) {
+        return oldReplicaInfo;
+      } else {
+        m.put(replicaInfo);
+      }
+      return replicaInfo;
     }
   }
 
@@ -123,6 +160,35 @@ class ReplicaMap {
    */
   void addAll(ReplicaMap other) {
     map.putAll(other.map);
+  }
+
+
+  /**
+   * Merge all entries from the given replica map into the local replica map.
+   */
+  void mergeAll(ReplicaMap other) {
+    Set<String> bplist = other.map.keySet();
+    for (String bp : bplist) {
+      checkBlockPool(bp);
+      try (AutoCloseDataSetLock l = lockManager.writeLock(LockLevel.BLOCK_POOl, bp)) {
+        LightWeightResizableGSet<Block, ReplicaInfo> replicaInfos = other.map.get(bp);
+        LightWeightResizableGSet<Block, ReplicaInfo> curSet = map.get(bp);
+        HashSet<ReplicaInfo> replicaSet = new HashSet<>();
+        //Can't add to GSet while in another GSet iterator may cause endlessLoop
+        for (ReplicaInfo replicaInfo : replicaInfos) {
+          replicaSet.add(replicaInfo);
+        }
+        if (curSet == null && !replicaSet.isEmpty()) {
+          // Add an entry for block pool if it does not exist already
+          curSet = new LightWeightResizableGSet<>();
+          map.put(bp, curSet);
+        }
+        for (ReplicaInfo replicaInfo : replicaSet) {
+          checkBlock(replicaInfo);
+          curSet.put(replicaInfo);
+        }
+      }
+    }
   }
   
   /**
@@ -136,15 +202,14 @@ class ReplicaMap {
   ReplicaInfo remove(String bpid, Block block) {
     checkBlockPool(bpid);
     checkBlock(block);
-    synchronized(mutex) {
-      Map<Long, ReplicaInfo> m = map.get(bpid);
+    try (AutoCloseDataSetLock l = lockManager.readLock(LockLevel.BLOCK_POOl, bpid)) {
+      LightWeightResizableGSet<Block, ReplicaInfo> m = map.get(bpid);
       if (m != null) {
-        Long key = Long.valueOf(block.getBlockId());
-        ReplicaInfo replicaInfo = m.get(key);
+        ReplicaInfo replicaInfo = m.get(block);
         if (replicaInfo != null &&
             block.getGenerationStamp() == replicaInfo.getGenerationStamp()) {
-          return m.remove(key);
-        } 
+          return m.remove(block);
+        }
       }
     }
     
@@ -159,10 +224,10 @@ class ReplicaMap {
    */
   ReplicaInfo remove(String bpid, long blockId) {
     checkBlockPool(bpid);
-    synchronized(mutex) {
-      Map<Long, ReplicaInfo> m = map.get(bpid);
+    try (AutoCloseDataSetLock l = lockManager.readLock(LockLevel.BLOCK_POOl, bpid)) {
+      LightWeightResizableGSet<Block, ReplicaInfo> m = map.get(bpid);
       if (m != null) {
-        return m.remove(blockId);
+        return m.remove(new Block(blockId));
       }
     }
     return null;
@@ -174,36 +239,49 @@ class ReplicaMap {
    * @return the number of replicas in the map
    */
   int size(String bpid) {
-    Map<Long, ReplicaInfo> m = null;
-    synchronized(mutex) {
-      m = map.get(bpid);
+    try (AutoCloseDataSetLock l = lockManager.readLock(LockLevel.BLOCK_POOl, bpid)) {
+      LightWeightResizableGSet<Block, ReplicaInfo> m = map.get(bpid);
       return m != null ? m.size() : 0;
     }
   }
   
   /**
    * Get a collection of the replicas for given block pool
-   * This method is <b>not synchronized</b>. It needs to be synchronized
-   * externally using the mutex, both for getting the replicas
-   * values from the map and iterating over it. Mutex can be accessed using
-   * {@link #getMutext()} method.
-   * 
+   * This method is <b>not synchronized</b>. If you want to keep thread safe
+   * Use method {@link #replicas(String, Consumer<Iterator<ReplicaInfo>>)}.
+   *
    * @param bpid block pool id
    * @return a collection of the replicas belonging to the block pool
    */
   Collection<ReplicaInfo> replicas(String bpid) {
-    Map<Long, ReplicaInfo> m = null;
+    LightWeightResizableGSet<Block, ReplicaInfo> m = null;
     m = map.get(bpid);
     return m != null ? m.values() : null;
   }
 
+  /**
+   * execute function for one block pool and protect by LockManager.
+   * This method is <b>synchronized</b>.
+   *
+   * @param bpid block pool id
+   */
+  void replicas(String bpid, Consumer<Iterator<ReplicaInfo>> consumer) {
+    LightWeightResizableGSet<Block, ReplicaInfo> m = null;
+    try (AutoCloseDataSetLock l = lockManager.readLock(LockLevel.BLOCK_POOl, bpid)) {
+      m = map.get(bpid);
+      if (m !=null) {
+        m.getIterator(consumer);
+      }
+    }
+  }
+
   void initBlockPool(String bpid) {
     checkBlockPool(bpid);
-    synchronized(mutex) {
-      Map<Long, ReplicaInfo> m = map.get(bpid);
+    try (AutoCloseDataSetLock l = lockManager.writeLock(LockLevel.BLOCK_POOl, bpid)) {
+      LightWeightResizableGSet<Block, ReplicaInfo> m = map.get(bpid);
       if (m == null) {
         // Add an entry for block pool if it does not exist already
-        m = new HashMap<Long, ReplicaInfo>();
+        m = new LightWeightResizableGSet<Block, ReplicaInfo>();
         map.put(bpid, m);
       }
     }
@@ -211,16 +289,8 @@ class ReplicaMap {
   
   void cleanUpBlockPool(String bpid) {
     checkBlockPool(bpid);
-    synchronized(mutex) {
+    try (AutoCloseDataSetLock l = lockManager.writeLock(LockLevel.BLOCK_POOl, bpid)) {
       map.remove(bpid);
     }
-  }
-  
-  /**
-   * Give access to mutex used for synchronizing ReplicasMap
-   * @return object used as lock
-   */
-  Object getMutext() {
-    return mutex;
   }
 }

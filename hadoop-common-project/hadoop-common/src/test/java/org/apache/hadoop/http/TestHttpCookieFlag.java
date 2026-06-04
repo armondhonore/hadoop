@@ -13,35 +13,34 @@
  */
 package org.apache.hadoop.http;
 
-import org.junit.Assert;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.net.NetUtils;
-import org.apache.hadoop.security.authentication.client.AuthenticatedURL;
 import org.apache.hadoop.security.authentication.server.AuthenticationFilter;
 import org.apache.hadoop.security.ssl.KeyStoreTestUtil;
 import org.apache.hadoop.security.ssl.SSLFactory;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import javax.net.ssl.HttpsURLConnection;
 import javax.servlet.*;
-import javax.servlet.http.Cookie;
 import javax.servlet.http.HttpServletResponse;
 import java.io.File;
 import java.io.IOException;
 import java.net.HttpURLConnection;
-import java.net.MalformedURLException;
 import java.net.URI;
 import java.net.URL;
 import java.security.GeneralSecurityException;
 import java.net.HttpCookie;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 public class TestHttpCookieFlag {
-  private static final String BASEDIR = System.getProperty("test.build.dir",
-          "target/test-dir") + "/" + TestHttpCookieFlag.class.getSimpleName();
+  private static final String BASEDIR =
+      GenericTestUtils.getTempPath(TestHttpCookieFlag.class.getSimpleName());
   private static String keystoresDir;
   private static String sslConfDir;
   private static SSLFactory clientSslFactory;
@@ -76,7 +75,7 @@ public class TestHttpCookieFlag {
     }
   }
 
-  @BeforeClass
+  @BeforeAll
   public static void setUp() throws Exception {
     Configuration conf = new Configuration();
     conf.set(HttpServer2.FILTER_INITIALIZER_PROPERTY,
@@ -89,9 +88,7 @@ public class TestHttpCookieFlag {
     sslConfDir = KeyStoreTestUtil.getClasspathDir(TestSSLHttpServer.class);
 
     KeyStoreTestUtil.setupSSLConfig(keystoresDir, sslConfDir, conf, false);
-    Configuration sslConf = new Configuration(false);
-    sslConf.addResource("ssl-server.xml");
-    sslConf.addResource("ssl-client.xml");
+    Configuration sslConf = KeyStoreTestUtil.getSslConfig();
 
     clientSslFactory = new SSLFactory(SSLFactory.Mode.CLIENT, sslConf);
     clientSslFactory.init();
@@ -107,7 +104,10 @@ public class TestHttpCookieFlag {
                     sslConf.get("ssl.server.keystore.type", "jks"))
             .trustStore(sslConf.get("ssl.server.truststore.location"),
                     sslConf.get("ssl.server.truststore.password"),
-                    sslConf.get("ssl.server.truststore.type", "jks")).build();
+                    sslConf.get("ssl.server.truststore.type", "jks"))
+            .excludeCiphers(sslConf.get("ssl.server.exclude.cipher.list"))
+            .includeCiphers(sslConf.get("ssl.server.include.cipher.list"))
+            .build();
     server.addServlet("echo", "/echo", TestHttpServer.EchoServlet.class);
     server.start();
   }
@@ -121,9 +121,9 @@ public class TestHttpCookieFlag {
 
     String header = conn.getHeaderField("Set-Cookie");
     List<HttpCookie> cookies = HttpCookie.parse(header);
-    Assert.assertTrue(!cookies.isEmpty());
-    Assert.assertTrue(header.contains("; HttpOnly"));
-    Assert.assertTrue("token".equals(cookies.get(0).getValue()));
+    assertTrue(!cookies.isEmpty());
+    assertTrue(header.contains("; HttpOnly"));
+    assertTrue("token".equals(cookies.get(0).getValue()));
   }
 
   @Test
@@ -136,13 +136,13 @@ public class TestHttpCookieFlag {
 
     String header = conn.getHeaderField("Set-Cookie");
     List<HttpCookie> cookies = HttpCookie.parse(header);
-    Assert.assertTrue(!cookies.isEmpty());
-    Assert.assertTrue(header.contains("; HttpOnly"));
-    Assert.assertTrue(cookies.get(0).getSecure());
-    Assert.assertTrue("token".equals(cookies.get(0).getValue()));
+    assertTrue(!cookies.isEmpty());
+    assertTrue(header.contains("; HttpOnly"));
+    assertTrue(cookies.get(0).getSecure());
+    assertTrue("token".equals(cookies.get(0).getValue()));
   }
 
-  @AfterClass
+  @AfterAll
   public static void cleanup() throws Exception {
     server.stop();
     FileUtil.fullyDelete(new File(BASEDIR));

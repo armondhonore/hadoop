@@ -22,9 +22,12 @@ import java.util.Random;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.hadoop.fs.ChecksumException;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 public class TestDataChecksum {
 
@@ -196,5 +199,11 @@ public class TestDataChecksum {
     newBuf.reset();
     newBuf.limit(dataBuf.limit());
     return newBuf;
+  }
+
+  @Test
+  public void testCrc32() throws Exception {
+    new Crc32PerformanceTest(8, 3, true).run();
+    new Crc32PerformanceTest(8, 3, false).run();
   }
 }

@@ -17,15 +17,25 @@
 */
 package org.apache.hadoop.hdfs;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.concurrent.TimeoutException;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import java.util.function.Supplier;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
-import org.junit.Test;
+import org.apache.hadoop.hdfs.tools.DFSAdmin;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.hadoop.util.ToolRunner;
+import org.junit.jupiter.api.Test;
 
 /**
  * This test ensures that the balancer bandwidth is dynamically adjusted
@@ -35,7 +45,11 @@ public class TestBalancerBandwidth {
   final static private Configuration conf = new Configuration();
   final static private int NUM_OF_DATANODES = 2;
   final static private int DEFAULT_BANDWIDTH = 1024*1024;
-  public static final Log LOG = LogFactory.getLog(TestBalancerBandwidth.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(TestBalancerBandwidth.class);
+  private static final Charset UTF8 = StandardCharsets.UTF_8;
+  private final ByteArrayOutputStream outContent = new ByteArrayOutputStream();
+  private final PrintStream outStream = new PrintStream(outContent);
 
   @Test
   public void testBalancerBandwidth() throws Exception {
@@ -45,9 +59,8 @@ public class TestBalancerBandwidth {
         DEFAULT_BANDWIDTH);
 
     /* Create and start cluster */
-    MiniDFSCluster cluster = 
-      new MiniDFSCluster.Builder(conf).numDataNodes(NUM_OF_DATANODES).build();
-    try {
+    try (MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf)
+        .numDataNodes(NUM_OF_DATANODES).build()) {
       cluster.waitActive();
 
       DistributedFileSystem fs = cluster.getFileSystem();
@@ -56,33 +69,76 @@ public class TestBalancerBandwidth {
       // Ensure value from the configuration is reflected in the datanodes.
       assertEquals(DEFAULT_BANDWIDTH, (long) datanodes.get(0).getBalancerBandwidth());
       assertEquals(DEFAULT_BANDWIDTH, (long) datanodes.get(1).getBalancerBandwidth());
+      DFSAdmin admin = new DFSAdmin(conf);
+      String dn1Address = datanodes.get(0).ipcServer.getListenerAddress()
+          .getHostName() + ":" + datanodes.get(0).getIpcPort();
+      String dn2Address = datanodes.get(1).ipcServer.getListenerAddress()
+          .getHostName() + ":" + datanodes.get(1).getIpcPort();
+
+      // verifies the dfsadmin command execution
+      String[] args = new String[] { "-getBalancerBandwidth", dn1Address };
+      runGetBalancerBandwidthCmd(admin, args, DEFAULT_BANDWIDTH);
+      args = new String[] { "-getBalancerBandwidth", dn2Address };
+      runGetBalancerBandwidthCmd(admin, args, DEFAULT_BANDWIDTH);
 
       // Dynamically change balancer bandwidth and ensure the updated value
       // is reflected on the datanodes.
       long newBandwidth = 12 * DEFAULT_BANDWIDTH; // 12M bps
       fs.setBalancerBandwidth(newBandwidth);
+      verifyBalancerBandwidth(datanodes, newBandwidth);
 
-      // Give it a few seconds to propogate new the value to the datanodes.
-      try {
-        Thread.sleep(5000);
-      } catch (Exception e) {}
-
-      assertEquals(newBandwidth, (long) datanodes.get(0).getBalancerBandwidth());
-      assertEquals(newBandwidth, (long) datanodes.get(1).getBalancerBandwidth());
+      // verifies the dfsadmin command execution
+      args = new String[] { "-getBalancerBandwidth", dn1Address };
+      runGetBalancerBandwidthCmd(admin, args, newBandwidth);
+      args = new String[] { "-getBalancerBandwidth", dn2Address };
+      runGetBalancerBandwidthCmd(admin, args, newBandwidth);
 
       // Dynamically change balancer bandwidth to 0. Balancer bandwidth on the
       // datanodes should remain as it was.
       fs.setBalancerBandwidth(0);
 
-      // Give it a few seconds to propogate new the value to the datanodes.
-      try {
-        Thread.sleep(5000);
-      } catch (Exception e) {}
+      verifyBalancerBandwidth(datanodes, newBandwidth);
 
-      assertEquals(newBandwidth, (long) datanodes.get(0).getBalancerBandwidth());
-      assertEquals(newBandwidth, (long) datanodes.get(1).getBalancerBandwidth());
-    }finally {
-      cluster.shutdown();
+      // verifies the dfsadmin command execution
+      args = new String[] { "-getBalancerBandwidth", dn1Address };
+      runGetBalancerBandwidthCmd(admin, args, newBandwidth);
+      args = new String[] { "-getBalancerBandwidth", dn2Address };
+      runGetBalancerBandwidthCmd(admin, args, newBandwidth);
+
+      // test maximum bandwidth allowed
+      assertEquals(0, ToolRunner.run(admin,
+          new String[] {"-setBalancerBandwidth", "1t"}));
+
+      assertEquals(-1, ToolRunner.run(admin,
+          new String[] {"-setBalancerBandwidth", "1e"}));
+    }
+  }
+
+  private void verifyBalancerBandwidth(final ArrayList<DataNode> datanodes,
+      final long newBandwidth) throws TimeoutException, InterruptedException {
+    GenericTestUtils.waitFor(new Supplier<Boolean>() {
+      @Override
+      public Boolean get() {
+        return (long) datanodes.get(0).getBalancerBandwidth() == newBandwidth
+            && (long) datanodes.get(1).getBalancerBandwidth() == newBandwidth;
+      }
+    }, 100, 60 * 1000);
+  }
+
+  private void runGetBalancerBandwidthCmd(DFSAdmin admin, String[] args,
+      long expectedBandwidth) throws Exception {
+    PrintStream initialStdOut = System.out;
+    outContent.reset();
+    try {
+      System.setOut(outStream);
+      int exitCode = admin.run(args);
+      assertEquals(0, exitCode, "DFSAdmin should return 0");
+      String bandwidthOutMsg = "Balancer bandwidth is " + expectedBandwidth
+          + " bytes per second.";
+      String strOut = new String(outContent.toByteArray(), UTF8);
+      assertTrue(strOut.contains(bandwidthOutMsg), "Wrong balancer bandwidth!");
+    } finally {
+      System.setOut(initialStdOut);
     }
   }
 

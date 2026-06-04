@@ -18,16 +18,14 @@
 package org.apache.hadoop.hdfs;
 
 import java.io.ByteArrayOutputStream;
-import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.PrintStream;
-import java.io.RandomAccessFile;
 import java.util.Random;
 import java.util.concurrent.TimeoutException;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.ChecksumException;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
@@ -39,15 +37,16 @@ import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlock;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
 import org.apache.hadoop.hdfs.server.datanode.DataNode;
-import org.apache.hadoop.hdfs.server.datanode.DataNodeTestUtils;
 import org.apache.hadoop.hdfs.server.namenode.NamenodeFsck;
 import org.apache.hadoop.hdfs.tools.DFSck;
 import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.util.ToolRunner;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Class is used to test client reporting corrupted block replica to name node.
@@ -58,8 +57,8 @@ import org.junit.Test;
  * replica.
  */
 public class TestClientReportBadBlock {
-  private static final Log LOG = LogFactory
-      .getLog(TestClientReportBadBlock.class);
+  private static final Logger LOG = LoggerFactory
+      .getLogger(TestClientReportBadBlock.class);
 
   static final long BLOCK_SIZE = 64 * 1024;
   private static int buffersize;
@@ -70,7 +69,7 @@ public class TestClientReportBadBlock {
 
   Random rand = new Random();
 
-  @Before
+  @BeforeEach
   public void startUpCluster() throws IOException {
     // disable block scanner
     conf.setInt(DFSConfigKeys.DFS_DATANODE_SCAN_PERIOD_HOURS_KEY, -1); 
@@ -83,10 +82,16 @@ public class TestClientReportBadBlock {
     buffersize = conf.getInt(CommonConfigurationKeys.IO_FILE_BUFFER_SIZE_KEY, 4096);
   }
 
-  @After
+  @AfterEach
   public void shutDownCluster() throws IOException {
-    dfs.close();
-    cluster.shutdown();
+    if (dfs != null) {
+      dfs.close();
+      dfs = null;
+    }
+    if (cluster != null) {
+      cluster.shutdown();
+      cluster = null;
+    }
   }
 
   /*
@@ -208,7 +213,7 @@ public class TestClientReportBadBlock {
     // Locate the file blocks by asking name node
     final LocatedBlocks locatedblocks = dfs.dfs.getNamenode()
         .getBlockLocations(filePath.toString(), 0L, BLOCK_SIZE);
-    Assert.assertEquals(repl, locatedblocks.get(0).getLocations().length);
+    assertEquals(repl, locatedblocks.get(0).getLocations().length);
     // The file only has one block
     LocatedBlock lblock = locatedblocks.get(0);
     DatanodeInfo[] datanodeinfos = lblock.getLocations();
@@ -217,7 +222,7 @@ public class TestClientReportBadBlock {
     for (int i = 0; i < corruptBlockCount; i++) {
       DatanodeInfo dninfo = datanodeinfos[i];
       final DataNode dn = cluster.getDataNode(dninfo.getIpcPort());
-      corruptBlock(block, dn);
+      cluster.corruptReplica(dn, block);
       LOG.debug("Corrupted block " + block.getBlockName() + " on data node "
           + dninfo);
 
@@ -233,7 +238,7 @@ public class TestClientReportBadBlock {
     final LocatedBlocks locatedBlocks = dfs.dfs.getNamenode()
         .getBlockLocations(filePath.toUri().getPath(), 0, Long.MAX_VALUE);
     final LocatedBlock firstLocatedBlock = locatedBlocks.get(0);
-    Assert.assertEquals(isCorrupted, firstLocatedBlock.isCorrupt());
+    assertEquals(isCorrupted, firstLocatedBlock.isCorrupt());
   }
 
   /**
@@ -247,7 +252,7 @@ public class TestClientReportBadBlock {
         filePath.toUri().getPath(), 0, Long.MAX_VALUE);
     // we expect only the first block of the file is used for this test
     LocatedBlock firstLocatedBlock = lBlocks.get(0);
-    Assert.assertEquals(expectedReplicas,
+    assertEquals(expectedReplicas,
         firstLocatedBlock.getLocations().length);
   }
 
@@ -292,52 +297,28 @@ public class TestClientReportBadBlock {
     }
   }
 
-  /**
-   * Corrupt a block on a data node. Replace the block file content with content
-   * of 1, 2, ...BLOCK_SIZE.
-   * 
-   * @param block
-   *          the ExtendedBlock to be corrupted
-   * @param dn
-   *          the data node where the block needs to be corrupted
-   * @throws FileNotFoundException
-   * @throws IOException
-   */
-  private static void corruptBlock(final ExtendedBlock block, final DataNode dn)
-      throws FileNotFoundException, IOException {
-    final File f = DataNodeTestUtils.getBlockFile(
-        dn, block.getBlockPoolId(), block.getLocalBlock());
-    final RandomAccessFile raFile = new RandomAccessFile(f, "rw");
-    final byte[] bytes = new byte[(int) BLOCK_SIZE];
-    for (int i = 0; i < BLOCK_SIZE; i++) {
-      bytes[i] = (byte) (i);
-    }
-    raFile.write(bytes);
-    raFile.close();
-  }
-
   private static void verifyFsckHealth(String expected) throws Exception {
     // Fsck health has error code 0.
     // Make sure filesystem is in healthy state
     String outStr = runFsck(conf, 0, true, "/");
     LOG.info(outStr);
-    Assert.assertTrue(outStr.contains(NamenodeFsck.HEALTHY_STATUS));
+    assertTrue(outStr.contains(NamenodeFsck.HEALTHY_STATUS));
     if (!expected.equals("")) {
-      Assert.assertTrue(outStr.contains(expected));
+      assertTrue(outStr.contains(expected));
     }
   }
 
   private static void verifyFsckBlockCorrupted() throws Exception {
     String outStr = runFsck(conf, 1, true, "/");
     LOG.info(outStr);
-    Assert.assertTrue(outStr.contains(NamenodeFsck.CORRUPT_STATUS));
+    assertTrue(outStr.contains(NamenodeFsck.CORRUPT_STATUS));
   }
   
   private static void testFsckListCorruptFilesBlocks(Path filePath, int errorCode) throws Exception{
     String outStr = runFsck(conf, errorCode, true, filePath.toString(), "-list-corruptfileblocks");
     LOG.info("fsck -list-corruptfileblocks out: " + outStr);
     if (errorCode != 0) {
-      Assert.assertTrue(outStr.contains("CORRUPT files"));
+      assertTrue(outStr.contains("CORRUPT blocks"));
     }
   }
 
@@ -347,7 +328,7 @@ public class TestClientReportBadBlock {
     PrintStream out = new PrintStream(bStream, true);
     int errCode = ToolRunner.run(new DFSck(conf, out), path);
     if (checkErrorCode)
-      Assert.assertEquals(expectedErrCode, errCode);
+      assertEquals(expectedErrCode, errCode);
     return bStream.toString();
   }
 }

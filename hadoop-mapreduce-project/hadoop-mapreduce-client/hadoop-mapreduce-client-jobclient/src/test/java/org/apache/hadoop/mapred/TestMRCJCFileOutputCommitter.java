@@ -18,20 +18,29 @@
 
 package org.apache.hadoop.mapred;
 
-import java.io.*;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.FileUtil;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.RawLocalFileSystem;
+import org.apache.hadoop.io.NullWritable;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.mapreduce.JobStatus;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
+
+import java.io.File;
+import java.io.IOException;
 import java.net.URI;
 
-import junit.framework.TestCase;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import org.apache.hadoop.fs.*;
-import org.apache.hadoop.io.*;
-import org.apache.hadoop.mapred.JobContextImpl;
-import org.apache.hadoop.mapred.TaskAttemptContextImpl;
-import org.apache.hadoop.mapreduce.JobStatus;
-
-public class TestMRCJCFileOutputCommitter extends TestCase {
-  private static Path outDir = new Path(
-     System.getProperty("test.build.data", "/tmp"), "output");
+public class TestMRCJCFileOutputCommitter {
+  private static Path outDir = new Path(GenericTestUtils.getTempPath("output"));
 
   // A random task attempt id for testing.
   private static String attempt = "attempt_200707121733_0001_m_000000_0";
@@ -67,6 +76,7 @@ public class TestMRCJCFileOutputCommitter extends TestCase {
   }
 
   @SuppressWarnings("unchecked")
+  @Test
   public void testCommitter() throws Exception {
     JobConf job = new JobConf();
     setConfForFileOutputCommitter(job);
@@ -95,7 +105,7 @@ public class TestMRCJCFileOutputCommitter extends TestCase {
     
     // validate output
     File expectedFile = new File(new Path(outDir, file).toString());
-    StringBuffer expectedOutput = new StringBuffer();
+    StringBuilder expectedOutput = new StringBuilder();
     expectedOutput.append(key1).append('\t').append(val1).append("\n");
     expectedOutput.append(val1).append("\n");
     expectedOutput.append(val2).append("\n");
@@ -103,12 +113,12 @@ public class TestMRCJCFileOutputCommitter extends TestCase {
     expectedOutput.append(key1).append("\n");
     expectedOutput.append(key2).append('\t').append(val2).append("\n");
     String output = UtilsForTests.slurp(expectedFile);
-    assertEquals(output, expectedOutput.toString());
-
-    FileUtil.fullyDelete(new File(outDir.toString()));
+    assertThat(output).isEqualTo(expectedOutput.toString());
   }
 
+  @Test
   public void testAbort() throws IOException {
+    FileUtil.fullyDelete(new File(outDir.toString()));
     JobConf job = new JobConf();
     setConfForFileOutputCommitter(job);
     JobContext jContext = new JobContextImpl(job, taskID.getJobID());
@@ -135,15 +145,14 @@ public class TestMRCJCFileOutputCommitter extends TestCase {
     committer.abortTask(tContext);
     File expectedFile = new File(new Path(committer
         .getTaskAttemptPath(tContext), file).toString());
-    assertFalse("task temp dir still exists", expectedFile.exists());
+    assertFalse(expectedFile.exists(), "task temp dir still exists");
 
     committer.abortJob(jContext, JobStatus.State.FAILED);
     expectedFile = new File(new Path(outDir, FileOutputCommitter.TEMP_DIR_NAME)
         .toString());
-    assertFalse("job temp dir "+expectedFile+" still exists", expectedFile.exists());
-    assertEquals("Output directory not empty", 0, new File(outDir.toString())
-        .listFiles().length);
-    FileUtil.fullyDelete(new File(outDir.toString()));
+    assertFalse(expectedFile.exists(), "job temp dir "+expectedFile+" still exists");
+    assertEquals(0, new File(outDir.toString())
+        .listFiles().length, "Output directory not empty");
   }
 
   public static class FakeFileSystem extends RawLocalFileSystem {
@@ -161,6 +170,7 @@ public class TestMRCJCFileOutputCommitter extends TestCase {
     }
   }
 
+  @Test
   public void testFailAbort() throws IOException {
     JobConf job = new JobConf();
     job.set(FileSystem.FS_DEFAULT_NAME_KEY, "faildel:///");
@@ -200,7 +210,7 @@ public class TestMRCJCFileOutputCommitter extends TestCase {
     assertNotNull(th);
     assertTrue(th instanceof IOException);
     assertTrue(th.getMessage().contains("fake delete failed"));
-    assertTrue(expectedFile + " does not exists", expectedFile.exists());
+    assertTrue(expectedFile.exists(), expectedFile + " does not exists");
 
     th = null;
     try {
@@ -211,6 +221,11 @@ public class TestMRCJCFileOutputCommitter extends TestCase {
     assertNotNull(th);
     assertTrue(th instanceof IOException);
     assertTrue(th.getMessage().contains("fake delete failed"));
-    assertTrue("job temp dir does not exists", jobTmpDir.exists());
+    assertTrue(jobTmpDir.exists(), "job temp dir does not exists");
+  }
+
+  @AfterEach
+  public void teardown() {
+    FileUtil.fullyDelete(new File(outDir.toString()));
   }
 }

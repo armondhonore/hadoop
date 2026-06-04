@@ -18,12 +18,14 @@
 
 package org.apache.hadoop.metrics2.lib;
 
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.metrics2.MetricsInfo;
 import org.apache.hadoop.metrics2.MetricsRecordBuilder;
 import org.apache.hadoop.metrics2.util.SampleStat;
+import org.apache.hadoop.util.Time;
+
 import static org.apache.hadoop.metrics2.lib.Interns.*;
 
 /**
@@ -41,12 +43,15 @@ public class MutableStat extends MutableMetric {
   private final MetricsInfo iMaxInfo;
   private final MetricsInfo minInfo;
   private final MetricsInfo maxInfo;
+  private final MetricsInfo iNumInfo;
 
   private final SampleStat intervalStat = new SampleStat();
   private final SampleStat prevStat = new SampleStat();
   private final SampleStat.MinMax minMax = new SampleStat.MinMax();
   private long numSamples = 0;
+  private long snapshotTimeStamp = 0;
   private boolean extended = false;
+  private boolean updateTimeStamp = false;
 
   /**
    * Construct a sample statistics metric
@@ -65,6 +70,8 @@ public class MutableStat extends MutableMetric {
     String lsName = StringUtils.uncapitalize(sampleName);
     String lvName = StringUtils.uncapitalize(valueName);
     numInfo = info(ucName +"Num"+ usName, "Number of "+ lsName +" for "+ desc);
+    iNumInfo = info(ucName +"INum"+ usName,
+                    "Interval number of "+ lsName +" for "+ desc);
     avgInfo = info(ucName +"Avg"+ uvName, "Average "+ lvName +" for "+ desc);
     stdevInfo = info(ucName +"Stdev"+ uvName,
                      "Standard deviation of "+ lvName +" for "+ desc);
@@ -98,7 +105,18 @@ public class MutableStat extends MutableMetric {
   }
 
   /**
+   * Set whether to update the snapshot time or not.
+   * @param updateTimeStamp enable update stats snapshot timestamp
+   */
+  public synchronized void setUpdateTimeStamp(boolean updateTimeStamp) {
+    this.updateTimeStamp = updateTimeStamp;
+  }
+  /**
    * Add a number of samples and their sum to the running stat
+   *
+   * Note that although use of this method will preserve accurate mean values,
+   * large values for numSamples may result in inaccurate variance values due
+   * to the use of a single step of the Welford method for variance calculation.
    * @param numSamples  number of samples
    * @param sum of the samples
    */
@@ -108,7 +126,7 @@ public class MutableStat extends MutableMetric {
   }
 
   /**
-   * Add a snapshot to the metric
+   * Add a snapshot to the metric.
    * @param value of the metric
    */
   public synchronized void add(long value) {
@@ -122,18 +140,22 @@ public class MutableStat extends MutableMetric {
     if (all || changed()) {
       numSamples += intervalStat.numSamples();
       builder.addCounter(numInfo, numSamples)
-             .addGauge(avgInfo, lastStat().mean());
+             .addGauge(avgInfo, intervalStat.mean());
       if (extended) {
-        builder.addGauge(stdevInfo, lastStat().stddev())
-               .addGauge(iMinInfo, lastStat().min())
-               .addGauge(iMaxInfo, lastStat().max())
+        builder.addGauge(stdevInfo, intervalStat.stddev())
+               .addGauge(iMinInfo, intervalStat.min())
+               .addGauge(iMaxInfo, intervalStat.max())
                .addGauge(minInfo, minMax.min())
-               .addGauge(maxInfo, minMax.max());
+               .addGauge(maxInfo, minMax.max())
+               .addGauge(iNumInfo, intervalStat.numSamples());
       }
       if (changed()) {
         if (numSamples > 0) {
           intervalStat.copyTo(prevStat);
           intervalStat.reset();
+          if (updateTimeStamp) {
+            snapshotTimeStamp = Time.monotonicNow();
+          }
         }
         clearChanged();
       }
@@ -156,6 +178,12 @@ public class MutableStat extends MutableMetric {
     minMax.reset();
   }
 
+  /**
+   * @return Return the SampleStat snapshot timestamp.
+   */
+  public long getSnapshotTimeStamp() {
+    return snapshotTimeStamp;
+  }
   @Override
   public String toString() {
     return lastStat().toString();

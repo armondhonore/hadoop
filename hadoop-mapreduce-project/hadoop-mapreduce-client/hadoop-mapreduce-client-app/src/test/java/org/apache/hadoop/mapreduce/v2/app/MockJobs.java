@@ -61,16 +61,17 @@ import org.apache.hadoop.mapreduce.v2.app.job.impl.JobImpl;
 import org.apache.hadoop.mapreduce.v2.util.MRBuilderUtils;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authorize.AccessControlList;
+import org.apache.hadoop.util.Lists;
 import org.apache.hadoop.yarn.MockApps;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.NodeId;
+import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.util.Records;
 
-import com.google.common.collect.Iterators;
-import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Iterators;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
 
 public class MockJobs extends MockApps {
   static final Iterator<JobState> JOB_STATES = Iterators.cycle(JobState
@@ -633,6 +634,30 @@ public class MockJobs extends MockApps {
       @Override
       public void setQueueName(String queueName) {
         // do nothing
+      }
+
+      @Override
+      public void setJobPriority(Priority priority) {
+        // do nothing
+      }
+
+      public int getFailedMaps() {
+        return 0;
+      }
+
+      @Override
+      public int getFailedReduces() {
+        return 0;
+      }
+
+      @Override
+      public int getKilledMaps() {
+        return 0;
+      }
+
+      @Override
+      public int getKilledReduces() {
+        return 0;
       }
     };
   }

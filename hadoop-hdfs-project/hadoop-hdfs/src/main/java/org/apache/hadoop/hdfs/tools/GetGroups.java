@@ -21,17 +21,17 @@ import java.io.IOException;
 import java.io.PrintStream;
 import java.net.InetSocketAddress;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSUtil;
+import org.apache.hadoop.hdfs.DFSUtilClient;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.NameNodeProxies;
-import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.tools.GetGroupsBase;
 import org.apache.hadoop.tools.GetUserMappingsProtocol;
 import org.apache.hadoop.util.ToolRunner;
@@ -43,7 +43,7 @@ import org.apache.hadoop.util.ToolRunner;
 @InterfaceAudience.Private
 public class GetGroups extends GetGroupsBase {
   
-  private static final Log LOG = LogFactory.getLog(GetGroups.class);
+  private static final Logger LOG = LoggerFactory.getLogger(GetGroups.class);
   
   static final String USAGE = "Usage: hdfs groups [username ...]";
 
@@ -63,7 +63,7 @@ public class GetGroups extends GetGroupsBase {
   @Override
   protected InetSocketAddress getProtocolAddress(Configuration conf)
       throws IOException {
-    return NameNode.getAddress(conf);
+    return DFSUtilClient.getNNAddress(conf);
   }
   
   @Override

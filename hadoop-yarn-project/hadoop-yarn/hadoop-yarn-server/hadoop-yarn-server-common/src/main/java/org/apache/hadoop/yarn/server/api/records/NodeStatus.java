@@ -24,8 +24,10 @@ import org.apache.hadoop.classification.InterfaceAudience.Public;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.classification.InterfaceStability.Stable;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
+import org.apache.hadoop.yarn.api.records.Container;
 import org.apache.hadoop.yarn.api.records.ContainerStatus;
 import org.apache.hadoop.yarn.api.records.NodeId;
+import org.apache.hadoop.yarn.api.records.ResourceUtilization;
 import org.apache.hadoop.yarn.util.Records;
 
 /**
@@ -46,8 +48,9 @@ public abstract class NodeStatus {
    * @param containerStatuses Status of the containers running in this node.
    * @param keepAliveApplications Applications to keep alive.
    * @param nodeHealthStatus Health status of the node.
-   * @param containersUtilizations Utilization of the containers in this node.
+   * @param containersUtilization Utilization of the containers in this node.
    * @param nodeUtilization Utilization of the node.
+   * @param increasedContainers Containers whose resource has been increased.
    * @return New {@code NodeStatus} with the provided information.
    */
   public static NodeStatus newInstance(NodeId nodeId, int responseId,
@@ -55,7 +58,8 @@ public abstract class NodeStatus {
       List<ApplicationId> keepAliveApplications,
       NodeHealthStatus nodeHealthStatus,
       ResourceUtilization containersUtilization,
-      ResourceUtilization nodeUtilization) {
+      ResourceUtilization nodeUtilization,
+      List<Container> increasedContainers) {
     NodeStatus nodeStatus = Records.newRecord(NodeStatus.class);
     nodeStatus.setResponseId(responseId);
     nodeStatus.setNodeId(nodeId);
@@ -64,6 +68,7 @@ public abstract class NodeStatus {
     nodeStatus.setNodeHealthStatus(nodeHealthStatus);
     nodeStatus.setContainersUtilization(containersUtilization);
     nodeStatus.setNodeUtilization(nodeUtilization);
+    nodeStatus.setIncreasedContainers(increasedContainers);
     return nodeStatus;
   }
 
@@ -108,4 +113,23 @@ public abstract class NodeStatus {
   @Unstable
   public abstract void setNodeUtilization(
       ResourceUtilization nodeUtilization);
+
+  @Public
+  @Unstable
+  public abstract List<Container> getIncreasedContainers();
+
+  @Private
+  @Unstable
+  public abstract void setIncreasedContainers(
+      List<Container> increasedContainers);
+
+  @Private
+  @Unstable
+  public abstract OpportunisticContainersStatus
+      getOpportunisticContainersStatus();
+
+  @Private
+  @Unstable
+  public abstract void setOpportunisticContainersStatus(
+      OpportunisticContainersStatus opportunisticContainersStatus);
 }

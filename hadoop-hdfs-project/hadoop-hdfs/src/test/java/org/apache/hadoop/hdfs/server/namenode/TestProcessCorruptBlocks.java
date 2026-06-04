@@ -17,8 +17,8 @@
  */
 package org.apache.hadoop.hdfs.server.namenode;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.File;
 import java.io.IOException;
@@ -35,7 +35,8 @@ import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockManager;
 import org.apache.hadoop.hdfs.server.blockmanagement.NumberReplicas;
 import org.apache.hadoop.hdfs.server.datanode.DataNodeTestUtils;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 public class TestProcessCorruptBlocks {
   /**
@@ -58,7 +59,7 @@ public class TestProcessCorruptBlocks {
   public void testWhenDecreasingReplication() throws Exception {
     Configuration conf = new HdfsConfiguration();
     conf.setLong(DFSConfigKeys.DFS_BLOCKREPORT_INTERVAL_MSEC_KEY, 1000L);
-    conf.set(DFSConfigKeys.DFS_NAMENODE_REPLICATION_PENDING_TIMEOUT_SEC_KEY, Integer.toString(2));
+    conf.set(DFSConfigKeys.DFS_NAMENODE_RECONSTRUCTION_PENDING_TIMEOUT_SEC_KEY, Integer.toString(2));
     MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).numDataNodes(3).build();
     FileSystem fs = cluster.getFileSystem();
     final FSNamesystem namesystem = cluster.getNamesystem();
@@ -113,7 +114,7 @@ public class TestProcessCorruptBlocks {
   public void testByAddingAnExtraDataNode() throws Exception {
     Configuration conf = new HdfsConfiguration();
     conf.setLong(DFSConfigKeys.DFS_BLOCKREPORT_INTERVAL_MSEC_KEY, 1000L);
-    conf.set(DFSConfigKeys.DFS_NAMENODE_REPLICATION_PENDING_TIMEOUT_SEC_KEY, Integer.toString(2));
+    conf.set(DFSConfigKeys.DFS_NAMENODE_RECONSTRUCTION_PENDING_TIMEOUT_SEC_KEY, Integer.toString(2));
     MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).numDataNodes(4).build();
     FileSystem fs = cluster.getFileSystem();
     final FSNamesystem namesystem = cluster.getNamesystem();
@@ -160,11 +161,12 @@ public class TestProcessCorruptBlocks {
    *     (corrupt replica should  be removed since number of good
    *      replicas (1) is equal to replication factor (1))
    */
-  @Test(timeout=20000)
+  @Test
+  @Timeout(value = 20)
   public void testWithReplicationFactorAsOne() throws Exception {
     Configuration conf = new HdfsConfiguration();
     conf.setLong(DFSConfigKeys.DFS_BLOCKREPORT_INTERVAL_MSEC_KEY, 1000L);
-    conf.set(DFSConfigKeys.DFS_NAMENODE_REPLICATION_PENDING_TIMEOUT_SEC_KEY, Integer.toString(2));
+    conf.set(DFSConfigKeys.DFS_NAMENODE_RECONSTRUCTION_PENDING_TIMEOUT_SEC_KEY, Integer.toString(2));
     MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).numDataNodes(2).build();
     FileSystem fs = cluster.getFileSystem();
     final FSNamesystem namesystem = cluster.getNamesystem();
@@ -218,7 +220,7 @@ public class TestProcessCorruptBlocks {
   public void testWithAllCorruptReplicas() throws Exception {
     Configuration conf = new HdfsConfiguration();
     conf.setLong(DFSConfigKeys.DFS_BLOCKREPORT_INTERVAL_MSEC_KEY, 1000L);
-    conf.set(DFSConfigKeys.DFS_NAMENODE_REPLICATION_PENDING_TIMEOUT_SEC_KEY, Integer.toString(2));
+    conf.set(DFSConfigKeys.DFS_NAMENODE_RECONSTRUCTION_PENDING_TIMEOUT_SEC_KEY, Integer.toString(2));
     MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).numDataNodes(3).build();
     FileSystem fs = cluster.getFileSystem();
     final FSNamesystem namesystem = cluster.getNamesystem();
@@ -268,10 +270,12 @@ public class TestProcessCorruptBlocks {
 
   private void corruptBlock(MiniDFSCluster cluster, FileSystem fs, final Path fileName,
       int dnIndex, ExtendedBlock block) throws IOException {
-    // corrupt the block on datanode dnIndex
+    // Truncate the block on the first datanode that has not been corrupted,
+    // so that directory scanner can discover the corruption from file size
+    // change.
     // the indexes change once the nodes are restarted.
     // But the datadirectory will not change
-    assertTrue(cluster.corruptReplica(dnIndex, block));
+    cluster.getMaterializedReplica(0, block).truncateData(10);
 
     // Run directory scanner to update the DN's volume map  
     DataNodeTestUtils.runDirectoryScanner(cluster.getDataNodes().get(0));
@@ -286,7 +290,7 @@ public class TestProcessCorruptBlocks {
       if (scanLogFile.exists()) {
         // wait for one minute for deletion to succeed;
         for (int i = 0; !scanLogFile.delete(); i++) {
-          assertTrue("Could not delete log file in one minute", i < 60);
+          assertTrue(i < 60, "Could not delete log file in one minute");
           try {
             Thread.sleep(1000);
           } catch (InterruptedException ignored) {

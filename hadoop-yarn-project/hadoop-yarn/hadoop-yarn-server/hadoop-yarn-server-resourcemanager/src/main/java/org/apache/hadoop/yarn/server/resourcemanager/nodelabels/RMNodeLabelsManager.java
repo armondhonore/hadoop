@@ -33,8 +33,8 @@ import java.util.concurrent.ConcurrentMap;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.security.UserGroupInformation;
-import org.apache.hadoop.service.Service;
 import org.apache.hadoop.yarn.api.records.NodeId;
+import org.apache.hadoop.yarn.api.records.NodeLabel;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.nodelabels.CommonNodeLabelsManager;
 import org.apache.hadoop.yarn.nodelabels.RMNodeLabel;
@@ -43,7 +43,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.event.NodeLabelsUpdateSchedulerEvent;
 import org.apache.hadoop.yarn.util.resource.Resources;
 
-import com.google.common.collect.ImmutableSet;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableSet;
 
 public class RMNodeLabelsManager extends CommonNodeLabelsManager {
   protected static class Queue {
@@ -70,10 +70,9 @@ public class RMNodeLabelsManager extends CommonNodeLabelsManager {
 
   @Override
   public void addLabelsToNode(Map<NodeId, Set<String>> addedLabelsToNode)
-      throws IOException {    
+      throws IOException {
+    writeLock.lock();
     try {
-      writeLock.lock();
-
       // get nodesCollection before edition
       Map<String, Host> before = cloneNodeMap(addedLabelsToNode.keySet());
 
@@ -112,15 +111,15 @@ public class RMNodeLabelsManager extends CommonNodeLabelsManager {
   @Override
   public void removeFromClusterNodeLabels(Collection<String> labelsToRemove)
       throws IOException {
+    writeLock.lock();
     try {
-      writeLock.lock();
-      if (getServiceState() == Service.STATE.STARTED) {
+      if (!isInitNodeLabelStoreInProgress()) {
         // We cannot remove node labels from collection when some queue(s) are
         // using any of them.
-        // We will only do this check when service starting finished. Before
+        // We will not do remove when recovery is in prpgress. During
         // service starting, we will replay edit logs and recover state. It is
-        // possible that a history operation removed some labels which were being
-        // used by some queues in the past but not used by current queues.
+        // possible that a history operation removed some labels which were not
+        // used by some queues in the past but are used by current queues.
         checkRemoveFromClusterNodeLabelsOfQueue(labelsToRemove);
       }
       // copy before NMs
@@ -135,12 +134,22 @@ public class RMNodeLabelsManager extends CommonNodeLabelsManager {
   }
 
   @Override
+  public void addToCluserNodeLabels(Collection<NodeLabel> labels)
+      throws IOException {
+    writeLock.lock();
+    try {
+      super.addToCluserNodeLabels(labels);
+    } finally {
+      writeLock.unlock();
+    }
+  }
+
+  @Override
   public void
       removeLabelsFromNode(Map<NodeId, Set<String>> removeLabelsFromNode)
           throws IOException {
+    writeLock.lock();
     try {
-      writeLock.lock();
-
       // get nodesCollection before edition
       Map<String, Host> before =
           cloneNodeMap(removeLabelsFromNode.keySet());
@@ -160,16 +169,25 @@ public class RMNodeLabelsManager extends CommonNodeLabelsManager {
   @Override
   public void replaceLabelsOnNode(Map<NodeId, Set<String>> replaceLabelsToNode)
       throws IOException {
+    writeLock.lock();
     try {
-      writeLock.lock();
+      Map<NodeId, Set<String>> effectiveModifiedLabelMappings =
+          getModifiedNodeLabelsMappings(replaceLabelsToNode);
+
+      if(effectiveModifiedLabelMappings.isEmpty()) {
+        LOG.info("No Modified Node label Mapping to replace");
+        return;
+      }
 
       // get nodesCollection before edition
-      Map<String, Host> before = cloneNodeMap(replaceLabelsToNode.keySet());
+      Map<String, Host> before =
+          cloneNodeMap(effectiveModifiedLabelMappings.keySet());
 
-      super.replaceLabelsOnNode(replaceLabelsToNode);
+      super.replaceLabelsOnNode(effectiveModifiedLabelMappings);
 
       // get nodesCollection after edition
-      Map<String, Host> after = cloneNodeMap(replaceLabelsToNode.keySet());
+      Map<String, Host> after =
+          cloneNodeMap(effectiveModifiedLabelMappings.keySet());
 
       // update running nodes resources
       updateResourceMappings(before, after);
@@ -178,14 +196,39 @@ public class RMNodeLabelsManager extends CommonNodeLabelsManager {
     }
   }
 
+  private Map<NodeId, Set<String>> getModifiedNodeLabelsMappings(
+      Map<NodeId, Set<String>> replaceLabelsToNode) {
+    Map<NodeId, Set<String>> effectiveModifiedLabels = new HashMap<>();
+    for (Entry<NodeId, Set<String>> nodeLabelMappingEntry : replaceLabelsToNode
+        .entrySet()) {
+      NodeId nodeId = nodeLabelMappingEntry.getKey();
+      Set<String> modifiedNodeLabels = nodeLabelMappingEntry.getValue();
+      Set<String> labelsBeforeModification = null;
+      Host host = nodeCollections.get(nodeId.getHost());
+      if (host == null) {
+        effectiveModifiedLabels.put(nodeId, modifiedNodeLabels);
+        continue;
+      } else if (nodeId.getPort() == WILDCARD_PORT) {
+        labelsBeforeModification = host.labels;
+      } else if (host.nms.get(nodeId) != null) {
+        labelsBeforeModification = host.nms.get(nodeId).labels;
+      }
+      if (labelsBeforeModification == null
+          || labelsBeforeModification.size() != modifiedNodeLabels.size()
+          || !labelsBeforeModification.containsAll(modifiedNodeLabels)) {
+        effectiveModifiedLabels.put(nodeId, modifiedNodeLabels);
+      }
+    }
+    return effectiveModifiedLabels;
+  }
+
   /*
    * Following methods are used for setting if a node is up and running, and it
    * will update running nodes resource
    */
   public void activateNode(NodeId nodeId, Resource resource) {
+    writeLock.lock();
     try {
-      writeLock.lock();
-      
       // save if we have a node before
       Map<String, Host> before = cloneNodeMap(ImmutableSet.of(nodeId));
       
@@ -226,14 +269,13 @@ public class RMNodeLabelsManager extends CommonNodeLabelsManager {
    * Following methods are used for setting if a node unregistered to RM
    */
   public void deactivateNode(NodeId nodeId) {
+    writeLock.lock();
     try {
-      writeLock.lock();
-      
       // save if we have a node before
       Map<String, Host> before = cloneNodeMap(ImmutableSet.of(nodeId));
       Node nm = getNMInNodeSet(nodeId);
       if (null != nm) {
-        if (null == nm.labels) {
+        if (isNodeLabelExplicit(nm.nodeId)) {
           // When node deactivated, remove the nm from node collection if no
           // labels explicitly set for this particular nm
 
@@ -267,8 +309,8 @@ public class RMNodeLabelsManager extends CommonNodeLabelsManager {
   }
 
   public void reinitializeQueueLabels(Map<String, Set<String>> queueToLabels) {
+    writeLock.lock();
     try {
-      writeLock.lock();
       // clear before set
       this.queueCollections.clear();
 
@@ -300,8 +342,8 @@ public class RMNodeLabelsManager extends CommonNodeLabelsManager {
   
   public Resource getQueueResource(String queueName, Set<String> queueLabels,
       Resource clusterResource) {
+    readLock.lock();
     try {
-      readLock.lock();
       if (queueLabels.contains(ANY)) {
         return clusterResource;
       }
@@ -315,9 +357,25 @@ public class RMNodeLabelsManager extends CommonNodeLabelsManager {
     }
   }
   
-  public Set<String> getLabelsOnNode(NodeId nodeId) {
+  /*
+   * Get active node count based on label.
+   */
+  public int getActiveNMCountPerLabel(String label) {
+    if (label == null) {
+      return 0;
+    }
+    readLock.lock();
     try {
-      readLock.lock();
+      RMNodeLabel labelInfo = labelCollections.get(label);
+      return (labelInfo == null) ? 0 : labelInfo.getNumActiveNMs();
+    } finally {
+      readLock.unlock();
+    }
+  }
+
+  public Set<String> getLabelsOnNode(NodeId nodeId) {
+    readLock.lock();
+    try {
       Set<String> nodeLabels = getLabelsByNode(nodeId);
       return Collections.unmodifiableSet(nodeLabels);
     } finally {
@@ -326,8 +384,8 @@ public class RMNodeLabelsManager extends CommonNodeLabelsManager {
   }
   
   public boolean containsNodeLabel(String label) {
+    readLock.lock();
     try {
-      readLock.lock();
       return label != null
           && (label.isEmpty() || labelCollections.containsKey(label));
     } finally {
@@ -456,12 +514,16 @@ public class RMNodeLabelsManager extends CommonNodeLabelsManager {
   
   public Resource getResourceByLabel(String label, Resource clusterResource) {
     label = normalizeLabel(label);
+    if (label.equals(NO_LABEL)) {
+      return noNodeLabel.getResource();
+    }
+    readLock.lock();
     try {
-      readLock.lock();
-      if (null == labelCollections.get(label)) {
+      RMNodeLabel nodeLabel = labelCollections.get(label);
+      if (nodeLabel == null) {
         return Resources.none();
       }
-      return labelCollections.get(label).getResource();
+      return nodeLabel.getResource();
     } finally {
       readLock.unlock();
     }
@@ -505,8 +567,8 @@ public class RMNodeLabelsManager extends CommonNodeLabelsManager {
   }
 
   public List<RMNodeLabel> pullRMNodeLabelsInfo() {
+    readLock.lock();
     try {
-      readLock.lock();
       List<RMNodeLabel> infos = new ArrayList<RMNodeLabel>();
 
       for (Entry<String, RMNodeLabel> entry : labelCollections.entrySet()) {

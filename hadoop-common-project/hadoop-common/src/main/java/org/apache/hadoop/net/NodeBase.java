@@ -20,6 +20,8 @@ package org.apache.hadoop.net;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 
+import java.util.regex.Pattern;
+
 /** A base class that implements interface Node
  * 
  */
@@ -38,6 +40,7 @@ public class NodeBase implements Node {
   protected String location; //string representation of this node's location
   protected int level; //which level of the tree the node resides
   protected Node parent; //its parent
+  private static final Pattern SLASHES = Pattern.compile("/+");
   
   /** Default constructor */
   public NodeBase() {
@@ -45,7 +48,7 @@ public class NodeBase implements Node {
   
   /** Construct a node from its path
    * @param path 
-   *   a concatenation of this node's location, the path seperator, and its name 
+   *   a concatenation of this node's location, the path separator, and its name
    */
   public NodeBase(String path) {
     path = normalize(path);
@@ -112,7 +115,32 @@ public class NodeBase implements Node {
   public static String getPath(Node node) {
     return node.getNetworkLocation() + PATH_SEPARATOR_STR + node.getName();
   }
-  
+
+  /**
+   * Get the path components of a node.
+   * @param node a non-null node
+   * @return the path of a node
+   */
+  public static String[] getPathComponents(Node node) {
+    return getPath(node).split(PATH_SEPARATOR_STR);
+  }
+
+  @Override
+  public boolean equals(Object to) {
+    if (this == to) {
+      return true;
+    }
+    if (!(to instanceof NodeBase)) {
+      return false;
+    }
+    return getPath(this).equals(getPath((NodeBase)to));
+  }
+
+  @Override
+  public int hashCode() {
+    return getPath(this).hashCode();
+  }
+
   /** @return this node's path as its string representation */
   @Override
   public String toString() {
@@ -127,13 +155,23 @@ public class NodeBase implements Node {
    * is not {@link #PATH_SEPARATOR}
    */
   public static String normalize(String path) {
-    if (path == null || path.length() == 0) return ROOT;
-    
+    if (path == null) {
+      throw new IllegalArgumentException(
+          "Network Location is null ");
+    }
+
+    if (path.length() == 0) {
+      return ROOT;
+    }
+
     if (path.charAt(0) != PATH_SEPARATOR) {
       throw new IllegalArgumentException(
                                          "Network Location path does not start with "
                                          +PATH_SEPARATOR_STR+ ": "+path);
     }
+
+    // Remove duplicated slashes.
+    path = SLASHES.matcher(path).replaceAll("/");
     
     int len = path.length();
     if (path.charAt(len-1) == PATH_SEPARATOR) {

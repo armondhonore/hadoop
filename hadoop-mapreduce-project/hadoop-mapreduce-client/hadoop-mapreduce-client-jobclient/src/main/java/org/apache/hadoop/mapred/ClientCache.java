@@ -22,11 +22,9 @@ import java.io.IOException;
 import java.security.PrivilegedAction;
 import java.util.HashMap;
 import java.util.Map;
-
-import org.apache.commons.lang.StringUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.ipc.RPC;
 import org.apache.hadoop.mapreduce.JobID;
 import org.apache.hadoop.mapreduce.v2.api.HSClientProtocol;
 import org.apache.hadoop.mapreduce.v2.api.MRClientProtocol;
@@ -35,13 +33,15 @@ import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
 import org.apache.hadoop.yarn.ipc.YarnRPC;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class ClientCache {
 
   private final Configuration conf;
   private final ResourceMgrDelegate rm;
 
-  private static final Log LOG = LogFactory.getLog(ClientCache.class);
+  private static final Logger LOG = LoggerFactory.getLogger(ClientCache.class);
 
   private Map<JobID, ClientServiceDelegate> cache = 
       new HashMap<JobID, ClientServiceDelegate>();
@@ -96,5 +96,27 @@ public class ClientCache {
             NetUtils.createSocketAddr(serviceAddr), conf);
       }
     });
+  }
+
+  public void close() throws IOException {
+    if (rm != null) {
+      rm.close();
+    }
+
+    if (hsProxy != null) {
+      RPC.stopProxy(hsProxy);
+      hsProxy = null;
+    }
+
+    if (cache != null && !cache.isEmpty()) {
+      for (ClientServiceDelegate delegate : cache.values()) {
+        if (delegate != null) {
+          delegate.close();
+          delegate = null;
+        }
+      }
+      cache.clear();
+      cache = null;
+    }
   }
 }

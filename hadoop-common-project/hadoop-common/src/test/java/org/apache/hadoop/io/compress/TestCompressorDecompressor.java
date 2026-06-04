@@ -17,7 +17,6 @@
  */
 package org.apache.hadoop.io.compress;
 
-import static org.junit.Assert.fail;
 import java.util.Random;
 import org.apache.hadoop.io.compress.CompressDecompressTester.CompressionTestStrategy;
 import org.apache.hadoop.io.compress.lz4.Lz4Compressor;
@@ -26,8 +25,9 @@ import org.apache.hadoop.io.compress.snappy.SnappyCompressor;
 import org.apache.hadoop.io.compress.snappy.SnappyDecompressor;
 import org.apache.hadoop.io.compress.zlib.BuiltInZlibDeflater;
 import org.apache.hadoop.io.compress.zlib.BuiltInZlibInflater;
-import org.junit.Test;
-import com.google.common.collect.ImmutableSet;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.junit.jupiter.api.Test;
+import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableSet;
 
 /** 
  * Test for pairs:
@@ -66,29 +66,34 @@ public class TestCompressorDecompressor {
           .test();
 
     } catch (Exception ex) {
-      fail("testCompressorDecompressor error !!!" + ex);
+      GenericTestUtils.assertExceptionContains(
+          "testCompressorDecompressor error !!!", ex);
     }
   }
   
   @Test
-  public void testCompressorDecompressorWithExeedBufferLimit() {
-    int BYTE_SIZE = 100 * 1024;
-    byte[] rawData = generate(BYTE_SIZE);
+  public void testCompressorDecompressorWithExceedBufferLimit() {
+    // input data size greater than internal buffer size.
+    final int byteSize = 100 * 1024;
+    final int bufferSize = 64 * 1024;
+    byte[] rawData = generate(byteSize);
     try {
       CompressDecompressTester.of(rawData)
           .withCompressDecompressPair(
-              new SnappyCompressor(BYTE_SIZE + BYTE_SIZE / 2),
-              new SnappyDecompressor(BYTE_SIZE + BYTE_SIZE / 2))
-          .withCompressDecompressPair(new Lz4Compressor(BYTE_SIZE),
-              new Lz4Decompressor(BYTE_SIZE))
-          .withTestCases(ImmutableSet.of(CompressionTestStrategy.COMPRESS_DECOMPRESS_SINGLE_BLOCK,
-                      CompressionTestStrategy.COMPRESS_DECOMPRESS_BLOCK,
-                      CompressionTestStrategy.COMPRESS_DECOMPRESS_ERRORS,
-                      CompressionTestStrategy.COMPRESS_DECOMPRESS_WITH_EMPTY_STREAM))
+              new SnappyCompressor(bufferSize),
+              new SnappyDecompressor(bufferSize))
+          .withCompressDecompressPair(
+              new Lz4Compressor(bufferSize),
+              new Lz4Decompressor(bufferSize))
+          .withTestCases(ImmutableSet.of(
+              CompressionTestStrategy.COMPRESS_DECOMPRESS_BLOCK,
+              CompressionTestStrategy.COMPRESS_DECOMPRESS_ERRORS,
+              CompressionTestStrategy.COMPRESS_DECOMPRESS_WITH_EMPTY_STREAM))
           .test();
 
     } catch (Exception ex) {
-      fail("testCompressorDecompressorWithExeedBufferLimit error !!!" + ex);
+      GenericTestUtils.assertExceptionContains(
+          "testCompressorDecompressorWithExeedBufferLimit error !!!", ex);
     }
   }
        

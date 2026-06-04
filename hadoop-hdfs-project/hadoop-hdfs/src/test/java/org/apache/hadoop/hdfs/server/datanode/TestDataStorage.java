@@ -18,14 +18,17 @@
 
 package org.apache.hadoop.hdfs.server.datanode;
 
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileUtil;
+import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants.StartupOption;
 import org.apache.hadoop.hdfs.server.common.Storage;
+import org.apache.hadoop.hdfs.server.common.Storage.StorageDirectory;
 import org.apache.hadoop.hdfs.server.protocol.NamespaceInfo;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.After;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 
 import java.io.File;
@@ -34,34 +37,36 @@ import java.net.URISyntaxException;
 import java.util.ArrayList;
 import java.util.List;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 public class TestDataStorage {
   private final static String DEFAULT_BPID = "bp-0";
   private final static String CLUSTER_ID = "cluster0";
+  private final static String CLUSTER_ID2 = "cluster1";
   private final static String BUILD_VERSION = "2.0";
   private final static String SOFTWARE_VERSION = "2.0";
   private final static long CTIME = 1;
-  private final static File TEST_DIR =
-      new File(System.getProperty("test.build.data") + "/dstest");
+  private final static File TEST_DIR = GenericTestUtils.getTestDir("dstest");
   private final static StartupOption START_OPT = StartupOption.REGULAR;
 
   private DataNode mockDN = Mockito.mock(DataNode.class);
   private NamespaceInfo nsInfo;
   private DataStorage storage;
 
-  @Before
+  @BeforeEach
   public void setUp() throws IOException {
+    Configuration conf = new HdfsConfiguration();
     storage = new DataStorage();
     nsInfo = new NamespaceInfo(0, CLUSTER_ID, DEFAULT_BPID, CTIME,
         BUILD_VERSION, SOFTWARE_VERSION);
     FileUtil.fullyDelete(TEST_DIR);
-    assertTrue("Failed to make test dir.", TEST_DIR.mkdirs());
+    assertTrue(TEST_DIR.mkdirs(), "Failed to make test dir.");
+    Mockito.when(mockDN.getConf()).thenReturn(conf);
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws IOException {
     storage.unlockAll();
     FileUtil.fullyDelete(TEST_DIR);
@@ -138,15 +143,15 @@ public class TestDataStorage {
     for (NamespaceInfo ni : namespaceInfos) {
       storage.addStorageLocations(mockDN, ni, locations, START_OPT);
       for (StorageLocation sl : locations) {
-        checkDir(sl.getFile());
-        checkDir(sl.getFile(), ni.getBlockPoolID());
+        checkDir(new File(sl.getUri()));
+        checkDir(new File(sl.getUri()), ni.getBlockPoolID());
       }
     }
 
     assertEquals(numLocations, storage.getNumStorageDirs());
 
     locations = createStorageLocations(numLocations);
-    List<StorageLocation> addedLocation =
+    List<StorageDirectory> addedLocation =
         storage.addStorageLocations(mockDN, namespaceInfos.get(0),
             locations, START_OPT);
     assertTrue(addedLocation.isEmpty());
@@ -162,6 +167,58 @@ public class TestDataStorage {
   }
 
   @Test
+  public void testAddStorageDirectoriesFailure() throws IOException {
+    final int numLocations = 1;
+    List<StorageLocation> locations = createStorageLocations(numLocations);
+    assertEquals(numLocations, locations.size());
+
+    NamespaceInfo namespaceInfo = new NamespaceInfo(0, CLUSTER_ID,
+        DEFAULT_BPID, CTIME, BUILD_VERSION, SOFTWARE_VERSION);
+    List<StorageDirectory> successLocations = storage.addStorageLocations(
+        mockDN, namespaceInfo, locations, START_OPT);
+    assertEquals(1, successLocations.size());
+
+    // After the DataNode restarts, the value of the clusterId is different
+    // from the value before the restart.
+    storage.unlockAll();
+    DataNode newMockDN = Mockito.mock(DataNode.class);
+    Mockito.when(newMockDN.getConf()).thenReturn(new HdfsConfiguration());
+    DataStorage newStorage = new DataStorage();
+    NamespaceInfo newNamespaceInfo = new NamespaceInfo(0, CLUSTER_ID2,
+        DEFAULT_BPID, CTIME, BUILD_VERSION, SOFTWARE_VERSION);
+    successLocations = newStorage.addStorageLocations(
+            newMockDN, newNamespaceInfo, locations, START_OPT);
+    assertEquals(0, successLocations.size());
+    newStorage.unlockAll();
+    newMockDN.shutdown();
+  }
+
+  @Test
+  public void testMissingVersion() throws IOException,
+      URISyntaxException {
+    final int numLocations = 1;
+    final int numNamespace = 1;
+    List<StorageLocation> locations = createStorageLocations(numLocations);
+
+    StorageLocation firstStorage = locations.get(0);
+    Storage.StorageDirectory sd = new Storage.StorageDirectory(firstStorage);
+    // the directory is not initialized so VERSION does not exist
+    // create a fake directory under current/
+    File currentDir = new File(sd.getCurrentDir(),
+        "BP-787466439-172.26.24.43-1462305406642");
+    assertTrue(currentDir.mkdirs(), "unable to mkdir " + currentDir.getName());
+
+    // Add volumes for multiple namespaces.
+    List<NamespaceInfo> namespaceInfos = createNamespaceInfos(numNamespace);
+    for (NamespaceInfo ni : namespaceInfos) {
+      storage.addStorageLocations(mockDN, ni, locations, START_OPT);
+    }
+
+    // It should not format the directory because VERSION is missing.
+    assertTrue(currentDir.exists(), "Storage directory was formatted");
+  }
+
+  @Test
   public void testRecoverTransitionReadFailure() throws IOException {
     final int numLocations = 3;
     List<StorageLocation> locations =
@@ -171,7 +228,7 @@ public class TestDataStorage {
       fail("An IOException should throw: all StorageLocations are NON_EXISTENT");
     } catch (IOException e) {
       GenericTestUtils.assertExceptionContains(
-          "All specified directories are failed to load.", e);
+          "All specified directories have failed to load.", e);
     }
     assertEquals(0, storage.getNumStorageDirs());
   }

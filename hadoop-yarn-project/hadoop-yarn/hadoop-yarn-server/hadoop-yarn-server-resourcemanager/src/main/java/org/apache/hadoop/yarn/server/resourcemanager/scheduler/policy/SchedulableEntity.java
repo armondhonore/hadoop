@@ -18,39 +18,60 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.policy;
 
-import java.util.*;
-
 import org.apache.hadoop.yarn.api.records.Priority;
-import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceUsage;
 
 
 /**
- * A SchedulableEntity is a process to be scheduled, 
+ * A SchedulableEntity is a process to be scheduled.
  * for example, an application / application attempt
  */
 public interface SchedulableEntity {
   
   /**
-   * Id - each entity must have a unique id
+   * Id - each entity must have a unique id.
+   * @return id.
    */
   public String getId();
   
   /**
    * Compare the passed SchedulableEntity to this one for input order.
    * Input order is implementation defined and should reflect the 
-   * correct ordering for first-in first-out processing
+   * correct ordering for first-in first-out processing.
+   *
+   * @param other SchedulableEntity.
+   * @return correct ordering.
    */
   public int compareInputOrderTo(SchedulableEntity other);
   
   /**
-   * View of Resources wanted and consumed by the entity
+   * View of Resources wanted and consumed by the entity.
+   * @return ResourceUsage.
    */
   public ResourceUsage getSchedulingResourceUsage();
   
   /**
-   * Get the priority of the application
+   * Get the priority of the application.
+   * @return priority of the application.
    */
   public Priority getPriority();
 
+  /**
+   * Whether application was running before RM restart.
+   * @return true, application was running before RM restart;
+   * otherwise false.
+   */
+  public boolean isRecovering();
+
+  /**
+   * Get partition corresponding to this entity.
+   * @return partition node label.
+   */
+  String getPartition();
+
+  /**
+   * Start time of the job.
+   * @return start time
+   */
+  long getStartTime();
 }

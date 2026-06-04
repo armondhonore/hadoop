@@ -15,12 +15,7 @@
 Proxy user - Superusers Acting On Behalf Of Other Users
 =======================================================
 
-* [Proxy user - Superusers Acting On Behalf Of Other Users](#Proxy_user_-_Superusers_Acting_On_Behalf_Of_Other_Users)
-    * [Introduction](#Introduction)
-    * [Use Case](#Use_Case)
-    * [Code example](#Code_example)
-    * [Configurations](#Configurations)
-    * [Caveats](#Caveats)
+<!-- MACRO{toc|fromDepth=0|toDepth=3} -->
 
 Introduction
 ------------
@@ -85,7 +80,7 @@ If more lax security is preferred, the wildcard value \* may be used to allow im
         <value>*</value>
       </property>
 
-The `hadoop.proxyuser.$superuser.hosts` accepts list of ip addresses, ip address ranges in CIDR format and/or host names. For example, by specifying as below, user named `super` accessing from hosts in the range `10.222.0.0-15` and `10.113.221.221` can impersonate `user1` and `user2`.
+The `hadoop.proxyuser.$superuser.hosts` accepts list of ip addresses, ip address ranges in CIDR format and/or host names. For example, by specifying as below, user named `super` accessing from hosts in the range `10.222.0.0-10.222.255.255` and `10.113.221.221` can impersonate `user1` and `user2`.
 
        <property>
          <name>hadoop.proxyuser.super.hosts</name>

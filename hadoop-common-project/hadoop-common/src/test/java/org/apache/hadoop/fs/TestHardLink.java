@@ -24,11 +24,14 @@ import java.io.FileWriter;
 import java.io.IOException;
 import java.util.Arrays;
 
-import org.junit.After;
-import static org.junit.Assert.*;
-import org.junit.Before;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.apache.hadoop.test.GenericTestUtils;
+import org.junit.jupiter.api.AfterEach;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 import static org.apache.hadoop.fs.HardLink.*;
 
@@ -57,9 +60,7 @@ import static org.apache.hadoop.fs.HardLink.*;
  */
 public class TestHardLink {
   
-  public static final String TEST_ROOT_DIR = 
-    System.getProperty("test.build.data", "build/test/data") + "/test";
-  final static private File TEST_DIR = new File(TEST_ROOT_DIR, "hl");
+  final static private File TEST_DIR = GenericTestUtils.getTestDir("test/hl");
   private static String DIR = "dir_";
   //define source and target directories
   private static File src = new File(TEST_DIR, DIR + "src");
@@ -86,7 +87,7 @@ public class TestHardLink {
    * Assure clean environment for start of testing
    * @throws IOException
    */
-  @BeforeClass
+  @BeforeAll
   public static void setupClean() {
     //delete source and target directories if they exist
     FileUtil.fullyDelete(src);
@@ -101,7 +102,7 @@ public class TestHardLink {
   /**
    * Initialize clean environment for start of each test
    */
-  @Before
+  @BeforeEach
   public void setupDirs() throws IOException {
     //check that we start out with empty top-level test data directory
     assertFalse(src.exists());
@@ -177,7 +178,7 @@ public class TestHardLink {
     assertTrue(fetchFileContents(x3_mult).equals(str3));
   }
 
-  @After
+  @AfterEach
   public void tearDown() throws IOException {
     setupClean();
   }
@@ -217,6 +218,16 @@ public class TestHardLink {
     //since they haven't been hardlinked yet
     assertEquals(1, getLinkCount(x1));
     assertEquals(1, getLinkCount(x2));
+    assertEquals(1, getLinkCount(x3));
+  }
+
+  @Test
+  public void testGetLinkCountFromFileAttribute() throws IOException {
+    assertTrue(supportsHardLink(x1));
+    assertEquals(1, getLinkCount(x1));
+    assertTrue(supportsHardLink(x2));
+    assertEquals(1, getLinkCount(x2));
+    assertTrue(supportsHardLink(x3));
     assertEquals(1, getLinkCount(x3));
   }
 
@@ -321,7 +332,7 @@ public class TestHardLink {
     assertEquals(2, ("%f").length()); 
     //make sure "\\%f" was munged correctly
     assertEquals(3, ("\\%f").length()); 
-    assertTrue(win.getLinkCountCommand[1].equals("hardlink"));
+    assertEquals("hardlink", win.getLinkCountCommand[1]);
     //make sure "-c%h" was not munged
     assertEquals(4, ("-c%h").length()); 
   }

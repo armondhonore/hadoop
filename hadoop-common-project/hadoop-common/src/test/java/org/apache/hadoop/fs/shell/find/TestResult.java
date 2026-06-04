@@ -17,14 +17,16 @@
  */
 package org.apache.hadoop.fs.shell.find;
 
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.*;
 
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
+@Timeout(10)
 public class TestResult {
 
   // test the PASS value
-  @Test(timeout = 1000)
+  @Test
   public void testPass() {
     Result result = Result.PASS;
     assertTrue(result.isPass());
@@ -32,7 +34,7 @@ public class TestResult {
   }
 
   // test the FAIL value
-  @Test(timeout = 1000)
+  @Test
   public void testFail() {
     Result result = Result.FAIL;
     assertFalse(result.isPass());
@@ -40,7 +42,7 @@ public class TestResult {
   }
 
   // test the STOP value
-  @Test(timeout = 1000)
+  @Test
   public void testStop() {
     Result result = Result.STOP;
     assertTrue(result.isPass());
@@ -48,7 +50,7 @@ public class TestResult {
   }
 
   // test combine method with two PASSes
-  @Test(timeout = 1000)
+  @Test
   public void combinePassPass() {
     Result result = Result.PASS.combine(Result.PASS);
     assertTrue(result.isPass());
@@ -56,7 +58,7 @@ public class TestResult {
   }
 
   // test the combine method with a PASS and a FAIL
-  @Test(timeout = 1000)
+  @Test
   public void combinePassFail() {
     Result result = Result.PASS.combine(Result.FAIL);
     assertFalse(result.isPass());
@@ -64,7 +66,7 @@ public class TestResult {
   }
 
   // test the combine method with a FAIL and a PASS
-  @Test(timeout = 1000)
+  @Test
   public void combineFailPass() {
     Result result = Result.FAIL.combine(Result.PASS);
     assertFalse(result.isPass());
@@ -72,7 +74,7 @@ public class TestResult {
   }
 
   // test the combine method with two FAILs
-  @Test(timeout = 1000)
+  @Test
   public void combineFailFail() {
     Result result = Result.FAIL.combine(Result.FAIL);
     assertFalse(result.isPass());
@@ -80,7 +82,7 @@ public class TestResult {
   }
 
   // test the combine method with a PASS and STOP
-  @Test(timeout = 1000)
+  @Test
   public void combinePassStop() {
     Result result = Result.PASS.combine(Result.STOP);
     assertTrue(result.isPass());
@@ -88,7 +90,7 @@ public class TestResult {
   }
 
   // test the combine method with a STOP and FAIL
-  @Test(timeout = 1000)
+  @Test
   public void combineStopFail() {
     Result result = Result.STOP.combine(Result.FAIL);
     assertFalse(result.isPass());
@@ -96,7 +98,7 @@ public class TestResult {
   }
 
   // test the combine method with a STOP and a PASS
-  @Test(timeout = 1000)
+  @Test
   public void combineStopPass() {
     Result result = Result.STOP.combine(Result.PASS);
     assertTrue(result.isPass());
@@ -104,7 +106,7 @@ public class TestResult {
   }
 
   // test the combine method with a FAIL and a STOP
-  @Test(timeout = 1000)
+  @Test
   public void combineFailStop() {
     Result result = Result.FAIL.combine(Result.STOP);
     assertFalse(result.isPass());
@@ -112,7 +114,7 @@ public class TestResult {
   }
 
   // test the negation of PASS
-  @Test(timeout = 1000)
+  @Test
   public void negatePass() {
     Result result = Result.PASS.negate();
     assertFalse(result.isPass());
@@ -120,7 +122,7 @@ public class TestResult {
   }
 
   // test the negation of FAIL
-  @Test(timeout = 1000)
+  @Test
   public void negateFail() {
     Result result = Result.FAIL.negate();
     assertTrue(result.isPass());
@@ -128,7 +130,7 @@ public class TestResult {
   }
 
   // test the negation of STOP
-  @Test(timeout = 1000)
+  @Test
   public void negateStop() {
     Result result = Result.STOP.negate();
     assertFalse(result.isPass());
@@ -136,7 +138,7 @@ public class TestResult {
   }
 
   // test equals with two PASSes
-  @Test(timeout = 1000)
+  @Test
   public void equalsPass() {
     Result one = Result.PASS;
     Result two = Result.PASS.combine(Result.PASS);
@@ -144,7 +146,7 @@ public class TestResult {
   }
 
   // test equals with two FAILs
-  @Test(timeout = 1000)
+  @Test
   public void equalsFail() {
     Result one = Result.FAIL;
     Result two = Result.FAIL.combine(Result.FAIL);
@@ -152,7 +154,7 @@ public class TestResult {
   }
 
   // test equals with two STOPS
-  @Test(timeout = 1000)
+  @Test
   public void equalsStop() {
     Result one = Result.STOP;
     Result two = Result.STOP.combine(Result.STOP);
@@ -160,7 +162,7 @@ public class TestResult {
   }
 
   // test all combinations of not equals
-  @Test(timeout = 1000)
+  @Test
   public void notEquals() {
     assertFalse(Result.PASS.equals(Result.FAIL));
     assertFalse(Result.PASS.equals(Result.STOP));

@@ -25,8 +25,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
@@ -44,8 +42,11 @@ import org.apache.hadoop.mapreduce.v2.util.MRApps;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.yarn.api.ApplicationClientProtocol;
+import org.apache.hadoop.yarn.api.protocolrecords.GetNewReservationResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.ReservationDeleteRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.ReservationDeleteResponse;
+import org.apache.hadoop.yarn.api.protocolrecords.ReservationListRequest;
+import org.apache.hadoop.yarn.api.protocolrecords.ReservationListResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.ReservationSubmissionRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.ReservationSubmissionResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.ReservationUpdateRequest;
@@ -57,12 +58,20 @@ import org.apache.hadoop.yarn.api.records.ApplicationReport;
 import org.apache.hadoop.yarn.api.records.ApplicationSubmissionContext;
 import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.ContainerReport;
+import org.apache.hadoop.yarn.api.records.NodeAttribute;
+import org.apache.hadoop.yarn.api.records.NodeAttributeKey;
+import org.apache.hadoop.yarn.api.records.NodeAttributeInfo;
 import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.NodeLabel;
 import org.apache.hadoop.yarn.api.records.NodeReport;
 import org.apache.hadoop.yarn.api.records.NodeState;
+import org.apache.hadoop.yarn.api.records.NodeToAttributeValue;
 import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.QueueUserACLInfo;
+import org.apache.hadoop.yarn.api.records.Resource;
+import org.apache.hadoop.yarn.api.records.ResourceTypeInfo;
+import org.apache.hadoop.yarn.api.records.ShellContainerCommand;
+import org.apache.hadoop.yarn.api.records.SignalContainerCommand;
 import org.apache.hadoop.yarn.api.records.YarnApplicationState;
 import org.apache.hadoop.yarn.api.records.YarnClusterMetrics;
 import org.apache.hadoop.yarn.client.ClientRMProxy;
@@ -72,11 +81,14 @@ import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.security.AMRMTokenIdentifier;
 import org.apache.hadoop.yarn.util.ConverterUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 public class ResourceMgrDelegate extends YarnClient {
-  private static final Log LOG = LogFactory.getLog(ResourceMgrDelegate.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(ResourceMgrDelegate.class);
       
   private YarnConfiguration conf;
   private ApplicationSubmissionContext application;
@@ -293,6 +305,12 @@ public class ResourceMgrDelegate extends YarnClient {
   }
 
   @Override
+  public void failApplicationAttempt(ApplicationAttemptId attemptId)
+      throws YarnException, IOException {
+    client.failApplicationAttempt(attemptId);
+  }
+
+  @Override
   public void killApplication(ApplicationId applicationId)
       throws YarnException, IOException {
     client.killApplication(applicationId);
@@ -339,6 +357,16 @@ public class ResourceMgrDelegate extends YarnClient {
   }
 
   @Override
+  public List<ApplicationReport> getApplications(
+      Set<String> applicationTypes,
+      EnumSet<YarnApplicationState> applicationStates,
+      Set<String> applicationTags)
+      throws YarnException, IOException {
+    return client.getApplications(
+        applicationTypes, applicationStates, applicationTags);
+  }
+
+  @Override
   public List<ApplicationReport> getApplications(Set<String> queues,
       Set<String> users, Set<String> applicationTypes,
       EnumSet<YarnApplicationState> applicationStates) throws YarnException,
@@ -369,6 +397,12 @@ public class ResourceMgrDelegate extends YarnClient {
   public org.apache.hadoop.yarn.api.records.QueueInfo getQueueInfo(
       String queueName) throws YarnException, IOException {
     return client.getQueueInfo(queueName);
+  }
+
+  @Override
+  public org.apache.hadoop.yarn.api.records.QueueInfo getQueueInfo(
+      String queueName, String subClusterId) throws YarnException, IOException {
+    return client.getQueueInfo(queueName, subClusterId);
   }
 
   @Override
@@ -427,6 +461,12 @@ public class ResourceMgrDelegate extends YarnClient {
   }
 
   @Override
+  public GetNewReservationResponse createReservation() throws YarnException,
+      IOException {
+    return client.createReservation();
+  }
+
+  @Override
   public ReservationSubmissionResponse submitReservation(
       ReservationSubmissionRequest request) throws YarnException, IOException {
     return client.submitReservation(request);
@@ -445,19 +485,24 @@ public class ResourceMgrDelegate extends YarnClient {
   }
 
   @Override
-  public Map<NodeId, Set<NodeLabel>> getNodeToLabels() throws YarnException,
+  public ReservationListResponse listReservations(
+          ReservationListRequest request) throws YarnException, IOException {
+    return client.listReservations(request);
+  }
+  @Override
+  public Map<NodeId, Set<String>> getNodeToLabels() throws YarnException,
       IOException {
     return client.getNodeToLabels();
   }
 
   @Override
-  public Map<NodeLabel, Set<NodeId>> getLabelsToNodes() throws YarnException,
+  public Map<String, Set<NodeId>> getLabelsToNodes() throws YarnException,
       IOException {
     return client.getLabelsToNodes();
   }
 
   @Override
-  public Map<NodeLabel, Set<NodeId>> getLabelsToNodes(Set<String> labels)
+  public Map<String, Set<NodeId>> getLabelsToNodes(Set<String> labels)
       throws YarnException, IOException {
     return client.getLabelsToNodes(labels);
   }
@@ -469,8 +514,63 @@ public class ResourceMgrDelegate extends YarnClient {
   }
 
   @Override
-  public void updateApplicationPriority(ApplicationId applicationId,
+  public Priority updateApplicationPriority(ApplicationId applicationId,
       Priority priority) throws YarnException, IOException {
-    client.updateApplicationPriority(applicationId, priority);
+    return client.updateApplicationPriority(applicationId, priority);
+  }
+
+  @Override
+  public void signalToContainer(ContainerId containerId,
+      SignalContainerCommand command)
+      throws YarnException, IOException {
+    client.signalToContainer(containerId, command);
+  }
+
+  @Override
+  public void killApplication(ApplicationId appId, String diagnostics)
+      throws YarnException, IOException {
+    client.killApplication(appId, diagnostics);
+  }
+
+  @Override
+  public Map<String, Resource> getResourceProfiles()
+      throws YarnException, IOException {
+    return client.getResourceProfiles();
+  }
+
+  @Override
+  public Resource getResourceProfile(String profile)
+      throws YarnException, IOException {
+    return client.getResourceProfile(profile);
+  }
+
+  @Override
+  public List<ResourceTypeInfo> getResourceTypeInfo()
+      throws YarnException, IOException {
+    return client.getResourceTypeInfo();
+  }
+
+  @Override
+  public Set<NodeAttributeInfo> getClusterAttributes()
+      throws YarnException, IOException {
+    return client.getClusterAttributes();
+  }
+
+  @Override
+  public Map<NodeAttributeKey, List<NodeToAttributeValue>> getAttributesToNodes(
+      Set<NodeAttributeKey> attributes) throws YarnException, IOException {
+    return client.getAttributesToNodes(attributes);
+  }
+
+  @Override
+  public Map<String, Set<NodeAttribute>> getNodeToAttributes(
+      Set<String> hostNames) throws YarnException, IOException {
+    return client.getNodeToAttributes(hostNames);
+  }
+
+  @Override
+  public void shellToContainer(ContainerId containerId,
+      ShellContainerCommand command) throws IOException {
+    throw new IOException("Operation is not supported.");
   }
 }

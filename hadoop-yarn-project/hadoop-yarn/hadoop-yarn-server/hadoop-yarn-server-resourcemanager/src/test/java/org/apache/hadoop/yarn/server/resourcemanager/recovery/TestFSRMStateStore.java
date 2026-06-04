@@ -18,7 +18,13 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.recovery;
 
-import static org.junit.Assert.assertTrue;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.IOException;
 import java.security.PrivilegedExceptionAction;
@@ -26,8 +32,8 @@ import java.util.LinkedList;
 import java.util.Queue;
 import java.util.concurrent.atomic.AtomicBoolean;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileStatus;
@@ -39,6 +45,7 @@ import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
 import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 import org.apache.hadoop.yarn.api.records.ApplicationAttemptId;
 import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
@@ -47,13 +54,15 @@ import org.apache.hadoop.yarn.server.records.impl.pb.VersionPBImpl;
 import org.apache.hadoop.yarn.server.resourcemanager.recovery.records.ApplicationStateData;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMApp;
 import org.apache.hadoop.yarn.server.resourcemanager.rmapp.RMAppState;
-import org.apache.hadoop.yarn.util.ConverterUtils;
-import org.junit.Assert;
-import org.junit.Test;
+import org.apache.hadoop.yarn.server.resourcemanager.rmapp.attempt.RMAppAttempt;
+
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 public class TestFSRMStateStore extends RMStateStoreTestBase {
 
-  public static final Log LOG = LogFactory.getLog(TestFSRMStateStore.class);
+  public static final Logger LOG =
+      LoggerFactory.getLogger(TestFSRMStateStore.class);
 
   private TestFSRMStateStoreTester fsTester;
 
@@ -68,10 +77,11 @@ public class TestFSRMStateStore extends RMStateStoreTestBase {
 
       TestFileSystemRMStore(Configuration conf) throws Exception {
         init(conf);
-        Assert.assertNull(fs);
+        assertNull(fs);
         assertTrue(workingDirPathURI.equals(fsWorkingPath));
+        dispatcher.disableExitOnDispatchException();
         start();
-        Assert.assertNotNull(fs);
+        assertNotNull(fs);
       }
 
       public Path getVersionNode() {
@@ -87,6 +97,12 @@ public class TestFSRMStateStore extends RMStateStoreTestBase {
         Path appRootDir = new Path(rootDir, RM_APP_ROOT);
         Path appDir = new Path(appRootDir, appId);
         return appDir;
+      }
+
+      public Path getAttemptDir(String appId, String attemptId) {
+        Path appDir = getAppDir(appId);
+        Path attemptDir = new Path(appDir, attemptId);
+        return attemptDir;
       }
     }
 
@@ -106,23 +122,23 @@ public class TestFSRMStateStore extends RMStateStoreTestBase {
       YarnConfiguration conf = new YarnConfiguration();
       conf.set(YarnConfiguration.FS_RM_STATE_STORE_URI,
           workingDirPathURI.toString());
-      conf.set(YarnConfiguration.FS_RM_STATE_STORE_RETRY_POLICY_SPEC,
-              "100,6000");
       conf.setInt(YarnConfiguration.FS_RM_STATE_STORE_NUM_RETRIES, 8);
       conf.setLong(YarnConfiguration.FS_RM_STATE_STORE_RETRY_INTERVAL_MS,
               900L);
+      conf.setLong(YarnConfiguration.RM_EPOCH, epoch);
+      conf.setLong(YarnConfiguration.RM_EPOCH_RANGE, getEpochRange());
       if (adminCheckEnable) {
         conf.setBoolean(
           YarnConfiguration.YARN_INTERMEDIATE_DATA_ENCRYPTION, true);
       }
       this.store = new TestFileSystemRMStore(conf);
-      Assert.assertEquals(store.getNumRetries(), 8);
-      Assert.assertEquals(store.getRetryInterval(), 900L);
-      Assert.assertTrue(store.fs.getConf() == store.fsConf);
+      assertThat(store.getNumRetries()).isEqualTo(8);
+      assertThat(store.getRetryInterval()).isEqualTo(900L);
+      assertTrue(store.fs.getConf() == store.fsConf);
       FileSystem previousFs = store.fs;
       store.startInternal();
-      Assert.assertTrue(store.fs != previousFs);
-      Assert.assertTrue(store.fs.getConf() == store.fsConf);
+      assertTrue(store.fs != previousFs);
+      assertTrue(store.fs.getConf() == store.fsConf);
       return store;
     }
 
@@ -151,9 +167,19 @@ public class TestFSRMStateStore extends RMStateStoreTestBase {
               store.getAppDir(app.getApplicationId().toString());
       return fs.exists(nodePath);
     }
+
+    public boolean attemptExists(RMAppAttempt attempt) throws IOException {
+      FileSystem fs = cluster.getFileSystem();
+      ApplicationAttemptId attemptId = attempt.getAppAttemptId();
+      Path nodePath =
+          store.getAttemptDir(attemptId.getApplicationId().toString(),
+              attemptId.toString());
+      return fs.exists(nodePath);
+    }
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 120)
   public void testFSRMStateStore() throws Exception {
     HdfsConfiguration conf = new HdfsConfiguration();
     MiniDFSCluster cluster =
@@ -167,7 +193,7 @@ public class TestFSRMStateStore extends RMStateStoreTestBase {
               (FileSystemRMStateStore) fsTester.getRMStateStore();
       String appAttemptIdStr3 = "appattempt_1352994193343_0001_000003";
       ApplicationAttemptId attemptId3 =
-              ConverterUtils.toApplicationAttemptId(appAttemptIdStr3);
+          ApplicationAttemptId.fromString(appAttemptIdStr3);
       Path appDir =
               fsTester.store.getAppDir(attemptId3.getApplicationId().toString());
       Path tempAppAttemptFile =
@@ -177,7 +203,7 @@ public class TestFSRMStateStore extends RMStateStoreTestBase {
       fsOut.close();
 
       testRMAppStateStore(fsTester);
-      Assert.assertFalse(fsTester.workingDirPathURI
+      assertFalse(fsTester.workingDirPathURI
               .getFileSystem(conf).exists(tempAppAttemptFile));
       testRMDTSecretManagerStateStore(fsTester);
       testCheckVersion(fsTester);
@@ -185,14 +211,18 @@ public class TestFSRMStateStore extends RMStateStoreTestBase {
       testAppDeletion(fsTester);
       testDeleteStore(fsTester);
       testRemoveApplication(fsTester);
+      testRemoveAttempt(fsTester);
       testAMRMTokenSecretManagerStateStore(fsTester);
       testReservationStateStore(fsTester);
+      testProxyCA(fsTester);
+      testAMRMTokenSecretManagerStateStoreKeyLengthChange(fsTester);
     } finally {
       cluster.shutdown();
     }
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testHDFSRMStateStore() throws Exception {
     final HdfsConfiguration conf = new HdfsConfiguration();
     UserGroupInformation yarnAdmin =
@@ -272,11 +302,12 @@ public class TestFSRMStateStore extends RMStateStoreTestBase {
         try {
           LOG.warn("\n\n ##Testing path [" + p + "]\n\n");
           fs.open(p);
-          Assert.fail("Super user should not be able to read ["+ UserGroupInformation.getCurrentUser() + "] [" + p.getName() + "]");
+          fail("Super user should not be able to read ["+
+              UserGroupInformation.getCurrentUser() + "] [" + p.getName() + "]");
         } catch (AccessControlException e) {
-          Assert.assertTrue(e.getMessage().contains("superuser is not allowed to perform this operation"));
+          assertTrue(e.getMessage().contains("superuser is not allowed to perform this operation"));
         } catch (Exception e) {
-          Assert.fail("Should get an AccessControlException here");
+          fail("Should get an AccessControlException here");
         }
       }
       if (stat.isDirectory()) {
@@ -289,7 +320,8 @@ public class TestFSRMStateStore extends RMStateStoreTestBase {
 
   }
 
-  @Test(timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testCheckMajorVersionChange() throws Exception {
     HdfsConfiguration conf = new HdfsConfiguration();
     MiniDFSCluster cluster =
@@ -308,8 +340,6 @@ public class TestFSRMStateStore extends RMStateStoreTestBase {
           YarnConfiguration conf = new YarnConfiguration();
           conf.set(YarnConfiguration.FS_RM_STATE_STORE_URI,
               workingDirPathURI.toString());
-          conf.set(YarnConfiguration.FS_RM_STATE_STORE_RETRY_POLICY_SPEC,
-              "100,6000");
           this.store = new TestFileSystemRMStore(conf) {
             Version storedVersion = null;
 
@@ -336,7 +366,7 @@ public class TestFSRMStateStore extends RMStateStoreTestBase {
       RMStateStore store = fsTester.getRMStateStore();
       Version defaultVersion = fsTester.getCurrentVersion();
       store.checkVersion();
-      Assert.assertEquals(defaultVersion, store.loadVersion());
+      assertEquals(defaultVersion, store.loadVersion());
     } finally {
       cluster.shutdown();
     }
@@ -347,7 +377,7 @@ public class TestFSRMStateStore extends RMStateStoreTestBase {
     // imitate appAttemptFile1 is still .new, but old one is deleted
     String appAttemptIdStr1 = "appattempt_1352994193343_0001_000001";
     ApplicationAttemptId attemptId1 =
-        ConverterUtils.toApplicationAttemptId(appAttemptIdStr1);
+        ApplicationAttemptId.fromString(appAttemptIdStr1);
     Path appDir =
             fsTester.store.getAppDir(attemptId1.getApplicationId().toString());
     Path appAttemptFile1 =
@@ -372,7 +402,8 @@ public class TestFSRMStateStore extends RMStateStoreTestBase {
             nodeCreatePath.getName() + ".new"));
   }
 
-  @Test (timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testFSRMStateStoreClientRetry() throws Exception {
     HdfsConfiguration conf = new HdfsConfiguration();
     MiniDFSCluster cluster =
@@ -385,25 +416,22 @@ public class TestFSRMStateStore extends RMStateStoreTestBase {
       final AtomicBoolean assertionFailedInThread = new AtomicBoolean(false);
       cluster.shutdownNameNodes();
 
-      Thread clientThread = new Thread() {
-        @Override
-        public void run() {
-          try {
-            store.storeApplicationStateInternal(
-                ApplicationId.newInstance(100L, 1),
-                ApplicationStateData.newInstance(111, 111, "user", null,
-                    RMAppState.ACCEPTED, "diagnostics", 333));
-          } catch (Exception e) {
-            assertionFailedInThread.set(true);
-            e.printStackTrace();
-          }
+      Thread clientThread = new SubjectInheritingThread(() -> {
+        try {
+          store.storeApplicationStateInternal(
+              ApplicationId.newInstance(100L, 1),
+              ApplicationStateData.newInstance(111, 111, "user", null,
+                  RMAppState.ACCEPTED, "diagnostics", 222, 333, null));
+        } catch (Exception e) {
+          assertionFailedInThread.set(true);
+          e.printStackTrace();
         }
-      };
+      });
       Thread.sleep(2000);
       clientThread.start();
       cluster.restartNameNode();
       clientThread.join();
-      Assert.assertFalse(assertionFailedInThread.get());
+      assertFalse(assertionFailedInThread.get());
     } finally {
       cluster.shutdown();
     }

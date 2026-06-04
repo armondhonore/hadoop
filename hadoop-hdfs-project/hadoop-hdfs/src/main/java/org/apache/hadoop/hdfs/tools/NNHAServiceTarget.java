@@ -18,6 +18,7 @@
 package org.apache.hadoop.hdfs.tools;
 
 import java.net.InetSocketAddress;
+import java.util.Arrays;
 import java.util.Map;
 
 import org.apache.hadoop.classification.InterfaceAudience;
@@ -28,10 +29,13 @@ import org.apache.hadoop.ha.NodeFencer;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
 import org.apache.hadoop.hdfs.DFSUtil;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
+import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.net.NetUtils;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.util.Preconditions;
+
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMESERVICES;
 
 /**
  * One of the NN NameNodes acting as the target of an administrative command
@@ -45,40 +49,95 @@ public class NNHAServiceTarget extends HAServiceTarget {
   private static final String NAMENODE_ID_KEY = "namenodeid";
   
   private final InetSocketAddress addr;
+  private final InetSocketAddress lifelineAddr;
   private InetSocketAddress zkfcAddr;
   private NodeFencer fencer;
   private BadFencingConfigurationException fenceConfigError;
-  private final String nnId;
-  private final String nsId;
-  private final boolean autoFailoverEnabled;
-  
+  private HdfsConfiguration targetConf;
+  private String nnId;
+  private String nsId;
+  private boolean autoFailoverEnabled;
+
+  /**
+   * Create a NNHAServiceTarget for a namenode.
+   * Look up addresses from configuration.
+   *
+   * @param conf          HDFS configuration.
+   * @param nsId          nsId of this nn.
+   * @param nnId          nnId of this nn.
+   */
   public NNHAServiceTarget(Configuration conf,
       String nsId, String nnId) {
-    Preconditions.checkNotNull(nnId);
-    
-    if (nsId == null) {
-      nsId = DFSUtil.getOnlyNameServiceIdOrNull(conf);
-      if (nsId == null) {
-        throw new IllegalArgumentException(
-            "Unable to determine the nameservice id.");
-      }
-    }
-    assert nsId != null;
-    
-    // Make a copy of the conf, and override configs based on the
-    // target node -- not the node we happen to be running on.
-    HdfsConfiguration targetConf = new HdfsConfiguration(conf);
-    NameNode.initializeGenericKeys(targetConf, nsId, nnId);
-    
-    String serviceAddr = 
-      DFSUtil.getNamenodeServiceAddr(targetConf, nsId, nnId);
+    initializeNnConfig(conf, nsId, nnId);
+
+    String serviceAddr =
+        DFSUtil.getNamenodeServiceAddr(targetConf, nsId, nnId);
     if (serviceAddr == null) {
       throw new IllegalArgumentException(
           "Unable to determine service address for namenode '" + nnId + "'");
     }
-    this.addr = NetUtils.createSocketAddr(serviceAddr,
-        NameNode.DEFAULT_PORT);
 
+    this.addr = NetUtils.createSocketAddr(serviceAddr,
+        HdfsClientConfigKeys.DFS_NAMENODE_RPC_PORT_DEFAULT);
+
+    String lifelineAddrStr =
+        DFSUtil.getNamenodeLifelineAddr(targetConf, nsId, nnId);
+    this.lifelineAddr = (lifelineAddrStr != null) ?
+        NetUtils.createSocketAddr(lifelineAddrStr) : null;
+
+    initializeFailoverConfig();
+  }
+
+  /**
+   * Create a NNHAServiceTarget for a namenode.
+   * Addresses are provided so we don't need to lookup the config.
+   *
+   * @param conf          HDFS configuration.
+   * @param nsId          nsId of this nn.
+   * @param nnId          nnId of this nn.
+   * @param addr          Provided service address.
+   * @param lifelineAddr  Provided lifeline address.
+   */
+  public NNHAServiceTarget(Configuration conf,
+      String nsId, String nnId,
+      String addr, String lifelineAddr) {
+    initializeNnConfig(conf, nsId, nnId);
+
+    this.addr = NetUtils.createSocketAddr(addr);
+    this.lifelineAddr = NetUtils.createSocketAddr(lifelineAddr);
+
+    initializeFailoverConfig();
+  }
+
+  private void initializeNnConfig(Configuration conf,
+      String providedNsId, String providedNnId) {
+    Preconditions.checkNotNull(providedNnId);
+
+    if (providedNsId == null) {
+      providedNsId = DFSUtil.getOnlyNameServiceIdOrNull(conf);
+      if (providedNsId == null) {
+        String errorString = "Unable to determine the name service ID.";
+        String[] dfsNames = conf.getStrings(DFS_NAMESERVICES);
+        if ((dfsNames != null) && (dfsNames.length > 1)) {
+          errorString = "Unable to determine the name service ID. " +
+              "This is an HA configuration with multiple name services " +
+              "configured. " + DFS_NAMESERVICES + " is set to " +
+              Arrays.toString(dfsNames) + ". Please re-run with the -ns option.";
+        }
+        throw new IllegalArgumentException(errorString);
+      }
+    }
+
+    // Make a copy of the conf, and override configs based on the
+    // target node -- not the node we happen to be running on.
+    this.targetConf = new HdfsConfiguration(conf);
+    NameNode.initializeGenericKeys(targetConf, providedNsId, providedNnId);
+
+    this.nsId = providedNsId;
+    this.nnId = providedNnId;
+  }
+
+  private void initializeFailoverConfig() {
     this.autoFailoverEnabled = targetConf.getBoolean(
         DFSConfigKeys.DFS_HA_AUTO_FAILOVER_ENABLED_KEY,
         DFSConfigKeys.DFS_HA_AUTO_FAILOVER_ENABLED_DEFAULT);
@@ -88,16 +147,13 @@ public class NNHAServiceTarget extends HAServiceTarget {
         setZkfcPort(port);
       }
     }
-    
+
     try {
       this.fencer = NodeFencer.create(targetConf,
           DFSConfigKeys.DFS_HA_FENCE_METHODS_KEY);
     } catch (BadFencingConfigurationException e) {
       this.fenceConfigError = e;
     }
-    
-    this.nnId = nnId;
-    this.nsId = nsId;
   }
 
   /**
@@ -106,6 +162,11 @@ public class NNHAServiceTarget extends HAServiceTarget {
   @Override
   public InetSocketAddress getAddress() {
     return addr;
+  }
+
+  @Override
+  public InetSocketAddress getHealthMonitorAddress() {
+    return lifelineAddr;
   }
 
   @Override
@@ -141,7 +202,7 @@ public class NNHAServiceTarget extends HAServiceTarget {
   
   @Override
   public String toString() {
-    return "NameNode at " + addr;
+    return "NameNode at " + (lifelineAddr != null ? lifelineAddr : addr);
   }
 
   public String getNameServiceId() {
@@ -163,5 +224,10 @@ public class NNHAServiceTarget extends HAServiceTarget {
   @Override
   public boolean isAutoFailoverEnabled() {
     return autoFailoverEnabled;
+  }
+
+  @Override
+  public boolean supportObserver() {
+    return true;
   }
 }

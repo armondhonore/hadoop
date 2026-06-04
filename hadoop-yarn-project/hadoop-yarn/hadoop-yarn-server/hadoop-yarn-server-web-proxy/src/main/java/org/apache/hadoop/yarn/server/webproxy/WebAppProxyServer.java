@@ -38,7 +38,7 @@ import org.slf4j.LoggerFactory;
 
 /**
  * ProxyServer will sit in between the end user and AppMaster
- * web interfaces. 
+ * web interfaces.
  */
 public class WebAppProxyServer extends CompositeService {
 
@@ -67,7 +67,8 @@ public class WebAppProxyServer extends CompositeService {
 
     DefaultMetricsSystem.initialize("WebAppProxyServer");
     JvmMetrics jm = JvmMetrics.initSingleton("WebAppProxyServer", null);
-    pauseMonitor = new JvmPauseMonitor(conf);
+    pauseMonitor = new JvmPauseMonitor();
+    addService(pauseMonitor);
     jm.setPauseMonitor(pauseMonitor);
 
     super.serviceInit(config);
@@ -75,9 +76,6 @@ public class WebAppProxyServer extends CompositeService {
 
   @Override
   protected void serviceStart() throws Exception {
-    if (pauseMonitor != null) {
-      pauseMonitor.start();
-    }
     super.serviceStart();
   }
 
@@ -85,13 +83,10 @@ public class WebAppProxyServer extends CompositeService {
   protected void serviceStop() throws Exception {
     super.serviceStop();
     DefaultMetricsSystem.shutdown();
-    if (pauseMonitor != null) {
-      pauseMonitor.stop();
-    }
   }
 
   /**
-   * Log in as the Kerberose principal designated for the proxy
+   * Log in as the Kerberos principal designated for the proxy
    * @param conf the configuration holding this information in it.
    * @throws IOException on any error.
    */
@@ -108,9 +103,11 @@ public class WebAppProxyServer extends CompositeService {
    * @return InetSocketAddress
    */
   public static InetSocketAddress getBindAddress(Configuration conf) {
-    return conf.getSocketAddr(YarnConfiguration.PROXY_ADDRESS,
-      YarnConfiguration.DEFAULT_PROXY_ADDRESS,
-      YarnConfiguration.DEFAULT_PROXY_PORT);
+    return conf.getSocketAddr(
+        YarnConfiguration.PROXY_BIND_HOST,
+        YarnConfiguration.PROXY_ADDRESS,
+        YarnConfiguration.DEFAULT_PROXY_ADDRESS,
+        YarnConfiguration.DEFAULT_PROXY_PORT);
   }
 
   public static void main(String[] args) {

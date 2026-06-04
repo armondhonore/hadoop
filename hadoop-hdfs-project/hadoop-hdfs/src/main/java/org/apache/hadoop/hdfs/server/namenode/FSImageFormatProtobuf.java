@@ -18,6 +18,8 @@
 
 package org.apache.hadoop.hdfs.server.namenode;
 
+import static org.apache.hadoop.util.Time.monotonicNow;
+
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
 import java.io.File;
@@ -34,16 +36,25 @@ import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Set;
+import java.util.Iterator;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.hdfs.DFSConfigKeys;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicyInfo;
+import org.apache.hadoop.hdfs.protocolPB.PBHelperClient;
+import org.apache.hadoop.io.compress.CompressionOutputStream;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.CacheDirectiveInfoProto;
 import org.apache.hadoop.hdfs.protocol.proto.ClientNamenodeProtocolProtos.CachePoolInfoProto;
+import org.apache.hadoop.hdfs.protocol.proto.HdfsProtos.ErasureCodingPolicyProto;
 import org.apache.hadoop.hdfs.security.token.delegation.DelegationTokenSecretManager;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockIdManager;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
@@ -52,6 +63,7 @@ import org.apache.hadoop.hdfs.server.namenode.FsImageProto.FileSummary;
 import org.apache.hadoop.hdfs.server.namenode.FsImageProto.NameSystemSection;
 import org.apache.hadoop.hdfs.server.namenode.FsImageProto.SecretManagerSection;
 import org.apache.hadoop.hdfs.server.namenode.FsImageProto.StringTableSection;
+import org.apache.hadoop.hdfs.server.namenode.FsImageProto.ErasureCodingSection;
 import org.apache.hadoop.hdfs.server.namenode.snapshot.FSImageFormatPBSnapshot;
 import org.apache.hadoop.hdfs.server.namenode.startupprogress.Phase;
 import org.apache.hadoop.hdfs.server.namenode.startupprogress.StartupProgress;
@@ -61,26 +73,29 @@ import org.apache.hadoop.hdfs.server.namenode.startupprogress.StepType;
 import org.apache.hadoop.hdfs.util.MD5FileUtils;
 import org.apache.hadoop.io.MD5Hash;
 import org.apache.hadoop.io.compress.CompressionCodec;
-import org.apache.hadoop.io.compress.CompressorStream;
 import org.apache.hadoop.util.LimitInputStream;
 import org.apache.hadoop.util.Time;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
+import org.apache.hadoop.util.Lists;
 
-import com.google.common.collect.Lists;
-import com.google.common.collect.Maps;
-import com.google.protobuf.CodedOutputStream;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
+import org.apache.hadoop.thirdparty.protobuf.CodedOutputStream;
 
 /**
  * Utility class to read / write fsimage in protobuf format.
  */
 @InterfaceAudience.Private
 public final class FSImageFormatProtobuf {
-  private static final Log LOG = LogFactory.getLog(FSImageFormatProtobuf.class);
+  private static final Logger LOG = LoggerFactory
+      .getLogger(FSImageFormatProtobuf.class);
+
+  private static volatile boolean enableParallelLoad = false;
 
   public static final class LoaderContext {
-    private String[] stringTable;
+    private SerialNumberManager.StringTable stringTable;
     private final ArrayList<INodeReference> refList = Lists.newArrayList();
 
-    public String[] getStringTable() {
+    public SerialNumberManager.StringTable getStringTable() {
       return stringTable;
     }
 
@@ -121,13 +136,6 @@ public final class FSImageFormatProtobuf {
     }
     private final ArrayList<INodeReference> refList = Lists.newArrayList();
 
-    private final DeduplicationMap<String> stringMap = DeduplicationMap
-        .newMap();
-
-    public DeduplicationMap<String> getStringMap() {
-      return stringMap;
-    }
-
     public ArrayList<INodeReference> getRefList() {
       return refList;
     }
@@ -148,6 +156,8 @@ public final class FSImageFormatProtobuf {
      * when we're doing (rollingUpgrade rollback).
      */
     private final boolean requireSameLayoutVersion;
+
+    private File filename;
 
     Loader(Configuration conf, FSNamesystem fsn,
         boolean requireSameLayoutVersion) {
@@ -171,19 +181,179 @@ public final class FSImageFormatProtobuf {
       return ctx;
     }
 
+    /**
+     * Thread to compute the MD5 of a file as this can be in parallel while
+     * loading the image without interfering much.
+     */
+    private static class DigestThread extends SubjectInheritingThread {
+
+      /**
+       * Exception thrown when computing the digest if it cannot be calculated.
+       */
+      private volatile IOException ioe = null;
+
+      /**
+       * Calculated digest if there are no error.
+       */
+      private volatile MD5Hash digest = null;
+
+      /**
+       * FsImage file computed MD5.
+       */
+      private final File file;
+
+      DigestThread(File inFile) {
+        file = inFile;
+        setName(inFile.getName() + " MD5 compute");
+        setDaemon(true);
+      }
+
+      public MD5Hash getDigest() throws IOException {
+        if (ioe != null) {
+          throw ioe;
+        }
+        return digest;
+      }
+
+      public IOException getException() {
+        return ioe;
+      }
+
+      @Override
+      public void work() {
+        try {
+          digest = MD5FileUtils.computeMd5ForFile(file);
+        } catch (IOException e) {
+          ioe = e;
+        } catch (Throwable t) {
+          ioe = new IOException(t);
+        }
+      }
+
+      @Override
+      public String toString() {
+        return "DigestThread{ ThreadName=" + getName() + ", digest=" + digest
+            + ", file=" + file + '}';
+      }
+    }
+
     void load(File file) throws IOException {
+      filename = file;
       long start = Time.monotonicNow();
-      imgDigest = MD5FileUtils.computeMd5ForFile(file);
+      DigestThread dt = new DigestThread(file);
+      dt.start();
       RandomAccessFile raFile = new RandomAccessFile(file, "r");
       FileInputStream fin = new FileInputStream(file);
       try {
         loadInternal(raFile, fin);
+        try {
+          dt.join();
+          imgDigest = dt.getDigest();
+        } catch (InterruptedException ie) {
+          throw new IOException(ie);
+        }
         long end = Time.monotonicNow();
-        LOG.info("Loaded FSImage in " + (end - start) / 1000 + " seconds.");
+        LOG.info("Loaded FSImage in {} seconds.", (end - start) / 1000);
       } finally {
         fin.close();
         raFile.close();
       }
+    }
+
+    /**
+     * Given a FSImage FileSummary.section, return a LimitInput stream set to
+     * the starting position of the section and limited to the section length.
+     * @param section The FileSummary.Section containing the offset and length
+     * @param compressionCodec The compression codec in use, if any
+     * @return An InputStream for the given section
+     * @throws IOException
+     */
+    public InputStream getInputStreamForSection(FileSummary.Section section,
+                                                String compressionCodec)
+        throws IOException {
+      FileInputStream fin = new FileInputStream(filename);
+      try {
+
+          FileChannel channel = fin.getChannel();
+          channel.position(section.getOffset());
+          InputStream in = new BufferedInputStream(new LimitInputStream(fin,
+                  section.getLength()));
+
+          in = FSImageUtil.wrapInputStreamForCompression(conf,
+                  compressionCodec, in);
+          return in;
+      } catch (IOException e) {
+          fin.close();
+          throw e;
+      }
+    }
+
+    /**
+     * Takes an ArrayList of Section's and removes all Section's whose
+     * name ends in _SUB, indicating they are sub-sections. The original
+     * array list is modified and a new list of the removed Section's is
+     * returned.
+     * @param sections Array List containing all Sections and Sub Sections
+     *                 in the image.
+     * @return ArrayList of the sections removed, or an empty list if none are
+     *         removed.
+     */
+    private ArrayList<FileSummary.Section> getAndRemoveSubSections(
+        ArrayList<FileSummary.Section> sections) {
+      ArrayList<FileSummary.Section> subSections = new ArrayList<>();
+      Iterator<FileSummary.Section> iter = sections.iterator();
+      while (iter.hasNext()) {
+        FileSummary.Section s = iter.next();
+        String name = s.getName();
+        if (name.matches(".*_SUB$")) {
+          subSections.add(s);
+          iter.remove();
+        }
+      }
+      return subSections;
+    }
+
+    /**
+     * Given an ArrayList of Section's, return all Section's with the given
+     * name, or an empty list if none are found.
+     * @param sections ArrayList of the Section's to search though
+     * @param name The name of the Sections to search for
+     * @return ArrayList of the sections matching the given name
+     */
+    private ArrayList<FileSummary.Section> getSubSectionsOfName(
+        ArrayList<FileSummary.Section> sections, SectionName name) {
+      ArrayList<FileSummary.Section> subSec = new ArrayList<>();
+      for (FileSummary.Section s : sections) {
+        String n = s.getName();
+        SectionName sectionName = SectionName.fromString(n);
+        if (sectionName == name) {
+          subSec.add(s);
+        }
+      }
+      return subSec;
+    }
+
+    /**
+     * Checks the number of threads configured for parallel loading and
+     * return an ExecutorService with configured number of threads. If the
+     * thread count is set to less than 1, it will be reset to the default
+     * value
+     * @return ExecutorServie with the correct number of threads
+     */
+    private ExecutorService getParallelExecutorService() {
+      int threads = conf.getInt(DFSConfigKeys.DFS_IMAGE_PARALLEL_THREADS_KEY,
+          DFSConfigKeys.DFS_IMAGE_PARALLEL_THREADS_DEFAULT);
+      if (threads < 1) {
+        LOG.warn("Parallel is enabled and {} is set to {}. Setting to the " +
+            "default value {}", DFSConfigKeys.DFS_IMAGE_PARALLEL_THREADS_KEY,
+            threads, DFSConfigKeys.DFS_IMAGE_PARALLEL_THREADS_DEFAULT);
+        threads = DFSConfigKeys.DFS_IMAGE_PARALLEL_THREADS_DEFAULT;
+      }
+      ExecutorService executorService = Executors.newFixedThreadPool(
+          threads);
+      LOG.info("The fsimage will be loaded in parallel using {} threads",
+          threads);
+      return executorService;
     }
 
     private void loadInternal(RandomAccessFile raFile, FileInputStream fin)
@@ -230,6 +400,14 @@ public final class FSImageFormatProtobuf {
        * a particular step to be started for once.
        */
       Step currentStep = null;
+      boolean loadInParallel = enableParallelSaveAndLoad(conf);
+
+      ExecutorService executorService = null;
+      ArrayList<FileSummary.Section> subSections =
+          getAndRemoveSubSections(sections);
+      if (loadInParallel) {
+        executorService = getParallelExecutorService();
+      }
 
       for (FileSummary.Section s : sections) {
         channel.position(s.getOffset());
@@ -240,8 +418,13 @@ public final class FSImageFormatProtobuf {
             summary.getCodec(), in);
 
         String n = s.getName();
+        SectionName sectionName = SectionName.fromString(n);
+        if (sectionName == null) {
+          throw new IOException("Unrecognized section " + n);
+        }
 
-        switch (SectionName.fromString(n)) {
+        ArrayList<FileSummary.Section> stageSubSections;
+        switch (sectionName) {
         case NS_INFO:
           loadNameSystemSection(in);
           break;
@@ -251,14 +434,29 @@ public final class FSImageFormatProtobuf {
         case INODE: {
           currentStep = new Step(StepType.INODES);
           prog.beginStep(Phase.LOADING_FSIMAGE, currentStep);
-          inodeLoader.loadINodeSection(in, prog, currentStep);
+          stageSubSections = getSubSectionsOfName(
+              subSections, SectionName.INODE_SUB);
+          if (loadInParallel && (stageSubSections.size() > 0)) {
+            inodeLoader.loadINodeSectionInParallel(executorService,
+                stageSubSections, summary.getCodec(), prog, currentStep);
+          } else {
+            inodeLoader.loadINodeSection(in, prog, currentStep);
+          }
         }
           break;
         case INODE_REFERENCE:
           snapshotLoader.loadINodeReferenceSection(in);
           break;
         case INODE_DIR:
-          inodeLoader.loadINodeDirectorySection(in);
+          stageSubSections = getSubSectionsOfName(
+              subSections, SectionName.INODE_DIR_SUB);
+          if (loadInParallel && stageSubSections.size() > 0) {
+            inodeLoader.loadINodeDirectorySectionInParallel(executorService,
+                stageSubSections, summary.getCodec());
+          } else {
+            inodeLoader.loadINodeDirectorySection(in);
+          }
+          inodeLoader.waitBlocksMapAndNameCacheUpdateFinished();
           break;
         case FILES_UNDERCONSTRUCTION:
           inodeLoader.loadFilesUnderConstructionSection(in);
@@ -284,20 +482,33 @@ public final class FSImageFormatProtobuf {
           prog.endStep(Phase.LOADING_FSIMAGE, step);
         }
           break;
+        case ERASURE_CODING:
+          Step step = new Step(StepType.ERASURE_CODING_POLICIES);
+          prog.beginStep(Phase.LOADING_FSIMAGE, step);
+          loadErasureCodingSection(in);
+          prog.endStep(Phase.LOADING_FSIMAGE, step);
+          break;
         default:
-          LOG.warn("Unrecognized section " + n);
+          LOG.warn("Unrecognized section {}", n);
           break;
         }
+      }
+      if (executorService != null) {
+        executorService.shutdown();
       }
     }
 
     private void loadNameSystemSection(InputStream in) throws IOException {
       NameSystemSection s = NameSystemSection.parseDelimitedFrom(in);
-      BlockIdManager blockIdManager = fsn.getBlockIdManager();
-      blockIdManager.setGenerationStampV1(s.getGenstampV1());
-      blockIdManager.setGenerationStampV2(s.getGenstampV2());
-      blockIdManager.setGenerationStampV1Limit(s.getGenstampV1Limit());
-      blockIdManager.setLastAllocatedBlockId(s.getLastAllocatedBlockId());
+      BlockIdManager blockIdManager = fsn.getBlockManager().getBlockIdManager();
+      blockIdManager.setLegacyGenerationStamp(s.getGenstampV1());
+      blockIdManager.setGenerationStamp(s.getGenstampV2());
+      blockIdManager.setLegacyGenerationStampLimit(s.getGenstampV1Limit());
+      blockIdManager.setLastAllocatedContiguousBlockId(s.getLastAllocatedBlockId());
+      if (s.hasLastAllocatedStripedBlockId()) {
+        blockIdManager.setLastAllocatedStripedBlockId(
+            s.getLastAllocatedStripedBlockId());
+      }
       imgTxId = s.getTransactionId();
       if (s.hasRollingUpgradeStartTime()
           && fsn.getFSImage().hasRollbackFSImage()) {
@@ -309,11 +520,12 @@ public final class FSImageFormatProtobuf {
 
     private void loadStringTableSection(InputStream in) throws IOException {
       StringTableSection s = StringTableSection.parseDelimitedFrom(in);
-      ctx.stringTable = new String[s.getNumEntry() + 1];
+      ctx.stringTable =
+          SerialNumberManager.newStringTable(s.getNumEntry(), s.getMaskBits());
       for (int i = 0; i < s.getNumEntry(); ++i) {
         StringTableSection.Entry e = StringTableSection.Entry
             .parseDelimitedFrom(in);
-        ctx.stringTable[e.getId()] = e.getStr();
+        ctx.stringTable.put(e.getId(), e.getStr());
       }
     }
 
@@ -333,10 +545,9 @@ public final class FSImageFormatProtobuf {
       Counter counter = prog.getCounter(Phase.LOADING_FSIMAGE, currentStep);
       for (int i = 0; i < numTokens; ++i) {
         tokens.add(SecretManagerSection.PersistToken.parseDelimitedFrom(in));
-        counter.increment();
       }
 
-      fsn.loadSecretManagerState(s, keys, tokens);
+      fsn.loadSecretManagerState(s, keys, tokens, counter);
     }
 
     private void loadCacheManagerSection(InputStream in, StartupProgress prog,
@@ -359,14 +570,47 @@ public final class FSImageFormatProtobuf {
           new CacheManager.PersistState(s, pools, directives));
     }
 
+    private void loadErasureCodingSection(InputStream in)
+        throws IOException {
+      ErasureCodingSection s = ErasureCodingSection.parseDelimitedFrom(in);
+      List<ErasureCodingPolicyInfo> ecPolicies = Lists
+          .newArrayListWithCapacity(s.getPoliciesCount());
+      for (int i = 0; i < s.getPoliciesCount(); ++i) {
+        ecPolicies.add(PBHelperClient.convertErasureCodingPolicyInfo(
+            s.getPolicies(i)));
+      }
+      fsn.getErasureCodingPolicyManager().loadPolicies(ecPolicies, conf);
+    }
+  }
+
+  private static boolean enableParallelSaveAndLoad(Configuration conf) {
+    boolean loadInParallel = enableParallelLoad;
+    return loadInParallel;
+  }
+
+  public static void initParallelLoad(Configuration conf) {
+    enableParallelLoad =
+        conf.getBoolean(DFSConfigKeys.DFS_IMAGE_PARALLEL_LOAD_KEY,
+            DFSConfigKeys.DFS_IMAGE_PARALLEL_LOAD_DEFAULT);
+  }
+
+  public static void refreshParallelSaveAndLoad(boolean enable) {
+    enableParallelLoad = enable;
+  }
+
+  public static boolean getEnableParallelLoad() {
+    return enableParallelLoad;
   }
 
   public static final class Saver {
     public static final int CHECK_CANCEL_INTERVAL = 4096;
+    private boolean writeSubSections = false;
+    private int inodesPerSubSection = Integer.MAX_VALUE;
 
     private final SaveNamespaceContext context;
     private final SaverContext saverContext;
     private long currentOffset = FSImageUtil.MAGIC_HEADER.length;
+    private long subSectionOffset = currentOffset;
     private MD5Hash savedDigest;
 
     private FileChannel fileChannel;
@@ -374,10 +618,12 @@ public final class FSImageFormatProtobuf {
     private OutputStream sectionOutputStream;
     private CompressionCodec codec;
     private OutputStream underlyingOutputStream;
+    private Configuration conf;
 
-    Saver(SaveNamespaceContext context) {
+    Saver(SaveNamespaceContext context, Configuration conf) {
       this.context = context;
       this.saverContext = new SaverContext();
+      this.conf = conf;
     }
 
     public MD5Hash getSavedDigest() {
@@ -392,10 +638,41 @@ public final class FSImageFormatProtobuf {
       return saverContext;
     }
 
+    public int getInodesPerSubSection() {
+      return inodesPerSubSection;
+    }
+
+    public OutputStream getSectionOutputStream() {
+      return sectionOutputStream;
+    }
+
+      /**
+     * Commit the length and offset of a fsimage section to the summary index,
+     * including the sub section, which will be committed before the section is
+     * committed.
+     * @param summary The image summary object
+     * @param name The name of the section to commit
+     * @param subSectionName The name of the sub-section to commit
+     * @throws IOException
+     */
+    public void commitSectionAndSubSection(FileSummary.Builder summary,
+        SectionName name, SectionName subSectionName) throws IOException {
+      commitSubSection(summary, subSectionName, true);
+      commitSection(summary, name, true);
+    }
+
     public void commitSection(FileSummary.Builder summary, SectionName name)
-        throws IOException {
+            throws IOException {
+      commitSection(summary, name, false);
+    }
+
+    public void commitSection(FileSummary.Builder summary, SectionName name,
+        boolean afterSubSectionCommit) throws IOException {
       long oldOffset = currentOffset;
-      flushSectionOutputStream();
+      boolean subSectionCommitted = afterSubSectionCommit && writeSubSections;
+      if (!subSectionCommitted) {
+        flushSectionOutputStream();
+      }
 
       if (codec != null) {
         sectionOutputStream = codec.createOutputStream(underlyingOutputStream);
@@ -406,22 +683,118 @@ public final class FSImageFormatProtobuf {
       summary.addSections(FileSummary.Section.newBuilder().setName(name.name)
           .setLength(length).setOffset(currentOffset));
       currentOffset += length;
+      subSectionOffset = currentOffset;
+    }
+
+    public void commitSubSection(FileSummary.Builder summary, SectionName name)
+            throws IOException {
+      this.commitSubSection(summary, name, false);
+    }
+
+    /**
+     * Commit the length and offset of a fsimage sub-section to the summary
+     * index.
+     * @param summary The image summary object
+     * @param name The name of the sub-section to commit
+     * @param isLast True if sub-section is the last sub-section of each section
+     * @throws IOException
+     */
+    public void commitSubSection(FileSummary.Builder summary, SectionName name, boolean isLast)
+        throws IOException {
+      if (!writeSubSections) {
+        return;
+      }
+
+      LOG.debug("Saving a subsection for {}", name.toString());
+      // The output stream must be flushed before the length is obtained
+      // as the flush can move the length forward.
+      flushSectionOutputStream();
+
+      if (codec == null || isLast) {
+        // To avoid empty sub-section, Do not create CompressionOutputStream
+        // if sub-section is last sub-section of each section
+        sectionOutputStream = underlyingOutputStream;
+      } else {
+        sectionOutputStream = codec.createOutputStream(underlyingOutputStream);
+      }
+      long length = fileChannel.position() - subSectionOffset;
+      if (length == 0) {
+        LOG.warn("The requested section for {} is empty. It will not be " +
+            "output to the image", name.toString());
+        return;
+      }
+      summary.addSections(FileSummary.Section.newBuilder().setName(name.name)
+          .setLength(length).setOffset(subSectionOffset));
+      subSectionOffset += length;
     }
 
     private void flushSectionOutputStream() throws IOException {
       if (codec != null) {
-        ((CompressorStream) sectionOutputStream).finish();
+        ((CompressionOutputStream) sectionOutputStream).finish();
       }
       sectionOutputStream.flush();
     }
 
-    void save(File file, FSImageCompression compression) throws IOException {
+    /**
+     * @return number of non-fatal errors detected while writing the image.
+     * @throws IOException on fatal error.
+     */
+    long save(File file, FSImageCompression compression) throws IOException {
+      enableSubSectionsIfRequired();
       FileOutputStream fout = new FileOutputStream(file);
       fileChannel = fout.getChannel();
       try {
-        saveInternal(fout, compression, file.getAbsolutePath());
+        LOG.info("Saving image file {} using {}", file, compression);
+        long startTime = monotonicNow();
+        long numErrors = saveInternal(
+            fout, compression, file.getAbsolutePath());
+        LOG.info("Image file {} of size {} bytes saved in {} seconds {}.", file,
+            file.length(), (monotonicNow() - startTime) / 1000,
+            (numErrors > 0 ? (" with" + numErrors + " errors") : ""));
+        return numErrors;
       } finally {
         fout.close();
+      }
+    }
+
+    private void enableSubSectionsIfRequired() {
+      boolean parallelEnabled = enableParallelSaveAndLoad(conf);
+      int inodeThreshold = conf.getInt(
+          DFSConfigKeys.DFS_IMAGE_PARALLEL_INODE_THRESHOLD_KEY,
+          DFSConfigKeys.DFS_IMAGE_PARALLEL_INODE_THRESHOLD_DEFAULT);
+      int targetSections = conf.getInt(
+          DFSConfigKeys.DFS_IMAGE_PARALLEL_TARGET_SECTIONS_KEY,
+          DFSConfigKeys.DFS_IMAGE_PARALLEL_TARGET_SECTIONS_DEFAULT);
+
+      if (parallelEnabled) {
+        if (targetSections <= 0) {
+          LOG.warn("{} is set to {}. It must be greater than zero. Setting to" +
+              " default of {}",
+              DFSConfigKeys.DFS_IMAGE_PARALLEL_TARGET_SECTIONS_KEY,
+              targetSections,
+              DFSConfigKeys.DFS_IMAGE_PARALLEL_TARGET_SECTIONS_DEFAULT);
+          targetSections =
+              DFSConfigKeys.DFS_IMAGE_PARALLEL_TARGET_SECTIONS_DEFAULT;
+        }
+        if (inodeThreshold <= 0) {
+          LOG.warn("{} is set to {}. It must be greater than zero. Setting to" +
+                  " default of {}",
+              DFSConfigKeys.DFS_IMAGE_PARALLEL_INODE_THRESHOLD_KEY,
+              inodeThreshold,
+              DFSConfigKeys.DFS_IMAGE_PARALLEL_INODE_THRESHOLD_DEFAULT);
+          inodeThreshold =
+              DFSConfigKeys.DFS_IMAGE_PARALLEL_INODE_THRESHOLD_DEFAULT;
+        }
+        int inodeCount = context.getSourceNamesystem().dir.getInodeMapSize();
+        // Only enable parallel sections if there are enough inodes
+        if (inodeCount >= inodeThreshold) {
+          writeSubSections = true;
+          // Calculate the inodes per section rounded up to the nearest int
+          inodesPerSubSection = (inodeCount + targetSections - 1) /
+              targetSections;
+        }
+      } else {
+        writeSubSections = false;
       }
     }
 
@@ -434,28 +807,45 @@ public final class FSImageFormatProtobuf {
       out.write(lengthBytes);
     }
 
-    private void saveInodes(FileSummary.Builder summary) throws IOException {
+    private long saveInodes(FileSummary.Builder summary) throws IOException {
       FSImageFormatPBINode.Saver saver = new FSImageFormatPBINode.Saver(this,
           summary);
 
       saver.serializeINodeSection(sectionOutputStream);
       saver.serializeINodeDirectorySection(sectionOutputStream);
       saver.serializeFilesUCSection(sectionOutputStream);
+
+      return saver.getNumImageErrors();
     }
 
-    private void saveSnapshots(FileSummary.Builder summary) throws IOException {
+    /**
+     * @return number of non-fatal errors detected while saving the image.
+     * @throws IOException on fatal error.
+     */
+    private long saveSnapshots(FileSummary.Builder summary) throws IOException {
       FSImageFormatPBSnapshot.Saver snapshotSaver = new FSImageFormatPBSnapshot.Saver(
           this, summary, context, context.getSourceNamesystem());
 
       snapshotSaver.serializeSnapshotSection(sectionOutputStream);
-      snapshotSaver.serializeSnapshotDiffSection(sectionOutputStream);
+      // Skip snapshot-related sections when there is no snapshot.
+      if (context.getSourceNamesystem().getSnapshotManager()
+          .getNumSnapshots() > 0) {
+        snapshotSaver.serializeSnapshotDiffSection(sectionOutputStream);
+      }
       snapshotSaver.serializeINodeReferenceSection(sectionOutputStream);
+      return snapshotSaver.getNumImageErrors();
     }
 
-    private void saveInternal(FileOutputStream fout,
+    /**
+     * @return number of non-fatal errors detected while writing the FsImage.
+     * @throws IOException on fatal error.
+     */
+    private long saveInternal(FileOutputStream fout,
         FSImageCompression compression, String filePath) throws IOException {
       StartupProgress prog = NameNode.getStartupProgress();
       MessageDigest digester = MD5Hash.getDigester();
+      int layoutVersion =
+          context.getSourceNamesystem().getEffectiveLayoutVersion();
 
       underlyingOutputStream = new DigestOutputStream(new BufferedOutputStream(
           fout), digester);
@@ -482,10 +872,22 @@ public final class FSImageFormatProtobuf {
       // depends on this behavior.
       context.checkCancelled();
 
-      Step step = new Step(StepType.INODES, filePath);
+      Step step;
+
+      // Erasure coding policies should be saved before inodes
+      if (NameNodeLayoutVersion.supports(
+          NameNodeLayoutVersion.Feature.ERASURE_CODING, layoutVersion)) {
+        step = new Step(StepType.ERASURE_CODING_POLICIES, filePath);
+        prog.beginStep(Phase.SAVING_CHECKPOINT, step);
+        saveErasureCodingSection(b);
+        prog.endStep(Phase.SAVING_CHECKPOINT, step);
+      }
+
+      step = new Step(StepType.INODES, filePath);
       prog.beginStep(Phase.SAVING_CHECKPOINT, step);
-      saveInodes(b);
-      saveSnapshots(b);
+      // Count number of non-fatal errors when saving inodes and snapshots.
+      long numErrors = saveInodes(b);
+      numErrors += saveSnapshots(b);
       prog.endStep(Phase.SAVING_CHECKPOINT, step);
 
       step = new Step(StepType.DELEGATION_TOKENS, filePath);
@@ -508,6 +910,7 @@ public final class FSImageFormatProtobuf {
       saveFileSummary(underlyingOutputStream, summary);
       underlyingOutputStream.close();
       savedDigest = new MD5Hash(digester.digest());
+      return numErrors;
     }
 
     private void saveSecretManagerSection(FileSummary.Builder summary)
@@ -540,16 +943,34 @@ public final class FSImageFormatProtobuf {
       commitSection(summary, SectionName.CACHE_MANAGER);
     }
 
+    private void saveErasureCodingSection(
+        FileSummary.Builder summary) throws IOException {
+      final FSNamesystem fsn = context.getSourceNamesystem();
+      ErasureCodingPolicyInfo[] ecPolicies =
+          fsn.getErasureCodingPolicyManager().getPersistedPolicies();
+      ArrayList<ErasureCodingPolicyProto> ecPolicyProtoes =
+          new ArrayList<ErasureCodingPolicyProto>();
+      for (ErasureCodingPolicyInfo p : ecPolicies) {
+        ecPolicyProtoes.add(PBHelperClient.convertErasureCodingPolicy(p));
+      }
+
+      ErasureCodingSection section = ErasureCodingSection.newBuilder().
+          addAllPolicies(ecPolicyProtoes).build();
+      section.writeDelimitedTo(sectionOutputStream);
+      commitSection(summary, SectionName.ERASURE_CODING);
+    }
+
     private void saveNameSystemSection(FileSummary.Builder summary)
         throws IOException {
       final FSNamesystem fsn = context.getSourceNamesystem();
       OutputStream out = sectionOutputStream;
-      BlockIdManager blockIdManager = fsn.getBlockIdManager();
+      BlockIdManager blockIdManager = fsn.getBlockManager().getBlockIdManager();
       NameSystemSection.Builder b = NameSystemSection.newBuilder()
-          .setGenstampV1(blockIdManager.getGenerationStampV1())
-          .setGenstampV1Limit(blockIdManager.getGenerationStampV1Limit())
-          .setGenstampV2(blockIdManager.getGenerationStampV2())
-          .setLastAllocatedBlockId(blockIdManager.getLastAllocatedBlockId())
+          .setGenstampV1(blockIdManager.getLegacyGenerationStamp())
+          .setGenstampV1Limit(blockIdManager.getLegacyGenerationStampLimit())
+          .setGenstampV2(blockIdManager.getGenerationStamp())
+          .setLastAllocatedBlockId(blockIdManager.getLastAllocatedContiguousBlockId())
+          .setLastAllocatedStripedBlockId(blockIdManager.getLastAllocatedStripedBlockId())
           .setTransactionId(context.getTxId());
 
       // We use the non-locked version of getNamespaceInfo here since
@@ -570,12 +991,16 @@ public final class FSImageFormatProtobuf {
     private void saveStringTableSection(FileSummary.Builder summary)
         throws IOException {
       OutputStream out = sectionOutputStream;
+
+      SerialNumberManager.StringTable stringTable =
+          SerialNumberManager.getStringTable();
       StringTableSection.Builder b = StringTableSection.newBuilder()
-          .setNumEntry(saverContext.stringMap.size());
+          .setNumEntry(stringTable.size())
+          .setMaskBits(stringTable.getMaskBits());
       b.build().writeDelimitedTo(out);
-      for (Entry<String, Integer> e : saverContext.stringMap.entrySet()) {
+      for (Entry<Integer, String> e : stringTable) {
         StringTableSection.Entry.Builder eb = StringTableSection.Entry
-            .newBuilder().setId(e.getValue()).setStr(e.getKey());
+            .newBuilder().setId(e.getKey()).setStr(e.getValue());
         eb.build().writeDelimitedTo(out);
       }
       commitSection(summary, SectionName.STRING_TABLE);
@@ -590,12 +1015,17 @@ public final class FSImageFormatProtobuf {
     NS_INFO("NS_INFO"),
     STRING_TABLE("STRING_TABLE"),
     EXTENDED_ACL("EXTENDED_ACL"),
+    ERASURE_CODING("ERASURE_CODING"),
     INODE("INODE"),
+    INODE_SUB("INODE_SUB"),
     INODE_REFERENCE("INODE_REFERENCE"),
+    INODE_REFERENCE_SUB("INODE_REFERENCE_SUB"),
     SNAPSHOT("SNAPSHOT"),
     INODE_DIR("INODE_DIR"),
+    INODE_DIR_SUB("INODE_DIR_SUB"),
     FILES_UNDERCONSTRUCTION("FILES_UNDERCONSTRUCTION"),
     SNAPSHOT_DIFF("SNAPSHOT_DIFF"),
+    SNAPSHOT_DIFF_SUB("SNAPSHOT_DIFF_SUB"),
     SECRET_MANAGER("SECRET_MANAGER"),
     CACHE_MANAGER("CACHE_MANAGER");
 
@@ -616,8 +1046,9 @@ public final class FSImageFormatProtobuf {
     }
   }
 
-  private static int getOndiskTrunkSize(com.google.protobuf.GeneratedMessage s) {
-    return CodedOutputStream.computeRawVarint32Size(s.getSerializedSize())
+  private static int getOndiskTrunkSize(
+      org.apache.hadoop.thirdparty.protobuf.GeneratedMessageV3 s) {
+    return CodedOutputStream.computeUInt32SizeNoTag(s.getSerializedSize())
         + s.getSerializedSize();
   }
 

@@ -21,11 +21,6 @@ package org.apache.hadoop.mapred;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.URI;
-
-import junit.framework.TestCase;
-
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -34,16 +29,20 @@ import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapred.lib.IdentityMapper;
 import org.apache.hadoop.mapred.lib.IdentityReducer;
-import org.apache.hadoop.mapreduce.MRConfig;
-import org.apache.hadoop.mapreduce.server.jobtracker.JTConfig;
 import org.apache.hadoop.util.Progressable;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * A JUnit test to test that jobs' output filenames are not HTML-encoded (cf HADOOP-1795).
  */
-public class TestSpecialCharactersInOutputPath extends TestCase {
-  private static final Log LOG =
-    LogFactory.getLog(TestSpecialCharactersInOutputPath.class.getName());
+public class TestSpecialCharactersInOutputPath {
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestSpecialCharactersInOutputPath.class);
   
   private static final String OUTPUT_FILENAME = "result[0]";
   
@@ -86,7 +85,8 @@ public class TestSpecialCharactersInOutputPath extends TestCase {
     try {
       assertTrue(runningJob.isComplete());
       assertTrue(runningJob.isSuccessful());
-      assertTrue("Output folder not found!", fs.exists(new Path("/testing/output/" + OUTPUT_FILENAME)));
+      assertTrue(fs.exists(new Path("/testing/output/" + OUTPUT_FILENAME)),
+          "Output folder not found!");
     } catch (NullPointerException npe) {
       // This NPE should no more happens
       fail("A NPE should not have happened.");
@@ -96,7 +96,8 @@ public class TestSpecialCharactersInOutputPath extends TestCase {
     LOG.info("job is complete: " + runningJob.isSuccessful());
     return (runningJob.isSuccessful());
   }
-  
+
+  @Test
   public void testJobWithDFS() throws IOException {
     String namenode = null;
     MiniDFSCluster dfs = null;

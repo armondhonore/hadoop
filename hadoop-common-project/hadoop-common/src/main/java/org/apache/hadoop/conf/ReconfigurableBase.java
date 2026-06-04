@@ -18,18 +18,20 @@
 
 package org.apache.hadoop.conf;
 
-import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Optional;
-import com.google.common.base.Preconditions;
-import com.google.common.collect.Maps;
-import org.apache.commons.logging.*;
+import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.util.Preconditions;
+import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
 import org.apache.hadoop.util.Time;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 import org.apache.hadoop.conf.ReconfigurationUtil.PropertyChange;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Map;
+import java.util.Optional;
 
 /**
  * Utility base class for implementing the Reconfigurable interface.
@@ -41,8 +43,8 @@ import java.util.Map;
 public abstract class ReconfigurableBase 
   extends Configured implements Reconfigurable {
   
-  private static final Log LOG =
-    LogFactory.getLog(ReconfigurableBase.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(ReconfigurableBase.class);
   // Use for testing purpose.
   private ReconfigurationUtil reconfigurationUtil = new ReconfigurationUtil();
 
@@ -78,6 +80,7 @@ public abstract class ReconfigurableBase
   /**
    * Construct a ReconfigurableBase with the {@link Configuration}
    * conf.
+   * @param conf configuration.
    */
   public ReconfigurableBase(Configuration conf) {
     super((conf == null) ? new Configuration() : conf);
@@ -90,6 +93,7 @@ public abstract class ReconfigurableBase
 
   /**
    * Create a new configuration.
+   * @return configuration.
    */
   protected abstract Configuration getNewConf();
 
@@ -102,51 +106,67 @@ public abstract class ReconfigurableBase
   /**
    * A background thread to apply configuration changes.
    */
-  private static class ReconfigurationThread extends Thread {
+  private static class ReconfigurationThread extends SubjectInheritingThread {
     private ReconfigurableBase parent;
 
     ReconfigurationThread(ReconfigurableBase base) {
+      super();
       this.parent = base;
     }
 
     // See {@link ReconfigurationServlet#applyChanges}
-    public void run() {
+    public void work() {
       LOG.info("Starting reconfiguration task.");
-      Configuration oldConf = this.parent.getConf();
-      Configuration newConf = this.parent.getNewConf();
-      Collection<PropertyChange> changes =
-          this.parent.getChangedProperties(newConf, oldConf);
+      final Configuration oldConf = parent.getConf();
+      final Configuration newConf = parent.getNewConf();
+      final Collection<PropertyChange> changes =
+          parent.getChangedProperties(newConf, oldConf);
       Map<PropertyChange, Optional<String>> results = Maps.newHashMap();
+      ConfigRedactor oldRedactor = new ConfigRedactor(oldConf);
+      ConfigRedactor newRedactor = new ConfigRedactor(newConf);
       for (PropertyChange change : changes) {
         String errorMessage = null;
-        if (!this.parent.isPropertyReconfigurable(change.prop)) {
+        String oldValRedacted = oldRedactor.redact(change.prop, change.oldVal);
+        String newValRedacted = newRedactor.redact(change.prop, change.newVal);
+        if (!parent.isPropertyReconfigurable(change.prop)) {
           LOG.info(String.format(
               "Property %s is not configurable: old value: %s, new value: %s",
-              change.prop, change.oldVal, change.newVal));
+              change.prop,
+              oldValRedacted,
+              newValRedacted));
           continue;
         }
         LOG.info("Change property: " + change.prop + " from \""
-            + ((change.oldVal == null) ? "<default>" : change.oldVal)
-            + "\" to \"" + ((change.newVal == null) ? "<default>" : change.newVal)
+            + ((change.oldVal == null) ? "<default>" : oldValRedacted)
+            + "\" to \""
+            + ((change.newVal == null) ? "<default>" : newValRedacted)
             + "\".");
         try {
-          this.parent.reconfigurePropertyImpl(change.prop, change.newVal);
+          String effectiveValue =
+              parent.reconfigurePropertyImpl(change.prop, change.newVal);
+          if (change.newVal != null) {
+            oldConf.set(change.prop, effectiveValue);
+          } else {
+            oldConf.unset(change.prop);
+          }
         } catch (ReconfigurationException e) {
-          errorMessage = e.getCause().getMessage();
+          Throwable cause = e.getCause();
+          errorMessage = cause == null ? e.getMessage() : cause.getMessage();
         }
-        results.put(change, Optional.fromNullable(errorMessage));
+        results.put(change, Optional.ofNullable(errorMessage));
       }
 
-      synchronized (this.parent.reconfigLock) {
-        this.parent.endTime = Time.now();
-        this.parent.status = Collections.unmodifiableMap(results);
-        this.parent.reconfigThread = null;
+      synchronized (parent.reconfigLock) {
+        parent.endTime = Time.now();
+        parent.status = Collections.unmodifiableMap(results);
+        parent.reconfigThread = null;
       }
     }
   }
 
   /**
    * Start a reconfiguration task to reload configuration in background.
+   * @throws IOException raised on errors performing I/O.
    */
   public void startReconfigurationTask() throws IOException {
     synchronized (reconfigLock) {
@@ -200,24 +220,22 @@ public abstract class ReconfigurableBase
    * This method makes the change to this objects {@link Configuration}
    * and calls reconfigurePropertyImpl to update internal data structures.
    * This method cannot be overridden, subclasses should instead override
-   * reconfigureProperty.
+   * reconfigurePropertyImpl.
    */
   @Override
-  public final String reconfigureProperty(String property, String newVal) 
+  public final void reconfigureProperty(String property, String newVal)
     throws ReconfigurationException {
     if (isPropertyReconfigurable(property)) {
       LOG.info("changing property " + property + " to " + newVal);
-      String oldVal;
       synchronized(getConf()) {
-        oldVal = getConf().get(property);
-        reconfigurePropertyImpl(property, newVal);
+        getConf().get(property);
+        String effectiveValue = reconfigurePropertyImpl(property, newVal);
         if (newVal != null) {
-          getConf().set(property, newVal);
+          getConf().set(property, effectiveValue);
         } else {
           getConf().unset(property);
         }
       }
-      return oldVal;
     } else {
       throw new ReconfigurationException(property, newVal,
                                              getConf().get(property));
@@ -250,9 +268,16 @@ public abstract class ReconfigurableBase
    * all internal data structures derived from the configuration property
    * that is being changed. If this object owns other Reconfigurable objects
    * reconfigureProperty should be called recursively to make sure that
-   * to make sure that the configuration of these objects is updated.
+   * the configuration of these objects are updated.
+   *
+   * @param property Name of the property that is being reconfigured.
+   * @param newVal Proposed new value of the property.
+   * @return Effective new value of the property. This may be different from
+   *         newVal.
+   *
+   * @throws ReconfigurationException if there was an error applying newVal.
    */
-  protected abstract void reconfigurePropertyImpl(String property, String newVal) 
-    throws ReconfigurationException;
+  protected abstract String reconfigurePropertyImpl(
+      String property, String newVal) throws ReconfigurationException;
 
 }

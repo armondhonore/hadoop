@@ -24,7 +24,7 @@ import static org.apache.hadoop.yarn.webapp.view.JQueryUI.*;
 
 public class TasksPage extends AppView {
 
-  @Override protected void preHead(Page.HTML<_> html) {
+  @Override protected void preHead(Page.HTML<__> html) {
     commonPreHead(html);
     set(DATATABLES_ID, "tasks");
     set(initID(ACCORDION, "nav"), "{autoHeight:false, active:2}");
@@ -43,7 +43,7 @@ public class TasksPage extends AppView {
       .append(", bProcessing: true")
 
       .append("\n, aoColumnDefs: [\n")
-      .append("{'sType':'string', 'aTargets': [0]")
+      .append("{'sType':'natural', 'aTargets': [0]")
       .append(", 'mRender': parseHadoopID }")
 
       .append("\n, {'sType':'numeric', bSearchable:false, 'aTargets': [1]")

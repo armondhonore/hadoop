@@ -18,23 +18,32 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.policy;
 
-import java.util.*;
-
 import org.apache.hadoop.yarn.api.records.Priority;
 import org.apache.hadoop.yarn.api.records.Resource;
-import org.apache.hadoop.yarn.util.resource.Resources;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceUsage;
+import org.apache.hadoop.yarn.util.SystemClock;
 import org.apache.hadoop.yarn.nodelabels.CommonNodeLabelsManager;
 
 
 public class MockSchedulableEntity implements SchedulableEntity {
-  
+
   private String id;
   private long serial = 0;
   private Priority priority;
+  private boolean isRecovering;
+  private String partition = "";
+  private long startTime;
 
   public MockSchedulableEntity() { }
   
+  public MockSchedulableEntity(long serial, int priority,
+      boolean isRecovering) {
+    this.serial = serial;
+    this.priority = Priority.newInstance(priority);
+    this.isRecovering = isRecovering;
+    this.startTime = SystemClock.getInstance().getTime();
+  }
+
   public void setId(String id) {
     this.id = id;
   }
@@ -83,5 +92,32 @@ public class MockSchedulableEntity implements SchedulableEntity {
 
   public void setApplicationPriority(Priority priority) {
     this.priority = priority;
+  }
+
+  @Override
+  public boolean isRecovering() {
+    return isRecovering;
+  }
+
+  protected void setRecovering(boolean entityRecovering) {
+    this.isRecovering = entityRecovering;
+  }
+
+  @Override
+  public String getPartition() {
+    return partition;
+  }
+
+  public void setPartition(String partition) {
+    this.partition = partition;
+  }
+
+  @Override
+  public long getStartTime() {
+    return this.startTime;
+  }
+
+  public void setStartTime(long startTime) {
+    this.startTime = startTime;
   }
 }

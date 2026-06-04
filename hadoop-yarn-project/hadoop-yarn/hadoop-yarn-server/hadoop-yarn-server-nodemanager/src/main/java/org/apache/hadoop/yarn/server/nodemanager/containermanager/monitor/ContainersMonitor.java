@@ -19,11 +19,55 @@
 package org.apache.hadoop.yarn.server.nodemanager.containermanager.monitor;
 
 import org.apache.hadoop.service.Service;
-import org.apache.hadoop.yarn.server.api.records.ResourceUtilization;
+import org.apache.hadoop.yarn.api.records.Resource;
+import org.apache.hadoop.yarn.api.records.ResourceUtilization;
 import org.apache.hadoop.yarn.event.EventHandler;
 import org.apache.hadoop.yarn.server.nodemanager.ResourceView;
 
 public interface ContainersMonitor extends Service,
     EventHandler<ContainersMonitorEvent>, ResourceView {
-  public ResourceUtilization getContainersUtilization();
+  ResourceUtilization getContainersUtilization();
+
+  float getVmemRatio();
+
+  void subtractNodeResourcesFromResourceUtilization(
+      ResourceUtilization resourceUtil);
+
+  /**
+   * Utility method to add a {@link Resource} to the
+   * {@link ResourceUtilization}.
+   * @param containersMonitor Containers Monitor.
+   * @param resourceUtil Resource Utilization.
+   * @param resource Resource.
+   */
+  static void increaseResourceUtilization(
+      ContainersMonitor containersMonitor, ResourceUtilization resourceUtil,
+      Resource resource) {
+    float vCores = (float) resource.getVirtualCores();
+    int vmem = (int) (resource.getMemorySize()
+        * containersMonitor.getVmemRatio());
+    resourceUtil.addTo((int)resource.getMemorySize(), vmem, vCores);
+  }
+
+  /**
+   * Utility method to subtract a {@link Resource} from the
+   * {@link ResourceUtilization}.
+   * @param containersMonitor Containers Monitor.
+   * @param resourceUtil Resource Utilization.
+   * @param resource Resource.
+   */
+  static void decreaseResourceUtilization(
+      ContainersMonitor containersMonitor, ResourceUtilization resourceUtil,
+      Resource resource) {
+    float vCores = (float) resource.getVirtualCores();
+    int vmem = (int) (resource.getMemorySize()
+        * containersMonitor.getVmemRatio());
+    resourceUtil.subtractFrom((int)resource.getMemorySize(), vmem, vCores);
+  }
+
+  /**
+   * Set the allocated resources for containers.
+   * @param resource Resources allocated for the containers.
+   */
+  void setAllocatedResourcesForContainers(Resource resource);
 }

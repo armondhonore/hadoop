@@ -45,19 +45,20 @@ public class FairSchedulerInfo extends SchedulerInfo {
     scheduler = fs;
     rootQueue = new FairSchedulerQueueInfo(scheduler.getQueueManager().
         getRootQueue(), scheduler);
+    schedulerName = "Fair Scheduler";
   }
 
   /**
    * Get the fair share assigned to the appAttemptId.
-   * @param appAttemptId
+   * @param appAttemptId the application attempt id
    * @return The fair share assigned to the appAttemptId,
    * <code>FairSchedulerInfo#INVALID_FAIR_SHARE</code> if the scheduler does
    * not know about this application attempt.
    */
-  public int getAppFairShare(ApplicationAttemptId appAttemptId) {
+  public long getAppFairShare(ApplicationAttemptId appAttemptId) {
     FSAppAttempt fsAppAttempt = scheduler.getSchedulerApp(appAttemptId);
     return fsAppAttempt == null ?
-        INVALID_FAIR_SHARE :  fsAppAttempt.getFairShare().getMemory();
+        INVALID_FAIR_SHARE :  fsAppAttempt.getFairShare().getMemorySize();
   }
   
   public FairSchedulerQueueInfo getRootQueueInfo() {

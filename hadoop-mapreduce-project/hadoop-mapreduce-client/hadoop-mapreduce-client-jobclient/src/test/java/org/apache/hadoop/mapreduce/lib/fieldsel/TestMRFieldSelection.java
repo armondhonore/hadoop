@@ -18,15 +18,19 @@
 package org.apache.hadoop.mapreduce.lib.fieldsel;
 
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.*;
-import org.apache.hadoop.io.*;
+import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.MapReduceTestUtil;
+import org.junit.jupiter.api.Test;
 
-import junit.framework.TestCase;
 import java.text.NumberFormat;
 
-public class TestMRFieldSelection extends TestCase {
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+public class TestMRFieldSelection {
 
 private static NumberFormat idFormat = NumberFormat.getInstance();
   static {
@@ -34,6 +38,7 @@ private static NumberFormat idFormat = NumberFormat.getInstance();
     idFormat.setGroupingUsed(false);
   }
 
+  @Test
   public void testFieldSelection() throws Exception {
     launch();
   }
@@ -52,7 +57,7 @@ private static NumberFormat idFormat = NumberFormat.getInstance();
     StringBuffer expectedOutput = new StringBuffer();
     constructInputOutputData(inputData, expectedOutput, numOfInputLines);
     
-    conf.set(FieldSelectionHelper.DATA_FIELD_SEPERATOR, "-");
+    conf.set(FieldSelectionHelper.DATA_FIELD_SEPARATOR, "-");
     conf.set(FieldSelectionHelper.MAP_OUTPUT_KEY_VALUE_SPEC, "6,5,1-3:0-");
     conf.set(
       FieldSelectionHelper.REDUCE_OUTPUT_KEY_VALUE_SPEC, ":4,3,2,1,0,0-");
@@ -65,7 +70,7 @@ private static NumberFormat idFormat = NumberFormat.getInstance();
     job.setNumReduceTasks(1);
 
     job.waitForCompletion(true);
-    assertTrue("Job Failed!", job.isSuccessful());
+    assertTrue(job.isSuccessful(), "Job Failed!");
 
     //
     // Finally, we compare the reconstructed answer key with the
@@ -73,7 +78,7 @@ private static NumberFormat idFormat = NumberFormat.getInstance();
     // in the original key.
     //
     String outdata = MapReduceTestUtil.readOutput(outDir, conf);
-    assertEquals("Outputs doesnt match.",expectedOutput.toString(), outdata);
+    assertEquals(expectedOutput.toString(), outdata, "Outputs doesnt match.");
     fs.delete(outDir, true);
   }
 
@@ -113,12 +118,5 @@ private static NumberFormat idFormat = NumberFormat.getInstance();
     System.out.println(inputData.toString());
     System.out.println("ExpectedData:");
     System.out.println(expectedOutput.toString());
-  }
-  
-  /**
-   * Launches all the tasks in order.
-   */
-  public static void main(String[] argv) throws Exception {
-    launch();
   }
 }

@@ -1,5 +1,3 @@
-package org.apache.hadoop.security.authentication.util;
-
 /**
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
@@ -18,6 +16,9 @@ package org.apache.hadoop.security.authentication.util;
  * limitations under the License.
  */
 
+package org.apache.hadoop.security.authentication.util;
+
+
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
@@ -25,6 +26,7 @@ import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.slf4j.Logger;
@@ -42,6 +44,19 @@ import org.slf4j.LoggerFactory;
 public class KerberosName {
   private static final Logger LOG = LoggerFactory.getLogger(KerberosName.class);
 
+  /**
+   * Constant that defines auth_to_local legacy hadoop evaluation
+   */
+  public static final String MECHANISM_HADOOP = "hadoop";
+
+  /**
+   * Constant that defines auth_to_local MIT evaluation
+   */
+  public static final String MECHANISM_MIT = "mit";
+
+  /** Constant that defines the default behavior of the rule mechanism */
+  public static final String DEFAULT_MECHANISM = MECHANISM_HADOOP;
+
   /** The first component of the name */
   private final String serviceName;
   /** The second component of the name. It may be null. */
@@ -53,7 +68,7 @@ public class KerberosName {
    * A pattern that matches a Kerberos name with at most 2 components.
    */
   private static final Pattern nameParser =
-    Pattern.compile("([^/@]*)(/([^/@]*))?@([^/@]*)");
+      Pattern.compile("([^/@]+)(/([^/@]+))?(@([^/@]+))?");
 
   /**
    * A pattern that matches a string with out '$' and then a single
@@ -79,14 +94,20 @@ public class KerberosName {
    */
   private static List<Rule> rules;
 
-  private static String defaultRealm;
+  /**
+   * How to evaluate auth_to_local rules
+   */
+  private static String ruleMechanism = null;
 
-  static {
+  private static String defaultRealm = null;
+
+  @VisibleForTesting
+  public static void resetDefaultRealm() {
     try {
       defaultRealm = KerberosUtil.getDefaultRealm();
     } catch (Exception ke) {
-        LOG.debug("Kerberos krb5 configuration not found, setting default realm to empty");
-        defaultRealm="";
+      LOG.debug("resetting default realm failed, "
+          + "current default realm will still be used.", ke);
     }
   }
 
@@ -107,15 +128,24 @@ public class KerberosName {
     } else {
       serviceName = match.group(1);
       hostName = match.group(3);
-      realm = match.group(4);
+      realm = match.group(5);
     }
   }
 
   /**
    * Get the configured default realm.
+   * Used syncronized method here, because double-check locking is overhead.
    * @return the default realm from the krb5.conf
    */
-  public String getDefaultRealm() {
+  public static synchronized String getDefaultRealm() {
+    if (defaultRealm == null) {
+      try {
+        defaultRealm = KerberosUtil.getDefaultRealm();
+      } catch (Exception ke) {
+        LOG.debug("Kerberos krb5 configuration not found, setting default realm to empty");
+        defaultRealm = "";
+      }
+    }
     return defaultRealm;
   }
 
@@ -251,7 +281,7 @@ public class KerberosName {
         if (paramNum != null) {
           try {
             int num = Integer.parseInt(paramNum);
-            if (num < 0 || num > params.length) {
+            if (num < 0 || num >= params.length) {
               throw new BadFormatString("index " + num + " from " + format +
                                         " is outside of the valid range 0 to " +
                                         (params.length - 1));
@@ -292,13 +322,14 @@ public class KerberosName {
      * array.
      * @param params first element is the realm, second and later elements are
      *        are the components of the name "a/b@FOO" -> {"FOO", "a", "b"}
+     * @param ruleMechanism defines the rule evaluation mechanism
      * @return the short name if this rule applies or null
      * @throws IOException throws if something is wrong with the rules
      */
-    String apply(String[] params) throws IOException {
+    String apply(String[] params, String ruleMechanism) throws IOException {
       String result = null;
       if (isDefault) {
-        if (defaultRealm.equals(params[0])) {
+        if (getDefaultRealm().equals(params[0])) {
           result = params[1];
         }
       } else if (params.length - 1 == numOfComponents) {
@@ -311,7 +342,9 @@ public class KerberosName {
           }
         }
       }
-      if (result != null && nonSimplePattern.matcher(result).find()) {
+      if (result != null
+              && nonSimplePattern.matcher(result).find()
+              && ruleMechanism.equalsIgnoreCase(MECHANISM_HADOOP)) {
         throw new NoMatchingRule("Non-simple name " + result +
                                  " after auth_to_local rule " + this);
       }
@@ -380,21 +413,22 @@ public class KerberosName {
     } else {
       params = new String[]{realm, serviceName, hostName};
     }
+    String ruleMechanism = this.ruleMechanism;
+    if (ruleMechanism == null && rules != null) {
+      LOG.warn("auth_to_local rule mechanism not set."
+      + "Using default of " + DEFAULT_MECHANISM);
+      ruleMechanism = DEFAULT_MECHANISM;
+    }
     for(Rule r: rules) {
-      String result = r.apply(params);
+      String result = r.apply(params, ruleMechanism);
       if (result != null) {
         return result;
       }
     }
-    throw new NoMatchingRule("No rules applied to " + toString());
-  }
-
-  /**
-   * Set the rules.
-   * @param ruleString the rules string.
-   */
-  public static void setRules(String ruleString) {
-    rules = (ruleString != null) ? parseRules(ruleString) : null;
+    if (ruleMechanism.equalsIgnoreCase(MECHANISM_HADOOP)) {
+      throw new NoMatchingRule("No rules applied to " + toString());
+    }
+    return toString();
   }
 
   /**
@@ -412,16 +446,57 @@ public class KerberosName {
     }
     return ruleString;
   }
-  
+
   /**
    * Indicates if the name rules have been set.
-   * 
+   *
    * @return if the name rules have been set.
    */
   public static boolean hasRulesBeenSet() {
     return rules != null;
   }
-  
+
+  /**
+   * Indicates of the rule mechanism has been set
+   *
+   * @return if the rule mechanism has been set.
+   */
+  public static boolean hasRuleMechanismBeenSet() {
+    return ruleMechanism != null;
+  }
+
+  /**
+   * Set the rules.
+   * @param ruleString the rules string.
+   */
+  public static void setRules(String ruleString) {
+    rules = (ruleString != null) ? parseRules(ruleString) : null;
+  }
+
+  /**
+   *
+   * @param ruleMech the evaluation type: hadoop, mit
+   *                 'hadoop' indicates '@' or '/' are not allowed the result
+   *                 evaluation. 'MIT' indicates that auth_to_local
+   *                 rules follow MIT Kerberos evaluation.
+   */
+  public static void setRuleMechanism(String ruleMech) {
+    if (ruleMech != null
+            && (!ruleMech.equalsIgnoreCase(MECHANISM_HADOOP)
+            && !ruleMech.equalsIgnoreCase(MECHANISM_MIT))) {
+      throw new IllegalArgumentException("Invalid rule mechanism: " + ruleMech);
+    }
+    ruleMechanism = ruleMech;
+  }
+
+  /**
+   * Get the rule evaluation mechanism
+   * @return the rule evaluation mechanism
+   */
+  public static String getRuleMechanism() {
+    return ruleMechanism;
+  }
+
   static void printRules() throws IOException {
     int i = 0;
     for(Rule r: rules) {

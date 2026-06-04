@@ -18,9 +18,9 @@
 
 package org.apache.hadoop.io;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import java.io.IOException;
 
@@ -35,18 +35,19 @@ import org.apache.hadoop.io.compress.DefaultCodec;
 import org.apache.hadoop.io.compress.GzipCodec;
 import org.apache.hadoop.io.serializer.JavaSerializationComparator;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 public class TestSequenceFileAppend {
 
   private static Configuration conf;
   private static FileSystem fs;
-  private static Path ROOT_PATH = new Path(System.getProperty(
-      "test.build.data", "build/test/data"));
+  private static Path ROOT_PATH =
+      new Path(GenericTestUtils.getTestDir().getAbsolutePath());
 
-  @BeforeClass
+  @BeforeAll
   public static void setUp() throws Exception {
     conf = new Configuration();
     conf.set("io.serializations",
@@ -55,12 +56,13 @@ public class TestSequenceFileAppend {
     fs = FileSystem.get(conf);
   }
 
-  @AfterClass
+  @AfterAll
   public static void tearDown() throws Exception {
     fs.close();
   }
 
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testAppend() throws Exception {
 
     Path file = new Path(ROOT_PATH, "testseqappend.seq");
@@ -139,7 +141,8 @@ public class TestSequenceFileAppend {
     fs.deleteOnExit(file);
   }
 
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testAppendRecordCompression() throws Exception {
     GenericTestUtils.assumeInNativeProfile();
 
@@ -173,7 +176,8 @@ public class TestSequenceFileAppend {
     fs.deleteOnExit(file);
   }
 
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
   public void testAppendBlockCompression() throws Exception {
     GenericTestUtils.assumeInNativeProfile();
 
@@ -248,7 +252,76 @@ public class TestSequenceFileAppend {
     fs.deleteOnExit(file);
   }
 
-  @Test(timeout = 30000)
+  @Test
+  @Timeout(value = 30)
+  public void testAppendNoneCompression() throws Exception {
+    Path file = new Path(ROOT_PATH, "testseqappendnonecompr.seq");
+    fs.delete(file, true);
+
+    Option compressOption = Writer.compression(CompressionType.NONE);
+    Writer writer =
+        SequenceFile.createWriter(conf, SequenceFile.Writer.file(file),
+            SequenceFile.Writer.keyClass(Long.class),
+            SequenceFile.Writer.valueClass(String.class), compressOption);
+
+    writer.append(1L, "one");
+    writer.append(2L, "two");
+    writer.close();
+
+    verify2Values(file);
+
+    writer = SequenceFile.createWriter(conf, SequenceFile.Writer.file(file),
+        SequenceFile.Writer.keyClass(Long.class),
+        SequenceFile.Writer.valueClass(String.class),
+        SequenceFile.Writer.appendIfExists(true), compressOption);
+
+    writer.append(3L, "three");
+    writer.append(4L, "four");
+    writer.close();
+
+    verifyAll4Values(file);
+
+    // Verify failure if the compression details are different or not Provided
+    try {
+      writer = SequenceFile.createWriter(conf, SequenceFile.Writer.file(file),
+          SequenceFile.Writer.keyClass(Long.class),
+          SequenceFile.Writer.valueClass(String.class),
+          SequenceFile.Writer.appendIfExists(true));
+      writer.close();
+      fail("Expected IllegalArgumentException for compression options");
+    } catch (IllegalArgumentException iae) {
+      // Expected exception. Ignore it
+    }
+
+    // Verify failure if the compression details are different
+    try {
+      Option wrongCompressOption =
+          Writer.compression(CompressionType.RECORD, new GzipCodec());
+
+      writer = SequenceFile.createWriter(conf, SequenceFile.Writer.file(file),
+          SequenceFile.Writer.keyClass(Long.class),
+          SequenceFile.Writer.valueClass(String.class),
+          SequenceFile.Writer.appendIfExists(true), wrongCompressOption);
+      writer.close();
+      fail("Expected IllegalArgumentException for compression options");
+    } catch (IllegalArgumentException iae) {
+      // Expected exception. Ignore it
+    }
+
+    // Codec should be ignored
+    Option noneWithCodec =
+        Writer.compression(CompressionType.NONE, new DefaultCodec());
+
+    writer = SequenceFile.createWriter(conf, SequenceFile.Writer.file(file),
+        SequenceFile.Writer.keyClass(Long.class),
+        SequenceFile.Writer.valueClass(String.class),
+        SequenceFile.Writer.appendIfExists(true), noneWithCodec);
+    writer.close();
+    fs.deleteOnExit(file);
+  }
+
+  @Test
+  @Timeout(value = 30)
   public void testAppendSort() throws Exception {
     GenericTestUtils.assumeInNativeProfile();
 

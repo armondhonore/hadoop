@@ -16,6 +16,7 @@
  * limitations under the License.
  */
 
+syntax = "proto2";
 option java_package = "org.apache.hadoop.mapreduce.v2.proto";
 option java_outer_classname = "MRProtos";
 option java_generic_services = true;
@@ -146,6 +147,8 @@ message JobReportProto {
   repeated AMInfoProto am_infos = 14;
   optional int64 submit_time = 15;
   optional bool is_uber = 16 [default = false];
+  optional hadoop.yarn.PriorityProto jobPriority = 17;
+  optional string historyFile = 18;
 }
 
 message AMInfoProto {

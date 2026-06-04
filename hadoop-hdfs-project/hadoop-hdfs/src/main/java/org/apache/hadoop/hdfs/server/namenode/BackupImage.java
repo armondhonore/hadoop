@@ -28,10 +28,11 @@ import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
 import org.apache.hadoop.hdfs.server.common.InconsistentFSStateException;
 import org.apache.hadoop.hdfs.server.common.Storage.StorageDirectory;
 import org.apache.hadoop.hdfs.server.common.Storage.StorageState;
+import org.apache.hadoop.hdfs.util.RwLockMode;
+import org.apache.hadoop.util.Lists;
 import org.apache.hadoop.util.StringUtils;
 
-import com.google.common.base.Preconditions;
-import com.google.common.collect.Lists;
+import org.apache.hadoop.util.Preconditions;
 
 /**
  * Extension of FSImage for the backup node.
@@ -55,7 +56,7 @@ public class BackupImage extends FSImage {
    *   stopApplyingOnNextRoll is true.
    */
   volatile BNState bnState;
-  static enum BNState {
+  enum BNState {
     /**
      * Edits from the NN should be dropped. On the next log roll,
      * transition to JOURNAL_ONLY state
@@ -81,6 +82,8 @@ public class BackupImage extends FSImage {
   private boolean stopApplyingEditsOnNextRoll = false;
   
   private FSNamesystem namesystem;
+
+  private int quotaInitThreads;
 
   /**
    * Construct a backup image.
@@ -198,7 +201,7 @@ public class BackupImage extends FSImage {
     assert backupInputStream.length() == 0 : "backup input stream is not empty";
     try {
       if (LOG.isTraceEnabled()) {
-        LOG.debug("data:" + StringUtils.byteToHexString(data));
+        LOG.trace("data:" + StringUtils.byteToHexString(data));
       }
 
       FSEditLogLoader logLoader =
@@ -216,9 +219,12 @@ public class BackupImage extends FSImage {
       }
       lastAppliedTxId = logLoader.getLastAppliedTxId();
 
-      FSImage.updateCountForQuota(
-          getNamesystem().dir.getBlockStoragePolicySuite(),
-          getNamesystem().dir.rootDir); // inefficient!
+      getNamesystem().writeLock(RwLockMode.FS);
+      try {
+        getNamesystem().dir.updateCountForQuota();
+      } finally {
+        getNamesystem().writeUnlock(RwLockMode.FS, "applyEdits");
+      }
     } finally {
       backupInputStream.clear();
     }

@@ -17,9 +17,11 @@
  */
 package org.apache.hadoop.util;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import java.util.Collection;
+
 import org.apache.hadoop.classification.InterfaceAudience;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A {@link GSet} is set,
@@ -33,7 +35,7 @@ import org.apache.hadoop.classification.InterfaceAudience;
  */
 @InterfaceAudience.Private
 public interface GSet<K, E extends K> extends Iterable<E> {
-  static final Log LOG = LogFactory.getLog(GSet.class);
+  Logger LOG = LoggerFactory.getLogger(GSet.class);
 
   /**
    * @return The size of this set.
@@ -86,5 +88,17 @@ public interface GSet<K, E extends K> extends Iterable<E> {
   */
   E remove(K key);
 
+  /**
+   * Clear the set.
+   */
   void clear();
+
+  /**
+   * Returns a {@link Collection} view of the values contained in this set.
+   * The collection is backed by the set, so changes to the set are
+   * reflected in the collection, and vice-versa.
+   *
+   * @return the collection of values.
+   */
+  Collection<E> values();
 }

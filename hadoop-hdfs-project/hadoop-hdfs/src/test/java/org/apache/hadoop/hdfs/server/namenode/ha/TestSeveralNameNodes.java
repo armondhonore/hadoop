@@ -17,7 +17,7 @@
  */
 package org.apache.hadoop.hdfs.server.namenode.ha;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -25,26 +25,28 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
+import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.test.MultithreadedTestUtil.RepeatingTestThread;
 import org.apache.hadoop.test.MultithreadedTestUtil.TestContext;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 /**
  * Test that we can start several and run with namenodes on the same minicluster
  */
 public class TestSeveralNameNodes {
 
-  private static final Log LOG = LogFactory.getLog(TestSeveralNameNodes.class);
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestSeveralNameNodes.class);
 
   /** ms between failovers between NNs */
-  private static final int TIME_BETWEEN_FAILOVERS = 200;
+  private static final int TIME_BETWEEN_FAILOVERS = 1000;
   private static final int NUM_NAMENODES = 3;
   private static final int NUM_THREADS = 3;
   private static final int LIST_LENGTH = 50;
@@ -57,6 +59,8 @@ public class TestSeveralNameNodes {
     // setup the harness
     harness.setNumberOfNameNodes(NUM_NAMENODES);
     harness.addFailoverThread(TIME_BETWEEN_FAILOVERS);
+    harness.conf.setInt(HdfsClientConfigKeys.Failover.SLEEPTIME_MAX_KEY, 1000);
+    harness.conf.setInt(HdfsClientConfigKeys.Failover.MAX_ATTEMPTS_KEY, 128);
 
     final MiniDFSCluster cluster = harness.startCluster();
     try {
@@ -78,19 +82,18 @@ public class TestSeveralNameNodes {
 
       // wait for all the writer threads to finish, or that we exceed the time
       long start = System.currentTimeMillis();
-      while ((System.currentTimeMillis() - start) < RUNTIME) {
+      while ((System.currentTimeMillis() - start) < RUNTIME &&
+          writers.size() > 0) {
         for (int i = 0; i < writers.size(); i++) {
           CircularWriter writer = writers.get(i);
           // remove the writer from the ones to check
-          if (writer.done.await(10, TimeUnit.MILLISECONDS)) {
+          if (writer.done.await(100, TimeUnit.MILLISECONDS)) {
             writers.remove(i--);
           }
         }
       }
-      assertEquals(
-          "Some writers didn't complete in expected runtime! Current writer state:"
-              + writers, 0,
-          writers.size());
+      assertEquals(0, writers.size(),
+          "Some writers didn't complete in expected runtime! Current writer state:" + writers);
 
       harness.stopThreads();
     } finally {

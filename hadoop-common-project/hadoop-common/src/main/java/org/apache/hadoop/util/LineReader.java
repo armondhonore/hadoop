@@ -25,7 +25,12 @@ import java.io.InputStream;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.statistics.IOStatistics;
+import org.apache.hadoop.fs.statistics.IOStatisticsSource;
+import org.apache.hadoop.fs.statistics.IOStatisticsSupport;
 import org.apache.hadoop.io.Text;
+
+import static org.apache.hadoop.fs.CommonConfigurationKeysPublic.IO_FILE_BUFFER_SIZE_KEY;
 
 /**
  * A class that provides a line reader from an input stream.
@@ -40,7 +45,7 @@ import org.apache.hadoop.io.Text;
  */
 @InterfaceAudience.LimitedPrivate({"MapReduce"})
 @InterfaceStability.Unstable
-public class LineReader implements Closeable {
+public class LineReader implements Closeable, IOStatisticsSource {
   private static final int DEFAULT_BUFFER_SIZE = 64 * 1024;
   private int bufferSize = DEFAULT_BUFFER_SIZE;
   private InputStream in;
@@ -60,7 +65,6 @@ public class LineReader implements Closeable {
    * Create a line reader that reads from the given stream using the
    * default buffer-size (64k).
    * @param in The input stream
-   * @throws IOException
    */
   public LineReader(InputStream in) {
     this(in, DEFAULT_BUFFER_SIZE);
@@ -71,7 +75,6 @@ public class LineReader implements Closeable {
    * given buffer-size.
    * @param in The input stream
    * @param bufferSize Size of the read buffer
-   * @throws IOException
    */
   public LineReader(InputStream in, int bufferSize) {
     this.in = in;
@@ -86,10 +89,10 @@ public class LineReader implements Closeable {
    * <code>Configuration</code>.
    * @param in input stream
    * @param conf configuration
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    */
   public LineReader(InputStream in, Configuration conf) throws IOException {
-    this(in, conf.getInt("io.file.buffer.size", DEFAULT_BUFFER_SIZE));
+    this(in, conf.getInt(IO_FILE_BUFFER_SIZE_KEY, DEFAULT_BUFFER_SIZE));
   }
 
   /**
@@ -113,7 +116,6 @@ public class LineReader implements Closeable {
    * @param in The input stream
    * @param bufferSize Size of the read buffer
    * @param recordDelimiterBytes The delimiter
-   * @throws IOException
    */
   public LineReader(InputStream in, int bufferSize,
       byte[] recordDelimiterBytes) {
@@ -131,12 +133,12 @@ public class LineReader implements Closeable {
    * @param in input stream
    * @param conf configuration
    * @param recordDelimiterBytes The delimiter
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    */
   public LineReader(InputStream in, Configuration conf,
       byte[] recordDelimiterBytes) throws IOException {
     this.in = in;
-    this.bufferSize = conf.getInt("io.file.buffer.size", DEFAULT_BUFFER_SIZE);
+    this.bufferSize = conf.getInt(IO_FILE_BUFFER_SIZE_KEY, DEFAULT_BUFFER_SIZE);
     this.buffer = new byte[this.bufferSize];
     this.recordDelimiterBytes = recordDelimiterBytes;
   }
@@ -144,12 +146,21 @@ public class LineReader implements Closeable {
 
   /**
    * Close the underlying stream.
-   * @throws IOException
+   * @throws IOException raised on errors performing I/O.
    */
   public void close() throws IOException {
     in.close();
   }
-  
+
+  /**
+   * Return any IOStatistics provided by the source.
+   * @return IO stats from the input stream.
+   */
+  @Override
+  public IOStatistics getIOStatistics() {
+    return IOStatisticsSupport.retrieveIOStatistics(in);
+  }
+
   /**
    * Read one line from the InputStream into the given Text.
    *
@@ -303,7 +314,10 @@ public class LineReader implements Closeable {
         startPosn = bufferPosn = 0;
         bufferLength = fillBuffer(in, buffer, ambiguousByteCount > 0);
         if (bufferLength <= 0) {
-          str.append(recordDelimiterBytes, 0, ambiguousByteCount);
+          if (ambiguousByteCount > 0) {
+            str.append(recordDelimiterBytes, 0, ambiguousByteCount);
+            bytesConsumed += ambiguousByteCount;
+          }
           break; // EOF
         }
       }
@@ -315,7 +329,10 @@ public class LineReader implements Closeable {
             break;
           }
         } else if (delPosn != 0) {
-          bufferPosn--;
+          bufferPosn -= delPosn;
+          if(bufferPosn < -1) {
+            bufferPosn = -1;
+          }
           delPosn = 0;
         }
       }
@@ -325,13 +342,17 @@ public class LineReader implements Closeable {
       if (appendLength > maxLineLength - txtLength) {
         appendLength = maxLineLength - txtLength;
       }
+      bytesConsumed += ambiguousByteCount;
+      if (appendLength >= 0 && ambiguousByteCount > 0) {
+        //appending the ambiguous characters (refer case 2.2)
+        str.append(recordDelimiterBytes, 0, ambiguousByteCount);
+        ambiguousByteCount = 0;
+        // since it is now certain that the split did not split a delimiter we
+        // should not read the next record: clear the flag otherwise duplicate
+        // records could be generated
+        unsetNeedAdditionalRecordAfterSplit();
+      }
       if (appendLength > 0) {
-        if (ambiguousByteCount > 0) {
-          str.append(recordDelimiterBytes, 0, ambiguousByteCount);
-          //appending the ambiguous characters (refer case 2.2)
-          bytesConsumed += ambiguousByteCount;
-          ambiguousByteCount=0;
-        }
         str.append(buffer, startPosn, appendLength);
         txtLength += appendLength;
       }
@@ -376,5 +397,10 @@ public class LineReader implements Closeable {
 
   protected int getBufferSize() {
     return bufferSize;
+  }
+
+  protected void unsetNeedAdditionalRecordAfterSplit() {
+    // needed for custom multi byte line delimiters only
+    // see MAPREDUCE-6549 for details
   }
 }

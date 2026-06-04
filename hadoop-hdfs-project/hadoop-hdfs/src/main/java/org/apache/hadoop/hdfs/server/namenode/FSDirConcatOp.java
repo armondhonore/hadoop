@@ -17,15 +17,16 @@
  */
 package org.apache.hadoop.hdfs.server.namenode;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.util.Preconditions;
 
 import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.fs.permission.FsAction;
+import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.protocol.BlockStoragePolicy;
-import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
 import org.apache.hadoop.hdfs.protocol.QuotaExceededException;
 import org.apache.hadoop.hdfs.protocol.SnapshotException;
+import org.apache.hadoop.hdfs.server.namenode.FSDirectory.DirOp;
 
 import java.io.IOException;
 import java.util.Arrays;
@@ -47,21 +48,16 @@ import static org.apache.hadoop.util.Time.now;
  */
 class FSDirConcatOp {
 
-  static HdfsFileStatus concat(FSDirectory fsd, String target, String[] srcs,
-    boolean logRetryCache) throws IOException {
-    Preconditions.checkArgument(!target.isEmpty(), "Target file name is empty");
-    Preconditions.checkArgument(srcs != null && srcs.length > 0,
-      "No sources given");
+  static FileStatus concat(FSDirectory fsd, FSPermissionChecker pc,
+      String target, String[] srcs, boolean logRetryCache) throws IOException {
+    validatePath(target, srcs);
     assert srcs != null;
-    if (FSDirectory.LOG.isDebugEnabled()) {
-      FSDirectory.LOG.debug("concat {} to {}", Arrays.toString(srcs), target);
-    }
+    NameNode.stateChangeLog.debug("DIR* NameSystem.concat: {} to {}",
+        Arrays.toString(srcs), target);
 
-    final INodesInPath targetIIP = fsd.getINodesInPath4Write(target);
+    final INodesInPath targetIIP = fsd.resolvePath(pc, target, DirOp.WRITE);
     // write permission for the target
-    FSPermissionChecker pc = null;
     if (fsd.isPermissionEnabled()) {
-      pc = fsd.getPermissionChecker();
       fsd.checkPathAccess(pc, targetIIP, FsAction.WRITE);
     }
 
@@ -69,11 +65,6 @@ class FSDirConcatOp {
     verifyTargetFile(fsd, target, targetIIP);
     // check the srcs
     INodeFile[] srcFiles = verifySrcFiles(fsd, srcs, targetIIP, pc);
-
-    if(NameNode.stateChangeLog.isDebugEnabled()) {
-      NameNode.stateChangeLog.debug("DIR* NameSystem.concat: " +
-          Arrays.toString(srcs) + " to " + target);
-    }
 
     long timestamp = now();
     fsd.writeLock();
@@ -86,10 +77,29 @@ class FSDirConcatOp {
     return fsd.getAuditFileInfo(targetIIP);
   }
 
+  private static void validatePath(String target, String[] srcs)
+      throws IOException {
+    Preconditions.checkArgument(!target.isEmpty(), "Target file name is empty");
+    Preconditions.checkArgument(srcs != null && srcs.length > 0,
+        "No sources given");
+    if (FSDirectory.isReservedRawName(target)
+        || FSDirectory.isReservedInodesName(target)) {
+      throw new IOException("Concat operation doesn't support "
+          + FSDirectory.DOT_RESERVED_STRING + " relative path : " + target);
+    }
+    for (String srcPath : srcs) {
+      if (FSDirectory.isReservedRawName(srcPath)
+          || FSDirectory.isReservedInodesName(srcPath)) {
+        throw new IOException("Concat operation doesn't support "
+            + FSDirectory.DOT_RESERVED_STRING + " relative path : " + srcPath);
+      }
+    }
+  }
+
   private static void verifyTargetFile(FSDirectory fsd, final String target,
       final INodesInPath targetIIP) throws IOException {
     // check the target
-    if (fsd.getEZForPath(targetIIP) != null) {
+    if (FSDirEncryptionZoneOp.getEZForPath(fsd, targetIIP) != null) {
       throw new HadoopIllegalArgumentException(
           "concat can not be called for files in an encryption zone.");
     }
@@ -109,9 +119,9 @@ class FSDirConcatOp {
     final INodeDirectory targetParent = targetINode.getParent();
     // now check the srcs
     for(String src : srcs) {
-      final INodesInPath iip = fsd.getINodesInPath4Write(src);
+      final INodesInPath iip = fsd.resolvePath(pc, src, DirOp.WRITE);
       // permission check for srcs
-      if (pc != null) {
+      if (pc != null && fsd.isPermissionEnabled()) {
         fsd.checkPathAccess(pc, iip, FsAction.READ); // read the file
         fsd.checkParentAccess(pc, iip, FsAction.WRITE); // for delete
       }
@@ -135,7 +145,7 @@ class FSDirConcatOp {
             + " is referred by some other reference in some snapshot.");
       }
       // source file cannot be the same with the target file
-      if (srcINode == targetINode) {
+      if (srcINode.equals(targetINode)) {
         throw new HadoopIllegalArgumentException("concat: the src file " + src
             + " is the same with the target file " + targetIIP.getPath());
       }
@@ -144,6 +154,7 @@ class FSDirConcatOp {
         throw new HadoopIllegalArgumentException("concat: source file " + src
             + " is invalid or empty or underConstruction");
       }
+
       // source file's preferred block size cannot be greater than the target
       // file
       if (srcINodeFile.getPreferredBlockSize() >
@@ -152,6 +163,12 @@ class FSDirConcatOp {
             + " has preferred block size " + srcINodeFile.getPreferredBlockSize()
             + " which is greater than the target file's preferred block size "
             + targetINode.getPreferredBlockSize());
+      }
+      if(srcINodeFile.getErasureCodingPolicyID() !=
+          targetINode.getErasureCodingPolicyID()) {
+        throw new HadoopIllegalArgumentException("Source file " + src
+            + " and target file " + targetIIP.getPath()
+            + " have different erasure coding policy");
       }
       si.add(srcINodeFile);
     }
@@ -192,6 +209,7 @@ class FSDirConcatOp {
         }
       }
     }
+    deltas.addNameSpace(-srcList.length);
     return deltas;
   }
 
@@ -211,10 +229,8 @@ class FSDirConcatOp {
   static void unprotectedConcat(FSDirectory fsd, INodesInPath targetIIP,
       INodeFile[] srcList, long timestamp) throws IOException {
     assert fsd.hasWriteLock();
-    if (NameNode.stateChangeLog.isDebugEnabled()) {
-      NameNode.stateChangeLog.debug("DIR* FSNamesystem.concat to "
-          + targetIIP.getPath());
-    }
+    NameNode.stateChangeLog.debug("DIR* NameSystem.concat to {}",
+        targetIIP.getPath());
 
     final INodeFile trgInode = targetIIP.getLastINode().asFile();
     QuotaCounts deltas = computeQuotaDeltas(fsd, trgInode, srcList);
@@ -230,7 +246,9 @@ class FSDirConcatOp {
     for (INodeFile nodeToRemove : srcList) {
       if(nodeToRemove != null) {
         nodeToRemove.clearBlocks();
-        nodeToRemove.getParent().removeChild(nodeToRemove);
+        // Ensure the nodeToRemove is cleared from snapshot diff list
+        nodeToRemove.getParent().removeChild(nodeToRemove,
+            targetIIP.getLatestSnapshotId());
         fsd.getINodeMap().remove(nodeToRemove);
         count++;
       }

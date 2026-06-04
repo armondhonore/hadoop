@@ -18,21 +18,28 @@
 
 package org.apache.hadoop.util;
 
-import org.apache.hadoop.util.NativeCodeLoader;
+import org.apache.hadoop.io.erasurecode.ErasureCodeNative;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.crypto.OpensslCipher;
-import org.apache.hadoop.io.compress.Lz4Codec;
-import org.apache.hadoop.io.compress.SnappyCodec;
 import org.apache.hadoop.io.compress.bzip2.Bzip2Factory;
 import org.apache.hadoop.io.compress.zlib.ZlibFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
+import org.apache.hadoop.io.nativeio.NativeIO;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.io.IOException;
 
 @InterfaceAudience.Private
 @InterfaceStability.Unstable
 public class NativeLibraryChecker {
+  public static final Logger LOG =
+      LoggerFactory.getLogger(NativeLibraryChecker.class);
+
   /**
-   * A tool to test native library availability, 
+   * A tool to test native library availability.
+   * @param args args.
    */
   public static void main(String[] args) {
     String usage = "NativeLibraryChecker [-a|-h]\n"
@@ -58,9 +65,8 @@ public class NativeLibraryChecker {
     Configuration conf = new Configuration();
     boolean nativeHadoopLoaded = NativeCodeLoader.isNativeCodeLoaded();
     boolean zlibLoaded = false;
-    boolean snappyLoaded = false;
-    // lz4 is linked within libhadoop
-    boolean lz4Loaded = nativeHadoopLoaded;
+    boolean isalLoaded = false;
+    boolean pmdkLoaded = false;
     boolean bzip2Loaded = Bzip2Factory.isNativeBzip2Loaded(conf);
     boolean openSslLoaded = false;
     boolean winutilsExists = false;
@@ -68,8 +74,8 @@ public class NativeLibraryChecker {
     String openSslDetail = "";
     String hadoopLibraryName = "";
     String zlibLibraryName = "";
-    String snappyLibraryName = "";
-    String lz4LibraryName = "";
+    String isalDetail = "";
+    String pmdkDetail = "";
     String bzip2LibraryName = "";
     String winutilsPath = null;
 
@@ -79,47 +85,61 @@ public class NativeLibraryChecker {
       if (zlibLoaded) {
         zlibLibraryName = ZlibFactory.getLibraryName();
       }
-      snappyLoaded = NativeCodeLoader.buildSupportsSnappy() &&
-          SnappyCodec.isNativeCodeLoaded();
-      if (snappyLoaded && NativeCodeLoader.buildSupportsSnappy()) {
-        snappyLibraryName = SnappyCodec.getLibraryName();
+
+      isalDetail = ErasureCodeNative.getLoadingFailureReason();
+      if (isalDetail != null) {
+        isalLoaded = false;
+      } else {
+        isalDetail = ErasureCodeNative.getLibraryName();
+        isalLoaded = true;
       }
-      if (OpensslCipher.getLoadingFailureReason() != null) {
-        openSslDetail = OpensslCipher.getLoadingFailureReason();
+
+      pmdkDetail = NativeIO.POSIX.getPmdkSupportStateMessage();
+      pmdkLoaded = NativeIO.POSIX.isPmdkAvailable();
+      if (pmdkLoaded) {
+        pmdkDetail = NativeIO.POSIX.Pmem.getPmdkLibPath();
+      }
+
+      openSslDetail = OpensslCipher.getLoadingFailureReason();
+      if (openSslDetail != null) {
         openSslLoaded = false;
       } else {
         openSslDetail = OpensslCipher.getLibraryName();
         openSslLoaded = true;
       }
-      if (lz4Loaded) {
-        lz4LibraryName = Lz4Codec.getLibraryName();
-      }
+
       if (bzip2Loaded) {
         bzip2LibraryName = Bzip2Factory.getLibraryName(conf);
       }
     }
 
-    // winutils.exe is required on Windows
-    winutilsPath = Shell.getWinUtilsPath();
-    if (winutilsPath != null) {
-      winutilsExists = true;
-    } else {
-      winutilsPath = "";
+    if (Shell.WINDOWS) {
+      // winutils.exe is required on Windows
+      try {
+        winutilsPath = Shell.getWinUtilsFile().getCanonicalPath();
+        winutilsExists = true;
+      } catch (IOException e) {
+        LOG.debug("No Winutils: ", e);
+        winutilsPath = e.getMessage();
+        winutilsExists = false;
+      }
+      System.out.printf("winutils: %b %s%n", winutilsExists, winutilsPath);
     }
 
     System.out.println("Native library checking:");
     System.out.printf("hadoop:  %b %s%n", nativeHadoopLoaded, hadoopLibraryName);
     System.out.printf("zlib:    %b %s%n", zlibLoaded, zlibLibraryName);
-    System.out.printf("snappy:  %b %s%n", snappyLoaded, snappyLibraryName);
-    System.out.printf("lz4:     %b %s%n", lz4Loaded, lz4LibraryName);
     System.out.printf("bzip2:   %b %s%n", bzip2Loaded, bzip2LibraryName);
     System.out.printf("openssl: %b %s%n", openSslLoaded, openSslDetail);
+    System.out.printf("ISA-L:   %b %s%n", isalLoaded, isalDetail);
+    System.out.printf("PMDK:    %b %s%n", pmdkLoaded, pmdkDetail);
+
     if (Shell.WINDOWS) {
       System.out.printf("winutils: %b %s%n", winutilsExists, winutilsPath);
     }
 
     if ((!nativeHadoopLoaded) || (Shell.WINDOWS && (!winutilsExists)) ||
-        (checkAll && !(zlibLoaded && snappyLoaded && lz4Loaded && bzip2Loaded))) {
+        (checkAll && !(zlibLoaded && bzip2Loaded && isalLoaded))) {
       // return 1 to indicated check failed
       ExitUtil.terminate(1);
     }

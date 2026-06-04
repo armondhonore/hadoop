@@ -29,15 +29,15 @@ import java.io.OutputStream;
 import java.io.PrintStream;
 import java.net.InetSocketAddress;
 import java.net.URISyntaxException;
-import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import org.apache.commons.lang.StringUtils;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
+import org.apache.commons.lang3.StringUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.DelegateToFileSystem;
 import org.apache.hadoop.fs.FileContext;
@@ -52,6 +52,7 @@ import org.apache.hadoop.io.nativeio.NativeIOException;
 import org.apache.hadoop.util.NativeCodeLoader;
 import org.apache.hadoop.util.Shell;
 import org.apache.hadoop.util.Shell.CommandExecutor;
+import org.apache.hadoop.util.concurrent.SubjectInheritingThread;
 import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.localizer.ContainerLocalizer;
@@ -68,8 +69,8 @@ import org.apache.hadoop.yarn.server.nodemanager.executor.LocalizerStartContext;
  */
 public class WindowsSecureContainerExecutor extends DefaultContainerExecutor {
   
-  private static final Log LOG = LogFactory
-      .getLog(WindowsSecureContainerExecutor.class);
+  private static final Logger LOG = LoggerFactory
+      .getLogger(WindowsSecureContainerExecutor.class);
   
   public static final String LOCALIZER_PID_FORMAT = "STAR_LOCALIZER_%s";
   
@@ -374,7 +375,7 @@ public class WindowsSecureContainerExecutor extends DefaultContainerExecutor {
           return os;
         } finally {
           if (!success) {
-            IOUtils.cleanup(LOG, os);
+            IOUtils.cleanupWithLogger(LOG, os);
           }
         }
       }
@@ -449,7 +450,7 @@ public class WindowsSecureContainerExecutor extends DefaultContainerExecutor {
       COMPLETE
     };
     
-    private State state;;
+    private State state;
     
     private final String cwd;
     private final String jobName;
@@ -497,19 +498,19 @@ public class WindowsSecureContainerExecutor extends DefaultContainerExecutor {
     
     private Thread startStreamReader(final InputStream stream) 
         throws IOException {
-      Thread streamReaderThread = new Thread() {
+      Thread streamReaderThread = new SubjectInheritingThread() {
         
         @Override
-        public void run() {
+        public void work() {
           try (BufferedReader lines = new BufferedReader(
-                   new InputStreamReader(stream, Charset.forName("UTF-8")))) {
+                   new InputStreamReader(stream, StandardCharsets.UTF_8))) {
             char[] buf = new char[512];
             int nRead;
             while ((nRead = lines.read(buf, 0, buf.length)) > 0) {
               output.append(buf, 0, nRead);
             }
           } catch (Throwable t) {
-            LOG.error("Error occured reading the process stdout", t);
+            LOG.error("Error occurred reading the process stdout", t);
           }
         }
       };
@@ -578,7 +579,8 @@ public class WindowsSecureContainerExecutor extends DefaultContainerExecutor {
       LOG.debug(String.format("getRunCommand: %s exists:%b", 
           command, f.exists()));
     }
-    return new String[] { Shell.WINUTILS, "task", "createAsUser", groupId, 
+    return new String[] { Shell.getWinUtilsPath(), "task",
+        "createAsUser", groupId,
         userName, pidFile.toString(), "cmd /c " + command };
   }
   
@@ -590,10 +592,7 @@ public class WindowsSecureContainerExecutor extends DefaultContainerExecutor {
   
   @Override
   protected void copyFile(Path src, Path dst, String owner) throws IOException {
-    if (LOG.isDebugEnabled()) {
-      LOG.debug(String.format("copyFile: %s -> %s owner:%s", src.toString(), 
-          dst.toString(), owner));
-    }
+    LOG.debug("copyFile: {} -> {} owner:{}", src, dst, owner);
     Native.Elevated.copy(src,  dst, true);
     Native.Elevated.chown(dst, owner, nodeManagerGroup);
   }
@@ -606,10 +605,7 @@ public class WindowsSecureContainerExecutor extends DefaultContainerExecutor {
     // This is similar to how LCE creates dirs
     //
     perms = new FsPermission(DIR_PERM);
-    if (LOG.isDebugEnabled()) {
-      LOG.debug(String.format("createDir: %s perm:%s owner:%s", 
-          dirPath.toString(), perms.toString(), owner));
-    }
+    LOG.debug("createDir: {} perm:{} owner:{}", dirPath, perms, owner);
     
     super.createDir(dirPath, perms, createParent, owner);
     lfs.setOwner(dirPath, owner, nodeManagerGroup);
@@ -618,25 +614,19 @@ public class WindowsSecureContainerExecutor extends DefaultContainerExecutor {
   @Override
   protected void setScriptExecutable(Path script, String owner) 
       throws IOException {
-    if (LOG.isDebugEnabled()) {
-      LOG.debug(String.format("setScriptExecutable: %s owner:%s", 
-          script.toString(), owner));
-    }
+    LOG.debug("setScriptExecutable: {} owner:{}", script, owner);
     super.setScriptExecutable(script, owner);
     Native.Elevated.chown(script, owner, nodeManagerGroup);
   }
 
   @Override
-  public Path localizeClasspathJar(Path classPathJar, Path pwd, String owner) 
+  public Path localizeClasspathJar(Path jarPath, Path target, String owner) 
       throws IOException {
-    if (LOG.isDebugEnabled()) {
-      LOG.debug(String.format("localizeClasspathJar: %s %s o:%s", 
-          classPathJar, pwd, owner));
-    }
-    createDir(pwd,  new FsPermission(DIR_PERM), true, owner);
-    String fileName = classPathJar.getName();
-    Path dst = new Path(pwd, fileName);
-    Native.Elevated.move(classPathJar, dst, true);
+    LOG.debug("localizeClasspathJar: {} {} o:{}", jarPath, target, owner);
+    createDir(target,  new FsPermission(DIR_PERM), true, owner);
+    String fileName = jarPath.getName();
+    Path dst = new Path(target, fileName);
+    Native.Elevated.move(jarPath, dst, true);
     Native.Elevated.chown(dst, owner, nodeManagerGroup);
     return dst;
   }
@@ -662,15 +652,13 @@ public class WindowsSecureContainerExecutor extends DefaultContainerExecutor {
 
     Path appStorageDir = getWorkingDir(localDirs, user, appId);
 
-    String tokenFn = String.format(
-        ContainerLocalizer.TOKEN_FILE_NAME_FMT, locId);
+    String tokenFn = String.format(ContainerExecutor.TOKEN_FILE_NAME_FMT,
+        locId);
     Path tokenDst = new Path(appStorageDir, tokenFn);
     copyFile(nmPrivateContainerTokensPath, tokenDst, user);
 
     File cwdApp = new File(appStorageDir.toString());
-    if (LOG.isDebugEnabled()) {
-      LOG.debug(String.format("cwdApp: %s", cwdApp));
-    }
+    LOG.debug("cwdApp: {}", cwdApp);
 
     List<String> command ;
 
@@ -701,7 +689,7 @@ public class WindowsSecureContainerExecutor extends DefaultContainerExecutor {
     command.addAll(ContainerLocalizer.getJavaOpts(getConf()));
 
     ContainerLocalizer.buildMainArgs(command, user, appId, locId, nmAddr,
-        localDirs);
+        tokenFn, localDirs, super.getConf());
 
     String cmdLine = StringUtils.join(command, " ");
 
@@ -721,7 +709,7 @@ public class WindowsSecureContainerExecutor extends DefaultContainerExecutor {
       }
       catch(Throwable e) {
         LOG.warn(String.format(
-            "An exception occured during the cleanup of localizer job %s:%n%s",
+            "An exception occurred during the cleanup of localizer job %s:%n%s",
             localizerPid,
             org.apache.hadoop.util.StringUtils.stringifyException(e)));
       }
@@ -731,10 +719,10 @@ public class WindowsSecureContainerExecutor extends DefaultContainerExecutor {
   @Override
   protected CommandExecutor buildCommandExecutor(String wrapperScriptPath,
       String containerIdStr, String userName, Path pidFile, Resource resource,
-      File wordDir, Map<String, String> environment) throws IOException {
+      File wordDir, Map<String, String> environment, String[] numaCommands) {
      return new WintuilsProcessStubExecutor(
          wordDir.toString(),
-         containerIdStr, userName, pidFile.toString(), 
+         containerIdStr, userName, pidFile.toString(),
          "cmd /c " + wrapperScriptPath);
    }
    

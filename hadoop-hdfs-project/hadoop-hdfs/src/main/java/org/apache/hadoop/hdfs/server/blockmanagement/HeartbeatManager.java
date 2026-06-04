@@ -18,25 +18,26 @@
 package org.apache.hadoop.hdfs.server.blockmanagement;
 
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashSet;
-import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.DFSConfigKeys;
-import org.apache.hadoop.hdfs.DFSUtilClient;
-import org.apache.hadoop.hdfs.protocol.DatanodeID;
 import org.apache.hadoop.hdfs.server.namenode.Namesystem;
 import org.apache.hadoop.hdfs.server.protocol.StorageReport;
 import org.apache.hadoop.hdfs.server.protocol.VolumeFailureSummary;
+import org.apache.hadoop.hdfs.util.RwLockMode;
 import org.apache.hadoop.util.Daemon;
+import org.apache.hadoop.util.StopWatch;
 import org.apache.hadoop.util.Time;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import org.apache.hadoop.classification.VisibleForTesting;
 
 /**
  * Manage the heartbeats received from datanodes.
@@ -45,7 +46,15 @@ import org.slf4j.LoggerFactory;
  */
 class HeartbeatManager implements DatanodeStatistics {
   static final Logger LOG = LoggerFactory.getLogger(HeartbeatManager.class);
-
+  private static final String REPORT_DELTA_STALE_DN_HEADER =
+      "StaleNodes Report: [New Stale Nodes]: %d";
+  private static final String REPORT_STALE_DN_LINE_ENTRY = "%n\t %s";
+  private static final String REPORT_STALE_DN_LINE_TAIL = ", %s";
+  private static final String REPORT_REMOVE_DEAD_NODE_ENTRY =
+      "StaleNodes Report: [Remove DeadNode]: %s";
+  private static final String REPORT_REMOVE_STALE_NODE_ENTRY =
+      "StaleNodes Report: [Remove StaleNode]: %s";
+  private static final int REPORT_STALE_NODE_NODES_PER_LINE = 10;
   /**
    * Stores a subset of the datanodeMap in DatanodeManager,
    * containing nodes that are considered alive.
@@ -53,19 +62,25 @@ class HeartbeatManager implements DatanodeStatistics {
    * and removes them from the list.
    * It is synchronized by the heartbeat manager lock.
    */
-  private final List<DatanodeDescriptor> datanodes = new ArrayList<DatanodeDescriptor>();
+  private final List<DatanodeDescriptor> datanodes = new ArrayList<>();
 
   /** Statistics, which are synchronized by the heartbeat manager lock. */
-  private final Stats stats = new Stats();
+  private final DatanodeStats stats = new DatanodeStats();
 
-  /** The time period to check for expired datanodes */
+  /** The time period to check for expired datanodes. */
   private final long heartbeatRecheckInterval;
-  /** Heartbeat monitor thread */
+  /** Heartbeat monitor thread. */
   private final Daemon heartbeatThread = new Daemon(new Monitor());
+  private final StopWatch heartbeatStopWatch = new StopWatch();
+  private final int numOfDeadDatanodesRemove;
 
-    
   final Namesystem namesystem;
   final BlockManager blockManager;
+  /** Enable log for datanode staleness. */
+  private final boolean enableLogStaleNodes;
+
+  /** reports for stale datanodes. */
+  private final Set<DatanodeDescriptor> staleDataNodes = new HashSet<>();
 
   HeartbeatManager(final Namesystem namesystem,
       final BlockManager blockManager, final Configuration conf) {
@@ -80,6 +95,12 @@ class HeartbeatManager implements DatanodeStatistics {
     long staleInterval = conf.getLong(
         DFSConfigKeys.DFS_NAMENODE_STALE_DATANODE_INTERVAL_KEY,
         DFSConfigKeys.DFS_NAMENODE_STALE_DATANODE_INTERVAL_DEFAULT);// 30s
+    enableLogStaleNodes = conf.getBoolean(
+        DFSConfigKeys.DFS_NAMENODE_ENABLE_LOG_STALE_DATANODE_KEY,
+        DFSConfigKeys.DFS_NAMENODE_ENABLE_LOG_STALE_DATANODE_DEFAULT);
+    this.numOfDeadDatanodesRemove = conf.getInt(
+        DFSConfigKeys.DFS_NAMENODE_REMOVE_DEAD_DATANODE_BATCHNUM_KEY,
+        DFSConfigKeys.DFS_NAMENODE_REMOVE_BAD_BATCH_NUM_DEFAULT);
 
     if (avoidStaleDataNodesForWrite && staleInterval < recheckInterval) {
       this.heartbeatRecheckInterval = staleInterval;
@@ -92,7 +113,7 @@ class HeartbeatManager implements DatanodeStatistics {
     }
   }
 
-  void activate(Configuration conf) {
+  void activate() {
     heartbeatThread.start();
   }
 
@@ -101,7 +122,7 @@ class HeartbeatManager implements DatanodeStatistics {
     try {
       // This will no effect if the thread hasn't yet been started.
       heartbeatThread.join(3000);
-    } catch (InterruptedException e) {
+    } catch (InterruptedException ignored) {
     }
   }
   
@@ -110,74 +131,74 @@ class HeartbeatManager implements DatanodeStatistics {
   }
 
   @Override
-  public synchronized long getCapacityTotal() {
-    return stats.capacityTotal;
+  public long getCapacityTotal() {
+    return stats.getCapacityTotal();
   }
 
   @Override
-  public synchronized long getCapacityUsed() {
-    return stats.capacityUsed;
+  public long getCapacityUsed() {
+    return stats.getCapacityUsed();
   }
 
   @Override
-  public synchronized float getCapacityUsedPercent() {
-    return DFSUtilClient.getPercentUsed(stats.capacityUsed, stats.capacityTotal);
+  public float getCapacityUsedPercent() {
+    return stats.getCapacityUsedPercent();
   }
 
   @Override
-  public synchronized long getCapacityRemaining() {
-    return stats.capacityRemaining;
+  public long getCapacityRemaining() {
+    return stats.getCapacityRemaining();
   }
 
   @Override
-  public synchronized float getCapacityRemainingPercent() {
-    return DFSUtilClient.getPercentRemaining(stats.capacityRemaining,
-                                             stats.capacityTotal);
+  public float getCapacityRemainingPercent() {
+    return stats.getCapacityRemainingPercent();
   }
 
   @Override
-  public synchronized long getBlockPoolUsed() {
-    return stats.blockPoolUsed;
+  public long getBlockPoolUsed() {
+    return stats.getBlockPoolUsed();
   }
 
   @Override
-  public synchronized float getPercentBlockPoolUsed() {
-    return DFSUtilClient.getPercentUsed(stats.blockPoolUsed,
-                                        stats.capacityTotal);
+  public float getPercentBlockPoolUsed() {
+    return stats.getPercentBlockPoolUsed();
   }
 
   @Override
-  public synchronized long getCapacityUsedNonDFS() {
-    final long nonDFSUsed = stats.capacityTotal
-        - stats.capacityRemaining - stats.capacityUsed;
-    return nonDFSUsed < 0L? 0L : nonDFSUsed;
+  public long getCapacityUsedNonDFS() {
+    return stats.getCapacityUsedNonDFS();
   }
 
   @Override
-  public synchronized int getXceiverCount() {
-    return stats.xceiverCount;
+  public int getXceiverCount() {
+    return stats.getXceiverCount();
   }
   
   @Override
-  public synchronized int getInServiceXceiverCount() {
-    return stats.nodesInServiceXceiverCount;
+  public int getInServiceXceiverCount() {
+    return stats.getNodesInServiceXceiverCount();
   }
   
   @Override
-  public synchronized int getNumDatanodesInService() {
-    return stats.nodesInService;
-  }
-  
-  @Override
-  public synchronized long getCacheCapacity() {
-    return stats.cacheCapacity;
+  public int getNumDatanodesInService() {
+    return stats.getNodesInService();
   }
 
   @Override
-  public synchronized long getCacheUsed() {
-    return stats.cacheUsed;
+  public int getInServiceAvailableVolumeCount() {
+    return stats.getNodesInServiceAvailableVolumeCount();
   }
   
+  @Override
+  public long getCacheCapacity() {
+    return stats.getCacheCapacity();
+  }
+
+  @Override
+  public long getCacheUsed() {
+    return stats.getCacheUsed();
+  }
 
   @Override
   public synchronized long[] getStats() {
@@ -187,25 +208,33 @@ class HeartbeatManager implements DatanodeStatistics {
                        -1L,
                        -1L,
                        -1L,
+                       -1L,
+                       -1L,
                        -1L};
   }
 
   @Override
-  public synchronized int getExpiredHeartbeats() {
-    return stats.expiredHeartbeats;
+  public int getExpiredHeartbeats() {
+    return stats.getExpiredHeartbeats();
   }
 
   @Override
-  public  Map<StorageType, StorageTypeStats> getStorageTypeStats() {
-    return stats.statsMap.get();
+  public Map<StorageType, StorageTypeStats> getStorageTypeStats() {
+    return stats.getStatsMap();
+  }
+
+  @Override
+  public long getProvidedCapacity() {
+    return blockManager.getProvidedCapacity();
   }
 
   synchronized void register(final DatanodeDescriptor d) {
-    if (!d.isAlive) {
+    if (!d.isAlive()) {
       addDatanode(d);
 
       //update its timestamp
       d.updateHeartbeatState(StorageReport.EMPTY_ARRAY, 0L, 0L, 0, 0, null);
+      stats.add(d);
     }
   }
 
@@ -215,16 +244,20 @@ class HeartbeatManager implements DatanodeStatistics {
 
   synchronized void addDatanode(final DatanodeDescriptor d) {
     // update in-service node count
-    stats.add(d);
     datanodes.add(d);
-    d.isAlive = true;
+    d.setAlive(true);
+  }
+
+  void updateDnStat(final DatanodeDescriptor d){
+    stats.add(d);
   }
 
   synchronized void removeDatanode(DatanodeDescriptor node) {
-    if (node.isAlive) {
+    if (node.isAlive()) {
       stats.subtract(node);
       datanodes.remove(node);
-      node.isAlive = false;
+      removeNodeFromStaleList(node);
+      node.setAlive(false);
     }
   }
 
@@ -233,13 +266,33 @@ class HeartbeatManager implements DatanodeStatistics {
       int xceiverCount, int failedVolumes,
       VolumeFailureSummary volumeFailureSummary) {
     stats.subtract(node);
-    node.updateHeartbeat(reports, cacheCapacity, cacheUsed,
-      xceiverCount, failedVolumes, volumeFailureSummary);
-    stats.add(node);
+    try {
+      blockManager.updateHeartbeat(node, reports, cacheCapacity, cacheUsed,
+          xceiverCount, failedVolumes, volumeFailureSummary);
+    } finally {
+      stats.add(node);
+    }
+  }
+
+  synchronized void updateLifeline(final DatanodeDescriptor node,
+      StorageReport[] reports, long cacheCapacity, long cacheUsed,
+      int xceiverCount, int failedVolumes,
+      VolumeFailureSummary volumeFailureSummary) {
+    stats.subtract(node);
+    try {
+      // This intentionally calls updateHeartbeatState instead of
+      // updateHeartbeat, because we don't want to modify the
+      // heartbeatedSinceRegistration flag.  Arrival of a lifeline message does
+      // not count as arrival of the first heartbeat.
+      blockManager.updateHeartbeatState(node, reports, cacheCapacity, cacheUsed,
+          xceiverCount, failedVolumes, volumeFailureSummary);
+    } finally {
+      stats.add(node);
+    }
   }
 
   synchronized void startDecommission(final DatanodeDescriptor node) {
-    if (!node.isAlive) {
+    if (!node.isAlive()) {
       LOG.info("Dead node {} is decommissioned immediately.", node);
       node.setDecommissioned();
     } else {
@@ -249,10 +302,43 @@ class HeartbeatManager implements DatanodeStatistics {
     }
   }
 
+  synchronized void startMaintenance(final DatanodeDescriptor node) {
+    if (!node.isAlive()) {
+      LOG.info("Dead node {} is put in maintenance state immediately.", node);
+      node.setInMaintenance();
+    } else {
+      stats.subtract(node);
+      if (node.isDecommissioned()) {
+        LOG.info("Decommissioned node " + node + " is put in maintenance state"
+            + " immediately.");
+        node.setInMaintenance();
+      } else if (blockManager.getMinReplicationToBeInMaintenance() == 0) {
+        LOG.info("MinReplicationToBeInMaintenance is set to zero. " + node +
+            " is put in maintenance state" + " immediately.");
+        node.setInMaintenance();
+      } else {
+        node.startMaintenance();
+      }
+      stats.add(node);
+    }
+  }
+
+  synchronized void stopMaintenance(final DatanodeDescriptor node) {
+    LOG.info("Stopping maintenance of {} node {}",
+        node.isAlive() ? "live" : "dead", node);
+    if (!node.isAlive()) {
+      node.stopMaintenance();
+    } else {
+      stats.subtract(node);
+      node.stopMaintenance();
+      stats.add(node);
+    }
+  }
+
   synchronized void stopDecommission(final DatanodeDescriptor node) {
     LOG.info("Stopping decommissioning of {} node {}",
-        node.isAlive ? "live" : "dead", node);
-    if (!node.isAlive) {
+        node.isAlive() ? "live" : "dead", node);
+    if (!node.isAlive()) {
       node.stopDecommission();
     } else {
       stats.subtract(node);
@@ -260,11 +346,75 @@ class HeartbeatManager implements DatanodeStatistics {
       stats.add(node);
     }
   }
-  
+
+  @VisibleForTesting
+  void restartHeartbeatStopWatch() {
+    heartbeatStopWatch.reset().start();
+  }
+
+  @VisibleForTesting
+  boolean shouldAbortHeartbeatCheck(long offset) {
+    long elapsed = heartbeatStopWatch.now(TimeUnit.MILLISECONDS);
+    return elapsed + offset > heartbeatRecheckInterval;
+  }
+
+  /**
+   * Remove deadNode from StaleNodeList if it exists.
+   * This method assumes that it is called inside a synchronized block.
+   *
+   * @param d node descriptor to be marked as dead.
+   * @return true if the node was already on the stale list.
+   */
+  private boolean removeNodeFromStaleList(DatanodeDescriptor d) {
+    return removeNodeFromStaleList(d, true);
+  }
+
+  /**
+   * Remove node from StaleNodeList if it exists.
+   * If enabled, the log will show whether the node is removed from list because
+   * it is dead or not.
+   * This method assumes that it is called inside a synchronized block.
+   *
+   * @param d node descriptor to be marked as dead.
+   * @param isDead
+   * @return true if the node was already in the stale list.
+   */
+  private boolean removeNodeFromStaleList(DatanodeDescriptor d,
+      boolean isDead) {
+    boolean result = false;
+    result = staleDataNodes.remove(d);
+    if (enableLogStaleNodes && result) {
+      LOG.info(String.format(isDead ?
+              REPORT_REMOVE_DEAD_NODE_ENTRY : REPORT_REMOVE_STALE_NODE_ENTRY,
+          d));
+    }
+    return result;
+  }
+
+  /**
+   * Dump the new stale data nodes added since last heartbeat check.
+   *
+   * @param staleNodes list of datanodes added in the last heartbeat check.
+   */
+  private void dumpStaleNodes(List<DatanodeDescriptor> staleNodes) {
+    // log nodes detected as stale
+    if (enableLogStaleNodes && (!staleNodes.isEmpty())) {
+      StringBuilder staleLogMSG =
+          new StringBuilder(String.format(REPORT_DELTA_STALE_DN_HEADER,
+              staleNodes.size()));
+      for (int ind = 0; ind < staleNodes.size(); ind++) {
+        String logFormat = (ind % REPORT_STALE_NODE_NODES_PER_LINE == 0) ?
+            REPORT_STALE_DN_LINE_ENTRY : REPORT_STALE_DN_LINE_TAIL;
+        staleLogMSG.append(String.format(logFormat, staleNodes.get(ind)));
+      }
+      LOG.info(staleLogMSG.toString());
+    }
+  }
+
   /**
    * Check if there are any expired heartbeats, and if so,
    * whether any blocks have to be re-replicated.
-   * While removing dead datanodes, make sure that only one datanode is marked
+   * While removing dead datanodes, make sure that limited datanodes is marked
    * dead at a time within the synchronized section. Otherwise, a cascading
    * effect causes more datanodes to be declared dead.
    * Check if there are any failed storage and if so,
@@ -287,6 +437,7 @@ class HeartbeatManager implements DatanodeStatistics {
    * B. Remove all blocks in PendingDataNodeMessages for the failed storage
    *    when we remove all blocks from BlocksMap for that storage.
    */
+  @VisibleForTesting
   void heartbeatCheck() {
     final DatanodeManager dm = blockManager.getDatanodeManager();
     // It's OK to check safe mode w/o taking the lock here, we re-check
@@ -295,77 +446,93 @@ class HeartbeatManager implements DatanodeStatistics {
       return;
     }
     boolean allAlive = false;
+    // Locate limited dead nodes.
+    List<DatanodeDescriptor> deadDatanodes = new ArrayList<>(
+        numOfDeadDatanodesRemove);
+    // Locate limited failed storages that isn't on a dead node.
+    List<DatanodeStorageInfo> failedStorages = new ArrayList<>(
+        numOfDeadDatanodesRemove);
+
     while (!allAlive) {
-      // locate the first dead node.
-      DatanodeID dead = null;
 
-      // locate the first failed storage that isn't on a dead node.
-      DatanodeStorageInfo failedStorage = null;
+      deadDatanodes.clear();
+      failedStorages.clear();
 
-      // check the number of stale nodes
-      int numOfStaleNodes = 0;
+      // check the number of stale storages
       int numOfStaleStorages = 0;
+      List<DatanodeDescriptor> staleNodes = new ArrayList<>();
       synchronized(this) {
         for (DatanodeDescriptor d : datanodes) {
-          if (dead == null && dm.isDatanodeDead(d)) {
+          // check if an excessive GC pause has occurred
+          if (shouldAbortHeartbeatCheck(0)) {
+            return;
+          }
+          if (deadDatanodes.size() < numOfDeadDatanodesRemove &&
+              dm.isDatanodeDead(d)) {
             stats.incrExpiredHeartbeats();
-            dead = d;
+            deadDatanodes.add(d);
+            // remove the node from stale list to adjust the stale list size
+            // before setting the stale count of the DatanodeManager
+            removeNodeFromStaleList(d);
+          } else {
+            if (d.isStale(dm.getStaleInterval())) {
+              if (staleDataNodes.add(d)) {
+                // the node is n
+                staleNodes.add(d);
+              }
+            } else {
+              // remove the node if it is no longer stale
+              removeNodeFromStaleList(d, false);
+            }
           }
-          if (d.isStale(dm.getStaleInterval())) {
-            numOfStaleNodes++;
-          }
+
           DatanodeStorageInfo[] storageInfos = d.getStorageInfos();
           for(DatanodeStorageInfo storageInfo : storageInfos) {
             if (storageInfo.areBlockContentsStale()) {
               numOfStaleStorages++;
             }
 
-            if (failedStorage == null &&
+            if (failedStorages.size() < numOfDeadDatanodesRemove &&
                 storageInfo.areBlocksOnFailedStorage() &&
-                d != dead) {
-              failedStorage = storageInfo;
+                !deadDatanodes.contains(d)) {
+              failedStorages.add(storageInfo);
             }
           }
-
         }
         
         // Set the number of stale nodes in the DatanodeManager
-        dm.setNumStaleNodes(numOfStaleNodes);
+        dm.setNumStaleNodes(staleDataNodes.size());
         dm.setNumStaleStorages(numOfStaleStorages);
       }
 
-      allAlive = dead == null && failedStorage == null;
-      if (dead != null) {
+      // log nodes detected as stale since last heartBeat
+      dumpStaleNodes(staleNodes);
+
+      allAlive = deadDatanodes.isEmpty() && failedStorages.isEmpty();
+      if (!allAlive && namesystem.isInStartupSafeMode()) {
+        return;
+      }
+
+      for (DatanodeDescriptor dead : deadDatanodes) {
         // acquire the fsnamesystem lock, and then remove the dead node.
-        namesystem.writeLock();
+        namesystem.writeLock(RwLockMode.BM);
         try {
-          if (namesystem.isInStartupSafeMode()) {
-            return;
-          }
-          synchronized(this) {
-            dm.removeDeadDatanode(dead);
-          }
+          dm.removeDeadDatanode(dead, !dead.isMaintenance());
         } finally {
-          namesystem.writeUnlock();
+          namesystem.writeUnlock(RwLockMode.BM, "removeDeadDatanode");
         }
       }
-      if (failedStorage != null) {
+      for (DatanodeStorageInfo failedStorage : failedStorages) {
         // acquire the fsnamesystem lock, and remove blocks on the storage.
-        namesystem.writeLock();
+        namesystem.writeLock(RwLockMode.BM);
         try {
-          if (namesystem.isInStartupSafeMode()) {
-            return;
-          }
-          synchronized(this) {
-            blockManager.removeBlocksAssociatedTo(failedStorage);
-          }
+          blockManager.removeBlocksAssociatedTo(failedStorage);
         } finally {
-          namesystem.writeUnlock();
+          namesystem.writeUnlock(RwLockMode.BM, "removeBlocksAssociatedTo");
         }
       }
     }
   }
-
 
   /** Periodically check heartbeat and update block key */
   private class Monitor implements Runnable {
@@ -375,6 +542,7 @@ class HeartbeatManager implements DatanodeStatistics {
     @Override
     public void run() {
       while(namesystem.isRunning()) {
+        restartHeartbeatStopWatch();
         try {
           final long now = Time.monotonicNow();
           if (lastHeartbeatCheck + heartbeatRecheckInterval < now) {
@@ -384,7 +552,7 @@ class HeartbeatManager implements DatanodeStatistics {
           if (blockManager.shouldUpdateBlockKey(now - lastBlockKeyUpdate)) {
             synchronized(HeartbeatManager.this) {
               for(DatanodeDescriptor d : datanodes) {
-                d.needKeyUpdate = true;
+                d.setNeedKeyUpdate(true);
               }
             }
             lastBlockKeyUpdate = now;
@@ -394,147 +562,14 @@ class HeartbeatManager implements DatanodeStatistics {
         }
         try {
           Thread.sleep(5000);  // 5 seconds
-        } catch (InterruptedException ie) {
+        } catch (InterruptedException ignored) {
         }
-      }
-    }
-  }
-
-  /** Datanode statistics.
-   * For decommissioning/decommissioned nodes, only used capacity is counted.
-   */
-  private static class Stats {
-
-    private final StorageTypeStatsMap statsMap = new StorageTypeStatsMap();
-
-    private long capacityTotal = 0L;
-    private long capacityUsed = 0L;
-    private long capacityRemaining = 0L;
-    private long blockPoolUsed = 0L;
-    private int xceiverCount = 0;
-    private long cacheCapacity = 0L;
-    private long cacheUsed = 0L;
-
-    private int nodesInService = 0;
-    private int nodesInServiceXceiverCount = 0;
-
-    private int expiredHeartbeats = 0;
-
-    private void add(final DatanodeDescriptor node) {
-      capacityUsed += node.getDfsUsed();
-      blockPoolUsed += node.getBlockPoolUsed();
-      xceiverCount += node.getXceiverCount();
-      if (!(node.isDecommissionInProgress() || node.isDecommissioned())) {
-        nodesInService++;
-        nodesInServiceXceiverCount += node.getXceiverCount();
-        capacityTotal += node.getCapacity();
-        capacityRemaining += node.getRemaining();
-      } else {
-        capacityTotal += node.getDfsUsed();
-      }
-      cacheCapacity += node.getCacheCapacity();
-      cacheUsed += node.getCacheUsed();
-      Set<StorageType> storageTypes = new HashSet<>();
-      for (DatanodeStorageInfo storageInfo : node.getStorageInfos()) {
-        statsMap.addStorage(storageInfo, node);
-        storageTypes.add(storageInfo.getStorageType());
-      }
-      for (StorageType storageType : storageTypes) {
-        statsMap.addNode(storageType, node);
-      }
-    }
-
-    private void subtract(final DatanodeDescriptor node) {
-      capacityUsed -= node.getDfsUsed();
-      blockPoolUsed -= node.getBlockPoolUsed();
-      xceiverCount -= node.getXceiverCount();
-      if (!(node.isDecommissionInProgress() || node.isDecommissioned())) {
-        nodesInService--;
-        nodesInServiceXceiverCount -= node.getXceiverCount();
-        capacityTotal -= node.getCapacity();
-        capacityRemaining -= node.getRemaining();
-      } else {
-        capacityTotal -= node.getDfsUsed();
-      }
-      cacheCapacity -= node.getCacheCapacity();
-      cacheUsed -= node.getCacheUsed();
-      Set<StorageType> storageTypes = new HashSet<>();
-      for (DatanodeStorageInfo storageInfo : node.getStorageInfos()) {
-        statsMap.subtractStorage(storageInfo, node);
-        storageTypes.add(storageInfo.getStorageType());
-      }
-      for (StorageType storageType : storageTypes) {
-        statsMap.subtractNode(storageType, node);
-      }
-    }
-    
-    /** Increment expired heartbeat counter. */
-    private void incrExpiredHeartbeats() {
-      expiredHeartbeats++;
-    }
-  }
-
-  /** StorageType specific statistics.
-   * For decommissioning/decommissioned nodes, only used capacity is counted.
-   */
-
-  static final class StorageTypeStatsMap {
-
-    private Map<StorageType, StorageTypeStats> storageTypeStatsMap =
-          new IdentityHashMap<>();
-
-    private StorageTypeStatsMap() {}
-
-    private StorageTypeStatsMap(StorageTypeStatsMap other) {
-      storageTypeStatsMap =
-          new IdentityHashMap<>(other.storageTypeStatsMap);
-      for (Map.Entry<StorageType, StorageTypeStats> entry :
-          storageTypeStatsMap.entrySet()) {
-        entry.setValue(new StorageTypeStats(entry.getValue()));
-      }
-    }
-
-    private Map<StorageType, StorageTypeStats> get() {
-      return Collections.unmodifiableMap(storageTypeStatsMap);
-    }
-
-    private void addNode(StorageType storageType,
-        final DatanodeDescriptor node) {
-      StorageTypeStats storageTypeStats =
-          storageTypeStatsMap.get(storageType);
-      if (storageTypeStats == null) {
-        storageTypeStats = new StorageTypeStats();
-        storageTypeStatsMap.put(storageType, storageTypeStats);
-      }
-      storageTypeStats.addNode(node);
-    }
-
-    private void addStorage(final DatanodeStorageInfo info,
-        final DatanodeDescriptor node) {
-      StorageTypeStats storageTypeStats =
-          storageTypeStatsMap.get(info.getStorageType());
-      if (storageTypeStats == null) {
-        storageTypeStats = new StorageTypeStats();
-        storageTypeStatsMap.put(info.getStorageType(), storageTypeStats);
-      }
-      storageTypeStats.addStorage(info, node);
-    }
-
-    private void subtractStorage(final DatanodeStorageInfo info,
-        final DatanodeDescriptor node) {
-      StorageTypeStats storageTypeStats =
-          storageTypeStatsMap.get(info.getStorageType());
-      if (storageTypeStats != null) {
-        storageTypeStats.subtractStorage(info, node);
-      }
-    }
-
-    private void subtractNode(StorageType storageType,
-        final DatanodeDescriptor node) {
-      StorageTypeStats storageTypeStats =
-          storageTypeStatsMap.get(storageType);
-      if (storageTypeStats != null) {
-        storageTypeStats.subtractNode(node);
+        // avoid declaring nodes dead for another cycle if a GC pause lasts
+        // longer than the node recheck interval
+        if (shouldAbortHeartbeatCheck(-5000)) {
+          LOG.warn("Skipping next heartbeat scan due to excessive pause");
+          lastHeartbeatCheck = Time.monotonicNow();
+        }
       }
     }
   }

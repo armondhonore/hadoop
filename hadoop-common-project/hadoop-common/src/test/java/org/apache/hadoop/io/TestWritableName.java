@@ -24,14 +24,18 @@ import java.io.IOException;
 import java.util.Random;
 
 import org.apache.hadoop.conf.Configuration;
-
-import junit.framework.TestCase;
+import org.apache.hadoop.fs.CommonConfigurationKeys;
+import org.apache.hadoop.io.serializer.Deserializer;
+import org.apache.hadoop.io.serializer.Serialization;
+import org.apache.hadoop.io.serializer.SerializationFactory;
+import org.apache.hadoop.io.serializer.Serializer;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** Unit tests for WritableName. */
-public class TestWritableName extends TestCase {
-  public TestWritableName(String name) { 
-    super(name); 
-  }
+public class TestWritableName {
 
   /** Example class used in test cases below. */
   public static class SimpleWritable implements Writable {
@@ -65,14 +69,38 @@ public class TestWritableName extends TestCase {
     }
   }
 
+  private static class SimpleSerializable {
+
+  }
+
+  private static class SimpleSerializer implements Serialization<SimpleSerializable> {
+
+    @Override
+    public boolean accept(Class<?> c) {
+      return c.equals(SimpleSerializable.class);
+    }
+
+    @Override
+    public Serializer<SimpleSerializable> getSerializer(Class<SimpleSerializable> c) {
+      return null;
+    }
+
+    @Override
+    public Deserializer<SimpleSerializable> getDeserializer(Class<SimpleSerializable> c) {
+      return null;
+    }
+  }
+
   private static final String testName = "mystring";
 
+  @Test
   public void testGoodName() throws Exception {
     Configuration conf = new Configuration();
     Class<?> test = WritableName.getClass("long",conf);
     assertTrue(test != null);
   }
 
+  @Test
   public void testSetName() throws Exception {
     Configuration conf = new Configuration();
     WritableName.setName(SimpleWritable.class, testName);
@@ -81,7 +109,7 @@ public class TestWritableName extends TestCase {
     assertTrue(test.equals(SimpleWritable.class));
   }
 
-
+  @Test
   public void testAddName() throws Exception {
     Configuration conf = new Configuration();
     String altName = testName + ".alt";
@@ -95,9 +123,30 @@ public class TestWritableName extends TestCase {
     // check original name still works
     test = WritableName.getClass(testName, conf);
     assertTrue(test.equals(SimpleWritable.class));
-
   }
 
+  @Test
+  public void testAddNameSerializable() throws Exception {
+    Configuration conf = new Configuration();
+    conf.set(CommonConfigurationKeys.IO_SERIALIZATIONS_KEY, SimpleSerializer.class.getName());
+    SerializationFactory serializationFactory =
+        new SerializationFactory(conf);
+
+    String altName = testName + ".alt";
+
+    WritableName.addName(SimpleSerializable.class, altName);
+
+    Class<?> test = WritableName.getClass(altName, conf);
+    assertEquals(test, SimpleSerializable.class);
+    assertNotNull(serializationFactory.getSerialization(test));
+
+    // check original name still works
+    test = WritableName.getClass(SimpleSerializable.class.getName(), conf);
+    assertEquals(test, SimpleSerializable.class);
+    assertNotNull(serializationFactory.getSerialization(test));
+  }
+
+  @Test
   public void testBadName() throws Exception {
     Configuration conf = new Configuration();
     try {

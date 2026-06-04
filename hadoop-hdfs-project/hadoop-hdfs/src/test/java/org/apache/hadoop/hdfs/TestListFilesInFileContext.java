@@ -17,38 +17,32 @@
  */
 package org.apache.hadoop.hdfs;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.util.EnumSet;
 import java.util.Random;
 
-import org.apache.commons.logging.impl.Log4JLogger;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CreateFlag;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileContext;
-import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.LocatedFileStatus;
 import org.apache.hadoop.fs.Options;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.RemoteIterator;
 import org.apache.hadoop.fs.permission.FsPermission;
-import org.apache.log4j.Level;
-import org.junit.After;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
 /**
  * This class tests the FileStatus API.
  */
 public class TestListFilesInFileContext {
-  {
-    ((Log4JLogger)FileSystem.LOG).getLogger().setLevel(Level.ALL);
-  }
 
   static final long seed = 0xDEADBEEFL;
 
@@ -62,7 +56,7 @@ public class TestListFilesInFileContext {
   final private static Path FILE2 = new Path(DIR1, "file2");
   final private static Path FILE3 = new Path(DIR1, "file3");
 
-  @BeforeClass
+  @BeforeAll
   public static void testSetUp() throws Exception {
     cluster = new MiniDFSCluster.Builder(conf).build();
     fc = FileContext.getFileContext(cluster.getConfiguration(0));
@@ -81,9 +75,11 @@ public class TestListFilesInFileContext {
     stm.close();
   }
   
-  @AfterClass
+  @AfterAll
   public static void testShutdown() throws Exception {
-    cluster.shutdown();
+    if (cluster != null) {
+      cluster.shutdown();
+    }
   }
 
   /** Test when input path is a file */
@@ -110,7 +106,7 @@ public class TestListFilesInFileContext {
     assertEquals(1, stat.getBlockLocations().length);
   }
 
-  @After
+  @AfterEach
   public void cleanDir() throws IOException {
     fc.delete(TEST_DIR, true);
   }

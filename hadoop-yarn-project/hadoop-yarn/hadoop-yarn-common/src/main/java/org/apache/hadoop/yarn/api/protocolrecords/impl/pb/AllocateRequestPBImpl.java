@@ -27,21 +27,24 @@ import org.apache.hadoop.classification.InterfaceAudience.Private;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.yarn.api.protocolrecords.AllocateRequest;
 import org.apache.hadoop.yarn.api.records.ContainerId;
-import org.apache.hadoop.yarn.api.records.ContainerResourceIncreaseRequest;
 import org.apache.hadoop.yarn.api.records.ResourceBlacklistRequest;
 import org.apache.hadoop.yarn.api.records.ResourceRequest;
+import org.apache.hadoop.yarn.api.records.SchedulingRequest;
+import org.apache.hadoop.yarn.api.records.UpdateContainerRequest;
 import org.apache.hadoop.yarn.api.records.impl.pb.ContainerIdPBImpl;
-import org.apache.hadoop.yarn.api.records.impl.pb.ContainerResourceIncreaseRequestPBImpl;
 import org.apache.hadoop.yarn.api.records.impl.pb.ResourceBlacklistRequestPBImpl;
 import org.apache.hadoop.yarn.api.records.impl.pb.ResourceRequestPBImpl;
+import org.apache.hadoop.yarn.api.records.impl.pb.SchedulingRequestPBImpl;
+import org.apache.hadoop.yarn.api.records.impl.pb.UpdateContainerRequestPBImpl;
 import org.apache.hadoop.yarn.proto.YarnProtos.ContainerIdProto;
-import org.apache.hadoop.yarn.proto.YarnProtos.ContainerResourceIncreaseRequestProto;
 import org.apache.hadoop.yarn.proto.YarnProtos.ResourceBlacklistRequestProto;
 import org.apache.hadoop.yarn.proto.YarnProtos.ResourceRequestProto;
+import org.apache.hadoop.yarn.proto.YarnProtos.SchedulingRequestProto;
+import org.apache.hadoop.yarn.proto.YarnServiceProtos.UpdateContainerRequestProto;
 import org.apache.hadoop.yarn.proto.YarnServiceProtos.AllocateRequestProto;
 import org.apache.hadoop.yarn.proto.YarnServiceProtos.AllocateRequestProtoOrBuilder;
 
-import com.google.protobuf.TextFormat;
+import org.apache.hadoop.thirdparty.protobuf.TextFormat;
 
 @Private
 @Unstable
@@ -52,8 +55,10 @@ public class AllocateRequestPBImpl extends AllocateRequest {
 
   private List<ResourceRequest> ask = null;
   private List<ContainerId> release = null;
-  private List<ContainerResourceIncreaseRequest> increaseRequests = null;
+  private List<UpdateContainerRequest> updateRequests = null;
+  private List<SchedulingRequest> schedulingRequests = null;
   private ResourceBlacklistRequest blacklistRequest = null;
+  private String trackingUrl = null;
   
   public AllocateRequestPBImpl() {
     builder = AllocateRequestProto.newBuilder();
@@ -98,11 +103,17 @@ public class AllocateRequestPBImpl extends AllocateRequest {
     if (this.release != null) {
       addReleasesToProto();
     }
-    if (this.increaseRequests != null) {
-      addIncreaseRequestsToProto();
+    if (this.updateRequests != null) {
+      addUpdateRequestsToProto();
+    }
+    if (this.schedulingRequests != null) {
+      addSchedulingRequestsToProto();
     }
     if (this.blacklistRequest != null) {
       builder.setBlacklistRequest(convertToProtoFormat(this.blacklistRequest));
+    }
+    if (this.trackingUrl != null) {
+      builder.setTrackingUrl(this.trackingUrl);
     }
   }
 
@@ -162,22 +173,39 @@ public class AllocateRequestPBImpl extends AllocateRequest {
   }
   
   @Override
-  public List<ContainerResourceIncreaseRequest> getIncreaseRequests() {
-    initIncreaseRequests();
-    return this.increaseRequests;
+  public List<UpdateContainerRequest> getUpdateRequests() {
+    initUpdateRequests();
+    return this.updateRequests;
   }
 
   @Override
-  public void setIncreaseRequests(
-      List<ContainerResourceIncreaseRequest> increaseRequests) {
-    if (increaseRequests == null) {
+  public void setUpdateRequests(List<UpdateContainerRequest> updateRequests) {
+    if (updateRequests == null) {
       return;
     }
-    initIncreaseRequests();
-    this.increaseRequests.clear();
-    this.increaseRequests.addAll(increaseRequests);
+    initUpdateRequests();
+    this.updateRequests.clear();
+    this.updateRequests.addAll(updateRequests);
   }
-  
+
+  @Override
+  public List<SchedulingRequest> getSchedulingRequests() {
+    initSchedulingRequests();
+    return this.schedulingRequests;
+  }
+
+  @Override
+  public void setSchedulingRequests(
+      List<SchedulingRequest> schedulingRequests) {
+    if (schedulingRequests == null) {
+      builder.clearSchedulingRequests();
+      return;
+    }
+    initSchedulingRequests();
+    this.schedulingRequests.clear();
+    this.schedulingRequests.addAll(schedulingRequests);
+  }
+
   @Override
   public ResourceBlacklistRequest getResourceBlacklistRequest() {
     AllocateRequestProtoOrBuilder p = viaProto ? proto : builder;
@@ -218,7 +246,8 @@ public class AllocateRequestPBImpl extends AllocateRequest {
     builder.clearAsk();
     if (ask == null)
       return;
-    Iterable<ResourceRequestProto> iterable = new Iterable<ResourceRequestProto>() {
+    Iterable<ResourceRequestProto> iterable =
+        new Iterable<ResourceRequestProto>() {
       @Override
       public Iterator<ResourceRequestProto> iterator() {
         return new Iterator<ResourceRequestProto>() {
@@ -247,34 +276,48 @@ public class AllocateRequestPBImpl extends AllocateRequest {
     builder.addAllAsk(iterable);
   }
   
-  private void initIncreaseRequests() {
-    if (this.increaseRequests != null) {
+  private void initUpdateRequests() {
+    if (this.updateRequests != null) {
       return;
     }
     AllocateRequestProtoOrBuilder p = viaProto ? proto : builder;
-    List<ContainerResourceIncreaseRequestProto> list =
-        p.getIncreaseRequestList();
-    this.increaseRequests = new ArrayList<ContainerResourceIncreaseRequest>();
+    List<UpdateContainerRequestProto> list =
+        p.getUpdateRequestsList();
+    this.updateRequests = new ArrayList<>();
 
-    for (ContainerResourceIncreaseRequestProto c : list) {
-      this.increaseRequests.add(convertFromProtoFormat(c));
+    for (UpdateContainerRequestProto c : list) {
+      this.updateRequests.add(convertFromProtoFormat(c));
     }
   }
-  
-  private void addIncreaseRequestsToProto() {
-    maybeInitBuilder();
-    builder.clearIncreaseRequest();
-    if (increaseRequests == null) {
+
+  private void initSchedulingRequests() {
+    if (this.schedulingRequests != null) {
       return;
     }
-    Iterable<ContainerResourceIncreaseRequestProto> iterable =
-        new Iterable<ContainerResourceIncreaseRequestProto>() {
-          @Override
-          public Iterator<ContainerResourceIncreaseRequestProto> iterator() {
-            return new Iterator<ContainerResourceIncreaseRequestProto>() {
+    AllocateRequestProtoOrBuilder p = viaProto ? proto : builder;
+    List<SchedulingRequestProto> list =
+        p.getSchedulingRequestsList();
+    this.schedulingRequests = new ArrayList<>();
 
-              Iterator<ContainerResourceIncreaseRequest> iter =
-                  increaseRequests.iterator();
+    for (SchedulingRequestProto c : list) {
+      this.schedulingRequests.add(convertFromProtoFormat(c));
+    }
+  }
+
+  private void addUpdateRequestsToProto() {
+    maybeInitBuilder();
+    builder.clearUpdateRequests();
+    if (updateRequests == null) {
+      return;
+    }
+    Iterable<UpdateContainerRequestProto> iterable =
+        new Iterable<UpdateContainerRequestProto>() {
+          @Override
+          public Iterator<UpdateContainerRequestProto> iterator() {
+            return new Iterator<UpdateContainerRequestProto>() {
+
+              private Iterator<UpdateContainerRequest> iter =
+                  updateRequests.iterator();
 
               @Override
               public boolean hasNext() {
@@ -282,7 +325,7 @@ public class AllocateRequestPBImpl extends AllocateRequest {
               }
 
               @Override
-              public ContainerResourceIncreaseRequestProto next() {
+              public UpdateContainerRequestProto next() {
                 return convertToProtoFormat(iter.next());
               }
 
@@ -294,9 +337,44 @@ public class AllocateRequestPBImpl extends AllocateRequest {
 
           }
         };
-    builder.addAllIncreaseRequest(iterable);
+    builder.addAllUpdateRequests(iterable);
   }
-  
+
+  private void addSchedulingRequestsToProto() {
+    maybeInitBuilder();
+    builder.clearSchedulingRequests();
+    if (schedulingRequests == null) {
+      return;
+    }
+    Iterable<SchedulingRequestProto> iterable =
+        new Iterable<SchedulingRequestProto>() {
+          @Override
+          public Iterator<SchedulingRequestProto> iterator() {
+            return new Iterator<SchedulingRequestProto>() {
+
+              private Iterator<SchedulingRequest> iter =
+                  schedulingRequests.iterator();
+
+              @Override
+              public boolean hasNext() {
+                return iter.hasNext();
+              }
+
+              @Override
+              public SchedulingRequestProto next() {
+                return convertToProtoFormat(iter.next());
+              }
+
+              @Override
+              public void remove() {
+                throw new UnsupportedOperationException();
+              }
+            };
+
+          }
+        };
+    builder.addAllSchedulingRequests(iterable);
+  }
   @Override
   public List<ContainerId> getReleaseList() {
     initReleases();
@@ -324,7 +402,28 @@ public class AllocateRequestPBImpl extends AllocateRequest {
       this.release.add(convertFromProtoFormat(c));
     }
   }
-  
+
+  @Override
+  public String getTrackingUrl() {
+    AllocateRequestProtoOrBuilder p = viaProto ? proto : builder;
+    if (this.trackingUrl != null) {
+      return this.trackingUrl;
+    }
+    if (p.hasTrackingUrl()) {
+      this.trackingUrl = p.getTrackingUrl();
+    }
+    return this.trackingUrl;
+  }
+
+  @Override
+  public void setTrackingUrl(String trackingUrl) {
+    maybeInitBuilder();
+    if (trackingUrl == null) {
+      builder.clearTrackingUrl();
+    }
+    this.trackingUrl = trackingUrl;
+  }
+
   private void addReleasesToProto() {
     maybeInitBuilder();
     builder.clearRelease();
@@ -367,14 +466,24 @@ public class AllocateRequestPBImpl extends AllocateRequest {
     return ((ResourceRequestPBImpl)t).getProto();
   }
   
-  private ContainerResourceIncreaseRequestPBImpl convertFromProtoFormat(
-      ContainerResourceIncreaseRequestProto p) {
-    return new ContainerResourceIncreaseRequestPBImpl(p);
+  private UpdateContainerRequestPBImpl convertFromProtoFormat(
+      UpdateContainerRequestProto p) {
+    return new UpdateContainerRequestPBImpl(p);
   }
 
-  private ContainerResourceIncreaseRequestProto convertToProtoFormat(
-      ContainerResourceIncreaseRequest t) {
-    return ((ContainerResourceIncreaseRequestPBImpl) t).getProto();
+  private UpdateContainerRequestProto convertToProtoFormat(
+      UpdateContainerRequest t) {
+    return ((UpdateContainerRequestPBImpl) t).getProto();
+  }
+
+  private SchedulingRequestPBImpl convertFromProtoFormat(
+      SchedulingRequestProto p) {
+    return new SchedulingRequestPBImpl(p);
+  }
+
+  private SchedulingRequestProto convertToProtoFormat(
+      SchedulingRequest t) {
+    return ((SchedulingRequestPBImpl) t).getProto();
   }
 
   private ContainerIdPBImpl convertFromProtoFormat(ContainerIdProto p) {

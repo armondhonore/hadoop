@@ -100,7 +100,7 @@ case sensitivity and permission options are determined at run time from OS type
     <value>true</value>
   </property>
 
-  <!-- checksum FS doesn't allow seeing past EOF -->
+  <!-- checksum FS doesn't allow seeking past EOF -->
   <property>
     <name>fs.contract.rejects-seek-past-eof</name>
     <value>true</value>
@@ -118,6 +118,21 @@ case sensitivity and permission options are determined at run time from OS type
 
   <property>
     <name>fs.contract.supports-getfilestatus</name>
+    <value>true</value>
+  </property>
+
+  <property>
+    <name>fs.contract.supports-settimes</name>
+    <value>true</value>
+  </property>
+
+  <property>
+    <name>fs.contract.supports-getfilestatus</name>
+    <value>true</value>
+  </property>
+
+  <property>
+    <name>fs.contract.vector-io-early-eof-check</name>
     <value>true</value>
   </property>
 

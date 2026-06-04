@@ -18,6 +18,8 @@
 
 package org.apache.hadoop.yarn.server.nodemanager.containermanager.logaggregation;
 
+import org.apache.hadoop.security.Credentials;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.yarn.server.api.ContainerLogContext;
 
 public interface AppLogAggregator extends Runnable {
@@ -27,4 +29,12 @@ public interface AppLogAggregator extends Runnable {
   void abortLogAggregation();
 
   void finishLogAggregation();
+
+  void disableLogAggregation();
+
+  void enableLogAggregation();
+
+  boolean isAggregationEnabled();
+
+  UserGroupInformation updateCredentials(Credentials cred);
 }

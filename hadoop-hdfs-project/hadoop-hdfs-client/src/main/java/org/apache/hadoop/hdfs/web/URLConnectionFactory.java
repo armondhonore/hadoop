@@ -22,24 +22,19 @@ import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLConnection;
-import java.security.GeneralSecurityException;
-
-import javax.net.ssl.HostnameVerifier;
-import javax.net.ssl.HttpsURLConnection;
-import javax.net.ssl.SSLSocketFactory;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hdfs.web.oauth2.OAuth2ConnectionConfigurator;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authentication.client.AuthenticatedURL;
 import org.apache.hadoop.security.authentication.client.AuthenticationException;
 import org.apache.hadoop.security.authentication.client.ConnectionConfigurator;
-import org.apache.hadoop.security.ssl.SSLFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.google.common.annotations.VisibleForTesting;
+import org.apache.hadoop.classification.VisibleForTesting;
 
 /**
  * Utilities for handling URLs
@@ -53,38 +48,96 @@ public class URLConnectionFactory {
   /**
    * Timeout for socket connects and reads
    */
-  public final static int DEFAULT_SOCKET_TIMEOUT = 1 * 60 * 1000; // 1 minute
+  public final static int DEFAULT_SOCKET_TIMEOUT = 60 * 1000; // 1 minute
   private final ConnectionConfigurator connConfigurator;
 
-  private static final ConnectionConfigurator DEFAULT_TIMEOUT_CONN_CONFIGURATOR = new ConnectionConfigurator() {
-    @Override
-    public HttpURLConnection configure(HttpURLConnection conn)
-        throws IOException {
-      URLConnectionFactory.setTimeouts(conn, DEFAULT_SOCKET_TIMEOUT);
-      return conn;
-    }
-  };
+  private static final ConnectionConfigurator DEFAULT_TIMEOUT_CONN_CONFIGURATOR
+      = new ConnectionConfigurator() {
+        @Override
+        public HttpURLConnection configure(HttpURLConnection conn)
+            throws IOException {
+          URLConnectionFactory.setTimeouts(conn,
+                                           DEFAULT_SOCKET_TIMEOUT,
+                                           DEFAULT_SOCKET_TIMEOUT);
+          return conn;
+        }
+      };
 
   /**
    * The URLConnectionFactory that sets the default timeout and it only trusts
    * Java's SSL certificates.
    */
-  public static final URLConnectionFactory DEFAULT_SYSTEM_CONNECTION_FACTORY = new URLConnectionFactory(
-      DEFAULT_TIMEOUT_CONN_CONFIGURATOR);
+  public static final URLConnectionFactory DEFAULT_SYSTEM_CONNECTION_FACTORY =
+      new URLConnectionFactory(DEFAULT_TIMEOUT_CONN_CONFIGURATOR);
 
   /**
    * Construct a new URLConnectionFactory based on the configuration. It will
    * try to load SSL certificates when it is specified.
    */
-  public static URLConnectionFactory newDefaultURLConnectionFactory(Configuration conf) {
-    ConnectionConfigurator conn = null;
+  public static URLConnectionFactory newDefaultURLConnectionFactory(
+      Configuration conf) {
+    ConnectionConfigurator conn = getSSLConnectionConfiguration(
+        DEFAULT_SOCKET_TIMEOUT, DEFAULT_SOCKET_TIMEOUT, conf);
+
+    return new URLConnectionFactory(conn);
+  }
+
+  /**
+   * Construct a new URLConnectionFactory based on the configuration. It will
+   * hornor connecTimeout and readTimeout when they are specified.
+   */
+  public static URLConnectionFactory newDefaultURLConnectionFactory(
+      int connectTimeout, int readTimeout, Configuration conf) {
+    ConnectionConfigurator conn = getSSLConnectionConfiguration(
+        connectTimeout, readTimeout, conf);
+    return new URLConnectionFactory(conn);
+  }
+
+  private static ConnectionConfigurator getSSLConnectionConfiguration(
+      final int connectTimeout, final int readTimeout, Configuration conf) {
+    ConnectionConfigurator conn;
     try {
-      conn = newSslConnConfigurator(DEFAULT_SOCKET_TIMEOUT, conf);
+      conn = new SSLConnectionConfigurator(connectTimeout, readTimeout, conf);
     } catch (Exception e) {
-      LOG.debug(
-          "Cannot load customized ssl related configuration. Fallback to system-generic settings.",
+      LOG.warn(
+          "Cannot load customized ssl related configuration. Fallback to" +
+              " system-generic settings.",
           e);
-      conn = DEFAULT_TIMEOUT_CONN_CONFIGURATOR;
+      if (connectTimeout == DEFAULT_SOCKET_TIMEOUT &&
+          readTimeout == DEFAULT_SOCKET_TIMEOUT) {
+        conn = DEFAULT_TIMEOUT_CONN_CONFIGURATOR;
+      } else {
+        conn = new ConnectionConfigurator() {
+          @Override
+          public HttpURLConnection configure(HttpURLConnection connection)
+              throws IOException {
+            URLConnectionFactory.setTimeouts(connection,
+                connectTimeout,
+                readTimeout);
+            return connection;
+          }
+        };
+      }
+    }
+
+    return conn;
+  }
+
+  /**
+   * Construct a new URLConnectionFactory that supports OAut-based connections.
+   * It will also try to load the SSL configuration when they are specified.
+   */
+  public static URLConnectionFactory newOAuth2URLConnectionFactory(
+      int connectTimeout, int readTimeout, Configuration conf)
+      throws IOException {
+    ConnectionConfigurator conn;
+    try {
+      ConnectionConfigurator sslConnConfigurator
+          = new SSLConnectionConfigurator(connectTimeout, readTimeout, conf);
+
+      conn = new OAuth2ConnectionConfigurator(conf, sslConnConfigurator);
+    } catch (Exception e) {
+      throw new IOException("Unable to load OAuth2 connection factory.", e);
     }
     return new URLConnectionFactory(conn);
   }
@@ -92,35 +145,6 @@ public class URLConnectionFactory {
   @VisibleForTesting
   URLConnectionFactory(ConnectionConfigurator connConfigurator) {
     this.connConfigurator = connConfigurator;
-  }
-
-  /**
-   * Create a new ConnectionConfigurator for SSL connections
-   */
-  private static ConnectionConfigurator newSslConnConfigurator(final int timeout,
-      Configuration conf) throws IOException, GeneralSecurityException {
-    final SSLFactory factory;
-    final SSLSocketFactory sf;
-    final HostnameVerifier hv;
-
-    factory = new SSLFactory(SSLFactory.Mode.CLIENT, conf);
-    factory.init();
-    sf = factory.createSSLSocketFactory();
-    hv = factory.getHostnameVerifier();
-
-    return new ConnectionConfigurator() {
-      @Override
-      public HttpURLConnection configure(HttpURLConnection conn)
-          throws IOException {
-        if (conn instanceof HttpsURLConnection) {
-          HttpsURLConnection c = (HttpsURLConnection) conn;
-          c.setSSLSocketFactory(sf);
-          c.setHostnameVerifier(hv);
-        }
-        URLConnectionFactory.setTimeouts(conn, timeout);
-        return conn;
-      }
-    };
   }
 
   /**
@@ -136,6 +160,7 @@ public class URLConnectionFactory {
       return openConnection(url, false);
     } catch (AuthenticationException e) {
       // Unreachable
+      LOG.error("Open connection {} failed", url, e);
       return null;
     }
   }
@@ -154,9 +179,7 @@ public class URLConnectionFactory {
   public URLConnection openConnection(URL url, boolean isSpnego)
       throws IOException, AuthenticationException {
     if (isSpnego) {
-      if (LOG.isDebugEnabled()) {
-        LOG.debug("open AuthenticatedURL connection {}", url);
-      }
+      LOG.debug("open AuthenticatedURL connection {}", url);
       UserGroupInformation.getCurrentUser().checkTGTAndReloginFromKeytab();
       final AuthenticatedURL.Token authToken = new AuthenticatedURL.Token();
       return new AuthenticatedURL(new KerberosUgiAuthenticator(),
@@ -176,11 +199,20 @@ public class URLConnectionFactory {
    *
    * @param connection
    *          URLConnection to set
-   * @param socketTimeout
+   * @param connectTimeout
+   * @param readTimeout
    *          the connection and read timeout of the connection.
    */
-  private static void setTimeouts(URLConnection connection, int socketTimeout) {
-    connection.setConnectTimeout(socketTimeout);
-    connection.setReadTimeout(socketTimeout);
+  private static void setTimeouts(URLConnection connection,
+                                  int connectTimeout,
+                                  int readTimeout) {
+    connection.setConnectTimeout(connectTimeout);
+    connection.setReadTimeout(readTimeout);
+  }
+
+  public void destroy() {
+    if (connConfigurator instanceof SSLConnectionConfigurator) {
+      ((SSLConnectionConfigurator) connConfigurator).destroy();
+    }
   }
 }

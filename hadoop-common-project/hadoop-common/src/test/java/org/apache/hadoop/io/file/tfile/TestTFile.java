@@ -22,7 +22,6 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.util.Arrays;
 
-import junit.framework.TestCase;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
@@ -31,28 +30,34 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.file.tfile.TFile.Reader;
 import org.apache.hadoop.io.file.tfile.TFile.Writer;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.io.file.tfile.TFile.Reader.Scanner;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 /**
  * test tfile features.
  * 
  */
-public class TestTFile extends TestCase {
-  private static String ROOT =
-      System.getProperty("test.build.data", "/tmp/tfile-test");
+public class TestTFile {
+  private static String ROOT = GenericTestUtils.getTempPath("tfile-test");
   private FileSystem fs;
   private Configuration conf;
   private static final int minBlockSize = 512;
   private static final int largeVal = 3 * 1024 * 1024;
   private static final String localFormatter = "%010d";
 
-  @Override
+  @BeforeEach
   public void setUp() throws IOException {
     conf = new Configuration();
     fs = FileSystem.get(conf);
   }
 
-  @Override
+  @AfterEach
   public void tearDown() throws IOException {
     // do nothing
   }
@@ -104,18 +109,19 @@ public class TestTFile extends TestCase {
       byte[] val = readValue(scanner);
       String keyStr = String.format(localFormatter, i);
       String valStr = value + keyStr;
-      assertTrue("btyes for keys do not match " + keyStr + " "
-          + new String(key), Arrays.equals(keyStr.getBytes(), key));
-      assertTrue("bytes for vals do not match " + valStr + " "
-          + new String(val), Arrays.equals(
-          valStr.getBytes(), val));
+      assertTrue(Arrays.equals(keyStr.getBytes(), key),
+          "bytes for keys do not match " + keyStr + " "
+          + new String(key));
+      assertTrue(Arrays.equals(
+          valStr.getBytes(), val), "bytes for vals do not match " + valStr + " "
+          + new String(val));
       assertTrue(scanner.advance());
       key = readKey(scanner);
       val = readValue(scanner);
-      assertTrue("btyes for keys do not match", Arrays.equals(
-          keyStr.getBytes(), key));
-      assertTrue("bytes for vals do not match", Arrays.equals(
-          valStr.getBytes(), val));
+      assertTrue(Arrays.equals(
+          keyStr.getBytes(), key), "bytes for keys do not match");
+      assertTrue(Arrays.equals(
+          valStr.getBytes(), val), "bytes for vals do not match");
       assertTrue(scanner.advance());
     }
     return (start + n);
@@ -141,12 +147,12 @@ public class TestTFile extends TestCase {
     for (int i = start; i < (start + n); i++) {
       byte[] key = readKey(scanner);
       String keyStr = String.format(localFormatter, i);
-      assertTrue("btyes for keys do not match", Arrays.equals(
-          keyStr.getBytes(), key));
+      assertTrue(Arrays.equals(
+          keyStr.getBytes(), key), "bytes for keys do not match");
       scanner.advance();
       key = readKey(scanner);
-      assertTrue("btyes for keys do not match", Arrays.equals(
-          keyStr.getBytes(), key));
+      assertTrue(Arrays.equals(
+          keyStr.getBytes(), key), "bytes for keys do not match");
       scanner.advance();
     }
     return (start + n);
@@ -170,9 +176,9 @@ public class TestTFile extends TestCase {
     for (int i = 0; i < n; i++) {
       readKey = readKey(scanner);
       readValue = readValue(scanner);
-      assertTrue("failed to match keys", Arrays.equals(readKey, key));
-      assertTrue("failed to match values", Arrays.equals(readValue, value));
-      assertTrue("failed to advance cursor", scanner.advance());
+      assertTrue(Arrays.equals(readKey, key), "failed to match keys");
+      assertTrue(Arrays.equals(readValue, value), "failed to match values");
+      assertTrue(scanner.advance(), "failed to advance cursor");
     }
   }
 
@@ -201,10 +207,10 @@ public class TestTFile extends TestCase {
     for (int i = start; i < (start + n); i++) {
       String key = String.format(localFormatter, i);
       byte[] read = readKey(scanner);
-      assertTrue("keys not equal", Arrays.equals(key.getBytes(), read));
+      assertTrue(Arrays.equals(key.getBytes(), read), "keys not equal");
       String value = "value" + key;
       read = readValue(scanner);
-      assertTrue("values not equal", Arrays.equals(value.getBytes(), read));
+      assertTrue(Arrays.equals(value.getBytes(), read), "values not equal");
       scanner.advance();
     }
     return (start + n);
@@ -230,7 +236,7 @@ public class TestTFile extends TestCase {
     for (int i = start; i < start; i++) {
       String key = String.format(localFormatter, i);
       byte[] read = readKey(scanner);
-      assertTrue("keys not equal", Arrays.equals(key.getBytes(), read));
+      assertTrue(Arrays.equals(key.getBytes(), read), "keys not equal");
       try {
         read = readValue(scanner);
         assertTrue(false);
@@ -240,7 +246,7 @@ public class TestTFile extends TestCase {
       }
       String value = "value" + key;
       read = readLongValue(scanner, value.getBytes().length);
-      assertTrue("values nto equal", Arrays.equals(read, value.getBytes()));
+      assertTrue(Arrays.equals(read, value.getBytes()), "values nto equal");
       scanner.advance();
     }
     return (start + n);
@@ -289,11 +295,11 @@ public class TestTFile extends TestCase {
     Scanner scanner = reader.createScanner();
     readAllRecords(scanner);
     scanner.seekTo(getSomeKey(50));
-    assertTrue("location lookup failed", scanner.seekTo(getSomeKey(50)));
+    assertTrue(scanner.seekTo(getSomeKey(50)), "location lookup failed");
     // read the key and see if it matches
     byte[] readKey = readKey(scanner);
-    assertTrue("seeked key does not match", Arrays.equals(getSomeKey(50),
-        readKey));
+    assertTrue(Arrays.equals(getSomeKey(50),
+        readKey), "seeked key does not match");
 
     scanner.seekTo(new byte[0]);
     byte[] val1 = readValue(scanner);
@@ -303,19 +309,19 @@ public class TestTFile extends TestCase {
     
     // check for lowerBound
     scanner.lowerBound(getSomeKey(50));
-    assertTrue("locaton lookup failed", scanner.currentLocation
-        .compareTo(reader.end()) < 0);
+    assertTrue(scanner.currentLocation
+        .compareTo(reader.end()) < 0, "locaton lookup failed");
     readKey = readKey(scanner);
-    assertTrue("seeked key does not match", Arrays.equals(readKey,
-        getSomeKey(50)));
+    assertTrue(Arrays.equals(readKey,
+        getSomeKey(50)), "seeked key does not match");
 
     // check for upper bound
     scanner.upperBound(getSomeKey(50));
-    assertTrue("location lookup failed", scanner.currentLocation
-        .compareTo(reader.end()) < 0);
+    assertTrue(scanner.currentLocation
+        .compareTo(reader.end()) < 0, "location lookup failed");
     readKey = readKey(scanner);
-    assertTrue("seeked key does not match", Arrays.equals(readKey,
-        getSomeKey(51)));
+    assertTrue(Arrays.equals(readKey,
+        getSomeKey(51)), "seeked key does not match");
 
     scanner.close();
     // test for a range of scanner
@@ -348,12 +354,14 @@ public class TestTFile extends TestCase {
     fs.delete(uTfile, true);
   }
 
+  @Test
   public void testTFileFeatures() throws IOException {
     basicWithSomeCodec("none");
     basicWithSomeCodec("gz");
   }
 
   // test unsorted t files.
+  @Test
   public void testUnsortedTFileFeatures() throws IOException {
     unsortedWithSomeCodec("none");
     unsortedWithSomeCodec("gz");
@@ -391,8 +399,8 @@ public class TestTFile extends TestCase {
       DataInputStream din = reader.getMetaBlock("TfileMeta" + i);
       byte b[] = new byte[len];
       din.readFully(b);
-      assertTrue("faield to match metadata", Arrays.equals(
-          ("something to test" + i).getBytes(), b));
+      assertTrue(Arrays.equals(
+          ("something to test" + i).getBytes(), b), "faield to match metadata");
       din.close();
     }
   }
@@ -409,11 +417,12 @@ public class TestTFile extends TestCase {
     }
     din = reader.getMetaBlock("TFileMeta100");
     int read = din.read();
-    assertTrue("check for status", (read == -1));
+    assertTrue((read == -1), "check for status");
     din.close();
   }
 
   // test meta blocks for tfiles
+  @Test
   public void testMetaBlocks() throws IOException {
     Path mFile = new Path(ROOT, "meta.tfile");
     FSDataOutputStream fout = createFSOutput(mFile);

@@ -19,6 +19,7 @@
 package org.apache.hadoop.yarn.server.nodemanager.recovery;
 
 import java.io.IOException;
+import java.io.Serializable;
 import java.util.List;
 
 import org.apache.hadoop.conf.Configuration;
@@ -32,7 +33,9 @@ import org.apache.hadoop.yarn.proto.YarnServerNodemanagerRecoveryProtos.Containe
 import org.apache.hadoop.yarn.proto.YarnServerNodemanagerRecoveryProtos.DeletionServiceDeleteTaskProto;
 import org.apache.hadoop.yarn.proto.YarnServerNodemanagerRecoveryProtos.LocalizedResourceProto;
 import org.apache.hadoop.yarn.proto.YarnServerNodemanagerRecoveryProtos.LogDeleterProto;
+import org.apache.hadoop.yarn.security.ContainerTokenIdentifier;
 import org.apache.hadoop.yarn.server.api.records.MasterKey;
+import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.Container;
 
 // The state store to use when state isn't being stored
 public class NMNullStateStoreService extends NMStateStoreService {
@@ -58,23 +61,32 @@ public class NMNullStateStoreService extends NMStateStoreService {
   }
 
   @Override
-  public void storeFinishedApplication(ApplicationId appId) {
-  }
-
-  @Override
   public void removeApplication(ApplicationId appId) throws IOException {
   }
 
   @Override
-  public List<RecoveredContainerState> loadContainersState()
+  public RecoveryIterator<RecoveredContainerState> getContainerStateIterator()
       throws IOException {
     throw new UnsupportedOperationException(
         "Recovery not supported by this state store");
   }
 
   @Override
-  public void storeContainer(ContainerId containerId,
-      StartContainerRequest startRequest) throws IOException {
+  public void storeContainer(ContainerId containerId, int version,
+      long startTime, StartContainerRequest startRequest) {
+  }
+
+  @Override
+  public void storeContainerQueued(ContainerId containerId) throws IOException {
+  }
+
+  @Override
+  public void storeContainerPaused(ContainerId containerId) throws IOException {
+  }
+
+  @Override
+  public void removeContainerPaused(ContainerId containerId)
+      throws IOException {
   }
 
   @Override
@@ -88,6 +100,11 @@ public class NMNullStateStoreService extends NMStateStoreService {
   }
 
   @Override
+  public void storeContainerUpdateToken(ContainerId containerId,
+      ContainerTokenIdentifier containerTokenIdentifier) throws IOException {
+  }
+
+  @Override
   public void storeContainerKilled(ContainerId containerId)
       throws IOException {
   }
@@ -95,6 +112,26 @@ public class NMNullStateStoreService extends NMStateStoreService {
   @Override
   public void storeContainerCompleted(ContainerId containerId, int exitCode)
       throws IOException {
+  }
+
+  @Override
+  public void storeContainerRemainingRetryAttempts(ContainerId containerId,
+      int remainingRetryAttempts) throws IOException {
+  }
+
+  @Override
+  public void storeContainerRestartTimes(ContainerId containerId,
+      List<Long> restartTimes) throws IOException {
+  }
+
+  @Override
+  public void storeContainerWorkDir(ContainerId containerId,
+      String workDir) throws IOException {
+  }
+
+  @Override
+  public void storeContainerLogDir(ContainerId containerId,
+      String logDir) throws IOException {
   }
 
   @Override
@@ -205,6 +242,42 @@ public class NMNullStateStoreService extends NMStateStoreService {
 
   @Override
   public void removeLogDeleter(ApplicationId appId) throws IOException {
+  }
+
+  @Override
+  public RecoveredAMRMProxyState loadAMRMProxyState() throws IOException {
+    throw new UnsupportedOperationException(
+        "Recovery not supported by this state store");
+  }
+
+  @Override
+  public void storeAMRMProxyCurrentMasterKey(MasterKey key) throws IOException {
+  }
+
+  @Override
+  public void storeAMRMProxyNextMasterKey(MasterKey key) throws IOException {
+  }
+
+  @Override
+  public void storeAMRMProxyAppContextEntry(ApplicationAttemptId attempt,
+      String key, byte[] data) throws IOException {
+  }
+
+  @Override
+  public void removeAMRMProxyAppContextEntry(ApplicationAttemptId attempt,
+      String key) throws IOException {
+  }
+
+  @Override
+  public void removeAMRMProxyAppContext(ApplicationAttemptId attempt)
+      throws IOException {
+  }
+
+  @Override
+  public void storeAssignedResources(Container container,
+      String resourceType, List<Serializable> assignedResources)
+      throws IOException {
+    updateContainerResourceMapping(container, resourceType, assignedResources);
   }
 
   @Override

@@ -20,8 +20,6 @@ package org.apache.hadoop.mapred.lib;
 import java.io.DataOutputStream;
 import java.io.IOException;
 
-import junit.framework.TestCase;
-
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
@@ -32,9 +30,13 @@ import org.apache.hadoop.mapred.Mapper;
 import org.apache.hadoop.mapred.OutputCollector;
 import org.apache.hadoop.mapred.Reporter;
 import org.apache.hadoop.mapred.TextInputFormat;
+import org.junit.jupiter.api.Test;
 
-public class TestDelegatingInputFormat extends TestCase {
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
+public class TestDelegatingInputFormat {
+  @Test
   public void testSplitting() throws Exception {
     JobConf conf = new JobConf();
     MiniDFSCluster dfs = null;

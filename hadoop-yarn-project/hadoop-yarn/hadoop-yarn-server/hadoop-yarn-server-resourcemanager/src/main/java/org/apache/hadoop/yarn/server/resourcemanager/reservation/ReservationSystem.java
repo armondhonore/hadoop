@@ -18,16 +18,18 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.reservation;
 
+import java.util.Map;
+
 import org.apache.hadoop.classification.InterfaceAudience.LimitedPrivate;
 import org.apache.hadoop.classification.InterfaceStability.Unstable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.yarn.api.records.ReservationId;
 import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
+import org.apache.hadoop.yarn.server.resourcemanager.recovery.Recoverable;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.Queue;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.ResourceScheduler;
-
-import java.util.Map;
+import org.apache.hadoop.yarn.server.resourcemanager.security.ReservationsACLsManager;
 
 /**
  * This interface is the one implemented by any system that wants to support
@@ -40,7 +42,7 @@ import java.util.Map;
  */
 @LimitedPrivate("yarn")
 @Unstable
-public interface ReservationSystem {
+public interface ReservationSystem extends Recoverable {
 
   /**
    * Set RMContext for {@link ReservationSystem}. This method should be called
@@ -55,7 +57,7 @@ public interface ReservationSystem {
    * 
    * @param conf configuration
    * @param rmContext current context of the {@code ResourceManager}
-   * @throws YarnException
+   * @throws YarnException if initialization of the configured plan fails
    */
   void reinitialize(Configuration conf, RMContext rmContext)
       throws YarnException;
@@ -82,8 +84,10 @@ public interface ReservationSystem {
    * the {@link ResourceScheduler}
    * 
    * @param planName the name of the {@link Plan} to be synchronized
+   * @param shouldReplan replan on reduction of plan capacity if true or
+   *          proportionally scale down reservations if false
    */
-  void synchronizePlan(String planName);
+  void synchronizePlan(String planName, boolean shouldReplan);
 
   /**
    * Return the time step (ms) at which the {@link PlanFollower} is invoked
@@ -120,4 +124,12 @@ public interface ReservationSystem {
    */
   void setQueueForReservation(ReservationId reservationId, String queueName);
 
+  /**
+   * Get the {@link ReservationsACLsManager} to use to check for the reservation
+   * access on a user.
+   *
+   * @return the reservation ACL manager to use to check reservation ACLs.
+   *
+   */
+  ReservationsACLsManager getReservationsACLsManager();
 }

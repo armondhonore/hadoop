@@ -21,7 +21,7 @@ import java.io.DataInputStream;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 
-import com.google.common.base.Preconditions;
+import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
 
 /**
@@ -119,7 +119,7 @@ class EditLogBackupInputStream extends EditLogInputStream {
 
     this.version = version;
 
-    reader = new FSEditLogOp.Reader(in, tracker, version);
+    reader = FSEditLogOp.Reader.create(in, tracker, version);
   }
 
   void clear() throws IOException {
