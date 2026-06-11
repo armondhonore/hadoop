@@ -1,19 +1,29 @@
 application:
-  name: hadoop
+  name: slim-lake-hadoop
   pods:
-    - name: hadoop
+    - name: namenode
       image: "# filled by pipeline"
-      path: /
+      servicePorts:
+        - 9000
+        - 9864
+      vars:
+        HADOOP_ROLE: "namenode"
+    - name: datanode
+      image: "# filled by pipeline"
+      servicePorts:
+        - 9864
+      vars:
+        HADOOP_ROLE: "datanode"
+    - name: resourcemanager
+      image: "# filled by pipeline"
       servicePorts:
         - 8088
+        - 8032
       vars:
-        - key: HDFS_NAMENODE_USER
-          value: root
-        - key: HDFS_DATANODE_USER
-          value: root
-        - key: HDFS_SECONDARYNAMENODE_USER
-          value: root
-        - key: YARN_RESOURCEMANAGER_USER
-          value: root
-        - key: YARN_NODEMANAGER_USER
-          value: root
+        HADOOP_ROLE: "resourcemanager"
+    - name: nodemanager
+      image: "# filled by pipeline"
+      servicePorts:
+        - 8042
+      vars:
+        HADOOP_ROLE: "nodemanager"
